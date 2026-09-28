@@ -27,7 +27,7 @@ Every tool takes an optional `machine` (`mac`, `ovh`, and whatever `scripts/add-
 
 - **Agents:** `overview` (every agent with status, git branch, the start of its last reply, the dialog if blocked), `list_agents`, `get_agent`, `read_agent` (`source: reply` reads the last answer from the Claude or Cursor transcript instead of the screen), `prompt_agent` (with `wait`, returns the reply), `wait_agent`, `watch_agent`, `send_agent_keys`, `spawn_agent` (place, start, wait, first prompt in one call), `start_agent`. Kinds come from `agentKinds`; `cursor` is `cursor-agent`, and without an `agentKinds` list a gateway offers it where `cursor-agent` is installed.
 - **Menus and steering:** `answer_agent` answers the menu an agent shows (approval, question, folder trust, update notice) by option number, plus `text` for an option that opens a field, and `options` for a multi-select. `gateway/dialog.ts` reads the menu off the screen and knows each CLI's keys: Claude Code and Codex take the digit (Claude's folder trust has no numbers, so arrows and enter), Cursor the key in parentheses or the letter in brackets, and a multi-select flips boxes with digits then tabs to its review step. `steer_agent` types a message into a working agent: Claude Code and Codex queue it until the current tool call ends, and Cursor gets a second enter so it goes in at once. It refuses while a menu is up, since its enter would answer the menu, and prompts an idle agent instead. `get_agent`, `read_agent` and `overview` return the parsed menu as `choices`. Codex's folder trust, update and model notices, which Herdr reads as idle, count as `attention: dialog` too, and `prompt_agent` refuses to type into any of them. Keys go one at a time with a pause, and text apart from its enter: in one burst the CLIs dropped keys or took the enter before the text. The screens this was built from are in `tests/fixtures/screens`.
-- **Agent aliases:** with `agentAliases` in a gateway config, ChatGPT starts agents by names you pick, and each name fixes the Herdr kind, the model and the reasoning efforts on offer. `bun scripts/agent-aliases.ts` writes the aliases: three for Claude Code, pinned by full model ID in `CLAUDE_CODE` (eagle = `claude-fable-5-1`, robin = `claude-opus-5-5`, falcon = `claude-sonnet-5`), and one per model from `codex debug models` (trees and fruit) and `cursor-agent models` (animals). Claude models run only through Claude Code, so the script leaves Cursor's Claude models out. A model a CLI stops offering loses its alias; a CLI missing on the machine keeps its old ones. Cursor aliases start `cursor-agent` with `--force` and `--trust`, so a Cursor agent started through WorkDone runs every command without an approval prompt and skips the folder trust prompt. Agents started before a change to the map keep their old flags. A default effort you pick for an alias goes in `DEFAULT_EFFORT` in the script (panda defaults to `xhigh-fast`), so a rerun keeps it. A name that is dropped is retired for good (`RETIRED` in the script), so it never comes back meaning another model: parrot (Haiku) and the 23 names that were Claude models in Cursor, tiger, lion and koala among them to `~/.config/herdr-chatgpt/agent-aliases.json`, and prints the map. Rerun it when a CLI adds models: existing names are kept. Point the config at the file with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, or write aliases inline: `"wren": {"kind": "claude", "args": ["--model", "opus", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID. `bridge_status` then lists the alias names as `agent_kinds` and their efforts under `agents`, and `spawn_agent`/`start_agent` take `effort`. Replies show the alias an agent was started as (agents started another way get the first alias of their kind, or `agent`). Vendor and model names in agent text, titles and errors are replaced with that alias. The words come from `redact` (default list in `gateway/mask.ts`, matched case-sensitively, so a plain "cursor" in prose is kept). File and shell ops (`read_file`, `exec` and the rest) return content unchanged, and so do ID and path fields. The scrub works on words, so an agent that describes itself in some other way can still give itself away. The file tools refuse the gateway's config directory, its state directory and the alias file even inside an allowed root. `exec` is a shell, though: with it on, ChatGPT can `cat` the alias file or read `ps`, so the aliases keep model names out of what the agent tools return but are not a secret from a caller with exec.
+- **Agent aliases:** ChatGPT starts agents by names, never by CLI or model; the list is in [Agents](#agents). With `agentAliases` in a gateway config, each name fixes the Herdr kind, the model and the efforts on offer. `bridge_status` lists the names as `agent_kinds` and their efforts under `agents`, and `spawn_agent`/`start_agent` take `kind` and `effort`. Replies show the name an agent was started as (agents started another way get the first name of their kind, or `agent`), and vendor and model names in agent text, titles and errors are replaced with it. The words come from `redact` (default list in `gateway/mask.ts`, matched case-sensitively, so a plain "cursor" in prose is kept). File and shell ops (`read_file`, `exec` and the rest) return content unchanged, and so do ID and path fields. The scrub works on words, so an agent that describes itself in some other way can still give itself away. The file tools refuse the gateway's config directory, its state directory and the alias file even inside an allowed root. `exec` is a shell, though: with it on, ChatGPT can `cat` the alias file or read `ps`, so the names keep model names out of what the agent tools return but are not a secret from a caller with exec.
 - **Attention:** `overview`, `get_agent` and `read_agent` add `attention` to Herdr's status: `dialog` (an approval or question dialog, including Cursor's workspace trust prompt, which Herdr reads as idle) or `question` (the agent stopped and the end of its last reply asks the owner something). `watch` shows whether the agent is watched and the last notification sent about it.
 - **Layout:** `list_workspaces`, `list_panes`, `read_pane`, `split_pane`, `create_workspace`, `create_tab`, `rename`, `focus`, `move_pane`, `close`, `send_pane_input`.
 - **Repos:** `list_repos`, `run_repo_task`, `list_worktrees`, `create_worktree`, `remove_worktree`.
@@ -46,6 +46,66 @@ Each gateway rereads `gateway.json` on every call, so a capability turned off ta
 | `allowWorktreeRemove` | `remove_worktree` |
 
 With `allowExec` on, the allowed roots stop being a boundary for anything but the file tools: a command can `cd` anywhere the user can.
+
+## Agents
+
+The same 37 names on the Mac, OVH and syno. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
+
+**Claude Code.** Claude models run only here, pinned by full model ID. Efforts: low, medium, high, xhigh, max.
+
+| Name | Model | Default |
+|---|---|---|
+| eagle | Claude Fable 5.1 (`claude-fable-5-1`) | high |
+| robin | Claude Opus 5.5 (`claude-opus-5-5`) | high |
+| falcon | Claude Sonnet 5 (`claude-sonnet-5`) | high |
+
+**Codex.** Efforts: low, medium, high, xhigh, max, and ultra where marked.
+
+| Name | Model | Default | Efforts |
+|---|---|---|---|
+| maple | GPT-6 Astra | medium | low … max, ultra |
+| willow | GPT-6 Sol | low | low … max, ultra |
+| cedar | GPT-6 Luna | medium | low … max |
+| cherry | GPT Reserve | medium | low … max |
+| olive | GPT-5.6 Sol | low | low … max, ultra |
+| apple | GPT-5.6 Terra | medium | low … max, ultra |
+| lemon | GPT-5.6 Luna | medium | low … max |
+| mango | GPT-5.5 | medium | low … xhigh |
+
+**Cursor.** Started with `--force --trust`: no approval or folder trust prompts. "fast" means each effort also has a `-fast` form (`high-fast`, `xhigh-fast`, …).
+
+| Name | Model | Default | Efforts |
+|---|---|---|---|
+| zebra | GPT-5.6 Sol | high | none, low, medium, high, xhigh, max; fast |
+| turtle | GPT-5.6 Terra | high | none, low, medium, high, xhigh, max; fast |
+| giraffe | GPT-5.6 Luna | high | none, low, medium, high, xhigh, max; fast |
+| lobster | GPT-5.5 | high | none, low, medium, high, xhigh; fast |
+| badger | GPT-5.4 | high | low, medium, high, xhigh; fast |
+| salmon | GPT-5.4 mini | high | none, low, medium, high, xhigh |
+| shark | GPT-5.4 nano | high | none, low, medium, high, xhigh |
+| hippo | GPT-5.3 Codex | high | low, default, high, xhigh; fast |
+| rhino | GPT-5.2 | high | low, default, high, xhigh; fast |
+| frog | GPT-5.1 | high | low, default, high |
+| kitten | GPT-5 mini | default | default |
+| panda | Grok 4.7 | xhigh-fast | low, medium, high, xhigh; fast |
+| pony | Grok 4.6 | high | low, medium, high, xhigh; fast |
+| jaguar | Grok 4.5 | high | low, medium, high; fast |
+| rabbit | Gemini 3.8 Flash | high | low, medium, high |
+| llama | Gemini 3.7 Flash | high | low, medium, high |
+| lizard | Gemini 3.6 Flash | high | minimal, low, medium, high |
+| goat | Gemini 3.5 Flash | default | default |
+| wolf | Gemini 3 Flash | default | default |
+| gecko | Gemini 3.1 Pro | default | default |
+| monkey | Composer 2.5 | default | default; fast |
+| camel | Kimi K3 | high | low, high, max |
+| moose | Kimi K2.7 Code | default | default |
+| dolphin | GLM 5.2 | high | high, max |
+| kangaroo | Muse Spark 1.3 | high | minimal, low, medium, high, xhigh, max |
+| gorilla | Cursor "auto" (Cursor picks) | default | default |
+
+**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 28-09; the file is the source of truth.
+
+An alias can also be written inline in a gateway config: `"wren": {"kind": "claude", "args": ["--model", "claude-opus-5-5", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID.
 
 ## The browser on OVH and its viewer
 
