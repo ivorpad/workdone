@@ -85,9 +85,27 @@ function view(cfg: GatewayConfig, id: string, full: boolean) {
   if (summary) out.summary = summary;
   if (full) {
     out.log_tail = tail(resolve(dir, "log.txt"), state === "running" ? 12 : 25);
-    if (existsSync(resolve(dir, "trace.json"))) out.trace = resolve(dir, "trace.json");
+    const pages = finalPages(readJson(resolve(dir, "trace.json")));
+    if (pages.length) out.final_pages = pages;
   }
   return out;
+}
+
+// The page each goal ended on, with its visible text: what DONE should be checked
+// against. The trace sits in the gateway's state, which the file tools do not serve.
+const PAGE_TEXT_CHARS = 6000;
+
+function finalPages(trace: any): Array<{ goal: string; url: string; title: string; text: string; truncated: boolean }> {
+  const runs: any[] = Array.isArray(trace?.runs) ? trace.runs : [];
+  return runs.flatMap((r) => {
+    const page = Array.isArray(r?.pages) ? r.pages.at(-1) : null;
+    if (!page) return [];
+    const text = typeof page.text === "string" ? page.text : "";
+    return [{
+      goal: String(r.goal ?? r.name ?? ""), url: String(page.url ?? r.url ?? ""), title: String(page.title ?? r.title ?? ""),
+      text: text.slice(0, PAGE_TEXT_CHARS), truncated: text.length > PAGE_TEXT_CHARS,
+    }];
+  });
 }
 
 function jobIds(cfg: GatewayConfig): string[] {

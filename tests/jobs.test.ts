@@ -15,7 +15,7 @@ esac
 echo "step 1 CLICK [3]" >&2
 status=done; code=0
 [ "$goal" = block ] && status=blocked && code=1
-for a in "$@"; do case "$prev" in --trace) echo '{"runs":[]}' > "$a" ;; esac; prev=$a; done
+for a in "$@"; do case "$prev" in --trace) printf '{"runs":[{"goal":"%s","pages":[{"url":"%s/","title":"Start","text":"x"},{"url":"%s/orders","title":"Orders","text":"Order 42 shipped"}]}]}' "$goal" "$url" "$url" > "$a" ;; esac; prev=$a; done
 printf '{"ok": %s, "steps": 4, "elapsed_ms": 900, "runs": [{"name": "goal 1", "status": "%s", "url": "%s/orders", "title": "Orders", "elapsed_ms": 900, "steps": 4}]}\\n' "$([ $code = 0 ] && echo true || echo false)" "$status" "$url"
 exit $code
 `;
@@ -45,7 +45,7 @@ test("a run starts detached, reports its result once, and keeps its trace", asyn
   const v = await settled(gw, started.id);
   expect(v).toMatchObject({ state: "done", label: "orders", summary: { ok: true, steps: 4 } });
   expect(v.log_tail).toContain("CLICK");
-  expect(existsSync(v.trace)).toBe(true);
+  expect(v.final_pages).toEqual([{ goal: "done", url: "https://shop.example/orders", title: "Orders", text: "Order 42 shipped", truncated: false }]);
   const poll: any = await gw.handle("watch_poll", {});
   expect(poll.messages).toEqual(['browser run "orders" done in 4 steps: https://shop.example/orders']);
   expect(poll.remaining).toBe(0);
