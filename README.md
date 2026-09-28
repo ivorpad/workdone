@@ -65,6 +65,16 @@ It copies that domain's cookies and local storage into OVH's profile, opens `--v
 python3 ovh_session.py verify --url https://github.com/settings/profile --expect "Public profile" --reject url:/login
 ```
 
+**Copy every signed-in site at once.** `scripts/export-browser-sessions.py` lists the sites Chrome's `Profile 2` is signed in to (`chrome-canary-cdp sites`), turns them into domains and leaves out the ones an agent should never reach: banks, brokers and payments, AWS (so `amazon.com`, whose cookies include the AWS console's), government ID and tax sites, work's corporate sign-ins, and the OVH account that owns the server. The list is `EXCLUDE` in the script.
+
+```sh
+scripts/export-browser-sessions.py            # print the domains it would copy
+scripts/export-browser-sessions.py --run      # copy them to OVH
+scripts/export-browser-sessions.py --run --only linkedin.com,github.com
+```
+
+Google and YouTube do not survive a copy: Chrome ties Google's session cookies to the Mac, so on OVH they land signed out. Sign in to Google on OVH itself.
+
 **Sign in on OVH itself.** Open https://headless.example.dev (Cloudflare Access, then the viewer password from `ovh:~/.config/agent-computer/ovh.env`) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. LinkedIn does: on 28-09 an imported LinkedIn session verified as signed in and was revoked by LinkedIn about a minute later, and the feed redirected to `/uas/login`. Once that happens the copied cookies are dead, so do not import them again. A login made on OVH belongs to OVH's IP and lasts.
 
 **See what the browser has open**, without the viewer. CDP is on OVH's loopback and wants the bearer token from `ovh.env`:
