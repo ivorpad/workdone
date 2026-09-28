@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy the Mac's signed-in sites into OVH's persistent browser (headless.example.dev).
+"""Copy the Mac's signed-in sites into OVH's persistent browser (the viewer at ovh-vps.your-tailnet.ts.net).
 
 Lists every site Chrome's Profile 2 holds a login for (chrome-canary-cdp sites), turns
 the hosts into registrable domains, drops the ones that should never be reachable by an
@@ -10,7 +10,7 @@ agent, and hands the rest to ovh_session.py import in one go.
     scripts/export-browser-sessions.py --run --only linkedin.com,github.com
 
 Google and YouTube do not survive the copy: Chrome binds Google's session to the Mac.
-Sign in to those on headless.example.dev itself. See the README.
+Sign in to those in that viewer. See the README.
 """
 
 import argparse

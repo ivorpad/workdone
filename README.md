@@ -49,7 +49,7 @@ With `allowExec` on, the allowed roots stop being a boundary for anything but th
 
 ## Signed-in sites for `browse` on OVH
 
-`browse` runs in the persistent Chromium on OVH, the one you watch at https://headless.example.dev. It only knows the logins its own profile holds, and it keeps them across restarts and while the Mac sleeps. There are two ways to give it one.
+`browse` runs in the persistent Chromium on OVH, the one you watch at https://ovh-vps.your-tailnet.ts.net (tailnet only). It only knows the logins its own profile holds, and it keeps them across restarts and while the Mac sleeps. There are two ways to give it one.
 
 **Copy a login from the Mac.** From this Mac, with Chrome's `Profile 2` holding the login:
 
@@ -75,7 +75,7 @@ scripts/export-browser-sessions.py --run --only linkedin.com,github.com
 
 Google and YouTube do not survive a copy: Chrome ties Google's session cookies to the Mac, so on OVH they land signed out. Sign in to Google on OVH itself.
 
-**Sign in on OVH itself.** Open https://headless.example.dev (Cloudflare Access, then the viewer password from `ovh:~/.config/agent-computer/ovh.env`) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. LinkedIn does: on 28-09 an imported LinkedIn session verified as signed in and was revoked by LinkedIn about a minute later, and the feed redirected to `/uas/login`. Once that happens the copied cookies are dead, so do not import them again. A login made on OVH belongs to OVH's IP and lasts.
+**Sign in on OVH itself.** Open https://ovh-vps.your-tailnet.ts.net from a device on your tailnet (user `agent`, the viewer password from `ovh:~/.config/agent-computer/ovh.env`) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. LinkedIn does: on 28-09 an imported LinkedIn session verified as signed in and was revoked by LinkedIn about a minute later, and the feed redirected to `/uas/login`. Once that happens the copied cookies are dead, so do not import them again. A login made on OVH belongs to OVH's IP and lasts.
 
 **See what the browser has open**, without the viewer. CDP is on OVH's loopback and wants the bearer token from `ovh.env`:
 

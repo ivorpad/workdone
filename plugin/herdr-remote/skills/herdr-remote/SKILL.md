@@ -57,7 +57,7 @@ Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each m
 
 ## Browser and Jev (on `ovh`)
 
-`ovh` runs one persistent Chromium that holds the user's signed-in sessions. The user watches it at https://headless.example.dev.
+`ovh` runs one persistent Chromium that holds the user's signed-in sessions. The user watches it at https://ovh-vps.your-tailnet.ts.net (from their tailnet).
 
 - `browse` with `machine: "ovh"`, a `url`, `goals` and a short `label` starts a run and returns its `id` at once. Goals run in order in the same tab. Give each goal one outcome and a stop rule ("as soon as the order page is showing you are DONE"). The user gets a phone notification when the run ends, so tell them that and stop; don't poll. Every step is a paid model call.
 - `browse_status` with the `id` shows the state (`running`, `done`, `blocked`, `failed`, `stopped`, `lost`), each goal's status and final URL, and the end of the step log. DONE is the model's claim, so check the final URL, and the page text in the `trace` file (`read_file`), before telling the user it worked. `failed` is a setup error: the log line says what. `browse_stop` ends a run that went wrong.

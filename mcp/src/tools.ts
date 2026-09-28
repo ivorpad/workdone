@@ -269,7 +269,7 @@ export const TOOLS: Record<string, ToolDef> = {
   browse: {
     title: "Browser run",
     description:
-      "Start a Jev browser run in the persistent signed-in browser (machine ovh, where browser is on in bridge_status; the user watches it at https://headless.example.dev) and return its id at once. Goals run in order in one tab; give each one outcome and a stop rule. The owner gets a phone notification when the run ends, so say that and stop instead of polling. Every step is a paid model call. DONE is the model's claim: check the final URL and page text with browse_status before telling the user it worked.",
+      "Start a Jev browser run in the persistent signed-in browser (machine ovh, where browser is on in bridge_status; the user watches it at https://ovh-vps.your-tailnet.ts.net) and return its id at once. Goals run in order in one tab; give each one outcome and a stop rule. The owner gets a phone notification when the run ends, so say that and stop instead of polling. Every step is a paid model call. DONE is the model's claim: check the final URL and page text with browse_status before telling the user it worked.",
     input: {
       url: z.string().describe("http(s) page to open first."),
       goals: z.array(z.string().min(1)).min(1).max(10).describe("One outcome per goal, e.g. 'Open the latest order. As soon as the order page is showing you are DONE.'"),
@@ -391,7 +391,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.5.0" },
+    { name: "herdr-remote", version: "0.5.1" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
