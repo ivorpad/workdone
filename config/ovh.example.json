@@ -1,0 +1,25 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 8787 },
+  "machines": {
+    "mac": {
+      "binary": "/usr/bin/ssh",
+      "user": "mac-user",
+      "host": "mac-name.your-tailnet.ts.net",
+      "port": 22,
+      "identityFile": "/etc/herdr-mcp/ssh/id_ed25519",
+      "knownHostsFile": "/etc/herdr-mcp/ssh/known_hosts",
+      "connectTimeoutSeconds": 10
+    },
+    "ovh": {
+      "binary": "/usr/bin/ssh",
+      "user": "debian",
+      "host": "127.0.0.1",
+      "port": 22,
+      "identityFile": "/etc/herdr-mcp/ssh/id_ed25519_ovh",
+      "knownHostsFile": "/etc/herdr-mcp/ssh/known_hosts",
+      "connectTimeoutSeconds": 5
+    }
+  },
+  "defaultMachine": "mac",
+  "requestTimeoutMs": 130000
+}

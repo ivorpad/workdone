@@ -1,0 +1,29 @@
+{
+  "herdrSocketPath": "~/.config/herdr/herdr.sock",
+  "allowedRoots": ["~/src/my-projects"],
+  "repos": {
+    "example": {
+      "path": "~/src/my-projects/example",
+      "tasks": { "test": "bun test", "typecheck": "bun run typecheck" }
+    }
+  },
+  "agentKinds": ["claude", "codex", "cursor"],
+  "allowExec": false,
+  "allowFileRead": false,
+  "allowFileWrite": false,
+  "allowRawPaneRun": false,
+  "allowCloseAny": false,
+  "allowWorktreeRemove": false,
+  "shell": "/bin/zsh",
+  "extraPath": ["~/.bun/bin", "~/.local/bin", "/opt/homebrew/bin"],
+  "transcriptRoots": ["~/.claude/projects"],
+  "cursorTranscriptRoots": ["~/.cursor/projects"],
+  "documentConverter": null,
+  "notifyCommand": null,
+  "maxReadLines": 400,
+  "maxPromptChars": 20000,
+  "maxWaitMs": 110000,
+  "maxFileBytes": 2000000,
+  "maxOutputBytes": 60000,
+  "stateDir": "~/.local/state/herdr-chatgpt"
+}

@@ -1,0 +1,100 @@
+# Herdr ChatGPT bridge
+
+```text
+ChatGPT → OpenAI Secure MCP Tunnel → MCP server on OVH (127.0.0.1:8787)
+       → OpenSSH over Tailscale → forced-command gateway on the Mac   → Herdr socket, files, shell
+       → OpenSSH to 127.0.0.1   → forced-command gateway on OVH (debian) → same
+```
+
+The runbook this implements is `docs/INSTALL_AND_SETUP.md`. Everything runs on Bun.
+
+The full record of the actual deployment (tunnel, API keys, ChatGPT app, plugin, every failure and how it was fixed) is in Spanish in `docs/DESPLIEGUE.md`.
+
+## Layout
+
+| Path | Runs on | What it is |
+| --- | --- | --- |
+| `gateway/` | each machine | Forced command for that machine's bridge SSH key. Reads JSON requests on stdin, talks to Herdr's socket API (`~/.config/herdr/herdr.sock`) with typed calls, and runs the file and shell ops. `watcher.ts` is the separate notification loop. |
+| `mcp/` | OVH | Streamable HTTP MCP server (stateless, JSON responses). Each tool call is one `ssh` round trip to the chosen machine's gateway. |
+| `plugin/herdr-remote/` | ChatGPT / Codex | Plugin manifest and skill. `.app.json` is created from `.app.json.example` once ChatGPT assigns the app ID. |
+| `config/` | both | Example configs: `mac-gateway`, `ovh-gateway` (gateways) and `ovh` (MCP server, one entry per machine). |
+| `deploy/` | both | systemd units for OVH, launchd plist for the Mac watcher. |
+| `scripts/` | both | Install a gateway or the watcher, render the `authorized_keys` line, set up the tunnel on OVH. |
+
+## Tools
+
+Every tool takes an optional `machine` (`mac`, `ovh`, and whatever `scripts/add-machine.sh` added). It is a plain string, not an enum, so ChatGPT's cached tool list does not need a refresh when a machine is added. Listing tools called without one (`bridge_status`, `overview`, `list_agents`, `list_panes`, `list_workspaces`, `list_repos`) ask every machine and key the answer by machine name. Pane, tab and workspace IDs only mean something on the machine that issued them.
+
+- **Agents:** `overview` (every agent with status, git branch, the start of its last reply, the dialog if blocked), `list_agents`, `get_agent`, `read_agent` (`source: reply` reads the last answer from the Claude or Cursor transcript instead of the screen), `prompt_agent` (with `wait`, returns the reply), `wait_agent`, `watch_agent`, `send_agent_keys`, `spawn_agent` (place, start, wait, first prompt in one call), `start_agent`. Kinds come from `agentKinds`; `cursor` is `cursor-agent`, and without an `agentKinds` list a gateway offers it where `cursor-agent` is installed.
+- **Attention:** `overview`, `get_agent` and `read_agent` add `attention` to Herdr's status: `dialog` (an approval or question dialog, including Cursor's workspace trust prompt, which Herdr reads as idle) or `question` (the agent stopped and the end of its last reply asks the owner something). `watch` shows whether the agent is watched and the last notification sent about it.
+- **Layout:** `list_workspaces`, `list_panes`, `read_pane`, `split_pane`, `create_workspace`, `create_tab`, `rename`, `focus`, `move_pane`, `close`, `send_pane_input`.
+- **Repos:** `list_repos`, `run_repo_task`, `list_worktrees`, `create_worktree`, `remove_worktree`.
+- **Host:** `exec` (shell command, returns exit code and output), `run_command_in_pane`, `list_dir`, `read_file` (text; PDF and Office files as Markdown through `documentConverter`; images as MCP image content), `write_file`, `move_path`, `delete_path` (moves into `~/.local/state/herdr-chatgpt/trash`), `search_files` (ripgrep).
+
+Each gateway rereads `gateway.json` on every call, so a capability turned off takes effect on the next call:
+
+| Flag | Unlocks |
+| --- | --- |
+| `allowExec` | `exec`, and extra `args` for `spawn_agent` / `start_agent` |
+| `allowFileRead` | `list_dir`, `read_file`, `search_files` |
+| `allowFileWrite` | `write_file`, `move_path`, `delete_path` |
+| `allowRawPaneRun` | `run_command_in_pane`, `send_pane_input` |
+| `allowCloseAny` | `close` on panes, tabs and workspaces the bridge did not create |
+| `allowWorktreeRemove` | `remove_worktree` |
+
+With `allowExec` on, the allowed roots stop being a boundary for anything but the file tools: a command can `cd` anywhere the user can.
+
+## Where the security checks live
+
+- **Each gateway.** It hides every pane and agent whose `cwd` or `foreground_cwd` is outside `allowedRoots` and reports them as "not found". A tab or workspace counts as in scope when it holds an in-scope pane, and closing one needs all of its panes in scope.
+  - File paths are resolved through symlinks before the root check, so a link inside a root cannot point the tools outside it.
+  - Targets must match `^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$`, so a flag-shaped value never reaches Herdr.
+  - Repo tasks send only the command written in `gateway.json`. `git`, `rg` and the document converter run with fixed argument lists, never through a shell.
+  - The audit log (`~/.local/state/herdr-chatgpt/audit.jsonl`) records every op with its target, paths and command text.
+- **authorized_keys.** Mac: `from="<OVH tailnet IP>",restrict,command="…/herdr-gateway-launcher.sh"`. OVH: the same with `from="127.0.0.1"`. The launcher ignores `SSH_ORIGINAL_COMMAND`.
+- **ssh on OVH.** It runs with `-F /dev/null`, a pinned `UserKnownHostsFile`, `StrictHostKeyChecking=yes`, and no agent or port forwarding.
+- **systemd on OVH.** The MCP unit can only reach loopback and the tailnet (`IPAddressAllow`), and runs as `herdr-mcp` with `ProtectSystem=strict`.
+
+The Mac runs ordinary macOS OpenSSH on tailnet port 22. Tailscale SSH is off (`RunSSH: false`), so sshd enforces the forced command.
+
+On macOS, `~/Downloads`, `~/Documents` and `~/Desktop` are privacy-protected. A gateway started by sshd can only read them when "Allow full disk access for remote users" is on (System Settings > General > Sharing > Remote Login).
+
+## Notifications and offline machines
+
+Each gateway keeps a watch list (`watch.json` in its state directory) with two kinds of entry:
+
+- **Turn:** `prompt_agent` watches the turn it started when the call returns before the agent settles. The entry goes once that turn is reported.
+- **Managed:** `watch_agent`, and `start_agent` and `spawn_agent` unless `watch: false`, watch every turn until the agent exits or `watch_agent` gets `stop: true`. This covers agents started outside WorkDone, like a `cursor-agent` typed into a pane, and turns started by someone at the Mac or by another agent.
+
+The MCP server on OVH polls the machines with watched agents (`watch_poll`, every 15 s) and sends each message through the gateway named in `notify.machine` in `/etc/herdr-mcp/ovh.json`, which runs its `notifyCommand`. On OVH that is the notify skill's `notify.sh send -k phone`, which goes through the apprise container to Pushover.
+
+Events fire on edges, so an agent that stays idle or blocked is reported once:
+
+- **finished:** it was seen working, or was prompted, and has settled. A move from `idle` to `done` also counts: `done` is a completion nobody has looked at, so a whole turn ran between two polls. The one miss is a turn shorter than the poll interval that ends while someone looks at the pane.
+- **asks:** a finished turn whose last reply ends by asking the owner something.
+- **waiting for an answer:** Herdr shows the agent blocked at a dialog.
+- **gone:** the pane closed, the agent exited, or it left the allowed roots.
+
+Messages name the machine, the agent (its name, or kind, terminal title and pane ID) and its folder, and add a one-line excerpt of at most about 200 characters. For finished turns that is the start of the answer from the Claude or Cursor transcript, for questions the question, and for dialogs the lines around the dialog's question. Agents without a transcript fall back to the bottom of the screen. Values that look like credentials (API keys, bearer tokens, `password=`, runs of 32 or more letters and digits) are replaced with `[redacted]` before a message leaves the machine; that is a pattern match, not a guarantee. The watch entry keeps the last event, which `get_agent` and `overview` return as `watch.last_event`.
+
+A machine that fails to connect (ssh exit 255 with a connection error) is marked offline for 60 s. Calls to it return `machine_offline` at once, listings that ask every machine don't wait for it, and a sleeping Mac only delays its own notifications.
+
+`gateway/watcher.ts` also runs on its own, as a launchd agent (`scripts/install-watcher.sh`), for a setup with a single machine. Don't run it next to the MCP notifier: both would work through the same watch list.
+
+## Differences from the runbook
+
+- Bun replaces Node. The gateway is `gateway/*.ts`, run by `bun --no-env-file --no-install`, and OVH uses `/usr/local/bin/bun` (the installer writes it to `bun-path` next to the launcher).
+- The gateway calls the Herdr socket API instead of the `herdr` binary, so its config has `herdrSocketPath` and no `herdrPath`.
+- The tunnel profile uses `--sample sample_mcp_remote_no_auth`. Per the tunnel-client docs, that is the sample for a local HTTP MCP server without OAuth. `sample_mcp_stdio_local` is for stdio servers.
+
+## Development
+
+```bash
+bun install && (cd mcp && bun install)
+bun run check                        # tsc + all tests
+scripts/install-gateway.sh           # BUN=/usr/local/bin/bun on OVH
+scripts/install-watcher.sh           # Mac only
+scripts/deploy-ovh.sh                # from the Mac: OVH gateway, its key, MCP server, restart
+scripts/add-machine.sh NAME ALIAS '~/dir' ...   # from the Mac: any machine with Bun and a Herdr server
+printf '%s\n' '{"id":"1","op":"bridge_status","params":{}}' | ~/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
+```

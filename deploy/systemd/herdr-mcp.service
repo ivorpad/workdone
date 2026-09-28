@@ -1,0 +1,39 @@
+[Unit]
+Description=Herdr remote MCP server (loopback only)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=herdr-mcp
+Group=herdr-mcp
+WorkingDirectory=/opt/herdr-chatgpt-bridge/mcp
+Environment=HERDR_MCP_CONFIG=/etc/herdr-mcp/ovh.json
+ExecStart=/usr/local/bin/bun --no-env-file src/server.ts
+Restart=on-failure
+RestartSec=3
+
+# ssh writes nothing outside its home; give it a private one.
+StateDirectory=herdr-mcp
+Environment=HOME=/var/lib/herdr-mcp
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Only loopback (MCP listener, resolver) and the tailnet (Mac sshd, MagicDNS).
+IPAddressDeny=any
+IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
+
+[Install]
+WantedBy=multi-user.target

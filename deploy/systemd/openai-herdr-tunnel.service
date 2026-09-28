@@ -1,0 +1,36 @@
+[Unit]
+Description=OpenAI Secure MCP Tunnel client for herdr-mcp
+After=network-online.target herdr-mcp.service
+Wants=network-online.target
+Requires=herdr-mcp.service
+
+[Service]
+Type=simple
+User=herdr-mcp
+Group=herdr-mcp
+# CONTROL_PLANE_API_KEY lives only here (mode 600, owned by herdr-mcp).
+EnvironmentFile=/etc/herdr-mcp/tunnel.env
+Environment=TUNNEL_CLIENT_PROFILE_DIR=/etc/herdr-mcp/tunnel-client
+Environment=HOME=/var/lib/herdr-mcp
+ExecStart=/opt/tunnel-client/tunnel-client run --profile herdr-mcp --log.level=info --log.format=json
+Restart=always
+RestartSec=5
+StateDirectory=herdr-mcp
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Rendered by scripts/install-watcher.sh: @HOME@ and @BUN@ are replaced. -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>dev.ivor.herdr-chatgpt-watcher</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@BUN@</string>
+    <string>--no-env-file</string>
+    <string>--no-install</string>
+    <string>@HOME@/.local/libexec/herdr-chatgpt/watcher.ts</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>@HOME@/.local/libexec/herdr-chatgpt</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>30</integer>
+  <key>StandardErrorPath</key>
+  <string>@HOME@/.local/state/herdr-chatgpt/watcher.log</string>
+</dict>
+</plist>
