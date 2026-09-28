@@ -35,6 +35,14 @@ const POOLS: Record<string, string[]> = {
   ],
 };
 
+// Names that once meant a model and are never handed out again, so an old habit or an
+// old chat never starts something else. 28-09: parrot (Haiku) and the Claude models in
+// Cursor, dropped when Claude models went to Claude Code only.
+const RETIRED = new Set([
+  "parrot", "tiger", "lion", "koala", "cheetah", "leopard", "donkey", "buffalo", "squirrel", "hamster", "octopus", "spider",
+  "beaver", "otter", "bison", "walrus", "raccoon", "hedgehog", "chicken", "rooster", "horse", "mouse", "sheep", "puppy",
+]);
+
 // Cursor models that get the first names in the pool, the ones said most often. The rest
 // follow in the order Cursor lists them.
 const CURSOR_FIRST = [
@@ -141,7 +149,7 @@ function main() {
   const models: Array<Alias & { name?: string }> = [...claudeModels(), ...codexModels(), ...cursorModels()];
   if (models.length === 0) throw new Error("found no claude, codex or cursor-agent to list models from");
 
-  const taken = new Set(Object.keys(old));
+  const taken = new Set([...Object.keys(old), ...RETIRED]);
   const next: Record<string, Alias> = {};
   for (const m of models) {
     let name = m.name ?? nameOf.get(`${m.kind}/${m.model}`);
