@@ -60,6 +60,16 @@ An agent's own harness can refuse a command it needs: Claude Code's auto mode ("
 
 If the fix is a change to files, prefer `write_file` or a script through `exec` with `stdin` over long quoted shell lines.
 
+## Keep tool output to what the task needs
+
+Everything a tool returns lands in this conversation. Ask for the part you need:
+
+- Files: `rg -n PATTERN` or `sed -n 'START,ENDp'` through `exec`, or `read_file` with `offset`, not whole files.
+- Logs and test runs: the tail or the failing lines (`| tail -40`, `| rg -n 'FAIL|Error'`), not everything.
+- Agents: `read_agent` with `source: "reply"` for what an agent said; screens only for a dialog or a stuck agent, with a small `lines`.
+- Browser runs: `browse_status` gives each final page's first 800 characters; pass `text_chars` only when checking the result needs more.
+- Don't paste large outputs back to the user; show the lines that answer the question.
+
 ## Commands and files
 
 - `exec` runs a shell command and returns the exit code, stdout and stderr. Use it for one-off commands, tests, git, and scripts (`python3 -` with the script in `stdin` avoids quoting problems). For servers, watchers or anything that doesn't end, use `run_command_in_pane` in a shell pane, then `read_pane`. `send_pane_input` sends keys like `ctrl+c` to stop it.

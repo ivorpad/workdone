@@ -9,7 +9,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync
 import { resolve } from "node:path";
 import { GatewayError, expandHome, type GatewayConfig } from "./config.ts";
 import { childEnv } from "./process.ts";
-import { optStr, str, type Op } from "./params.ts";
+import { optInt, optStr, str, type Op } from "./params.ts";
 
 export interface BrowserConfig {
   command: string[];
@@ -75,7 +75,7 @@ function stateOf(dir: string, job: Job): string {
   return code === 0 ? "done" : code === 1 ? "blocked" : "failed";
 }
 
-function view(cfg: GatewayConfig, id: string, full: boolean) {
+function view(cfg: GatewayConfig, id: string, full: boolean, textChars = PAGE_TEXT_DEFAULT) {
   const dir = resolve(jobsDir(cfg), id);
   const job: Job | null = readJson(resolve(dir, "job.json"));
   if (!job) throw new GatewayError("job_not_found", `browser run ${id} not found`);
@@ -85,7 +85,7 @@ function view(cfg: GatewayConfig, id: string, full: boolean) {
   if (summary) out.summary = summary;
   if (full) {
     out.log_tail = tail(resolve(dir, "log.txt"), state === "running" ? 12 : 25);
-    const pages = finalPages(readJson(resolve(dir, "trace.json")));
+    const pages = finalPages(readJson(resolve(dir, "trace.json")), textChars);
     if (pages.length) out.final_pages = pages;
   }
   return out;
@@ -93,9 +93,12 @@ function view(cfg: GatewayConfig, id: string, full: boolean) {
 
 // The page each goal ended on, with its visible text: what DONE should be checked
 // against. The trace sits in the gateway's state, which the file tools do not serve.
-const PAGE_TEXT_CHARS = 6000;
+// A short excerpt by default, enough to see the run landed where it should; up to
+// PAGE_TEXT_MAX when checking a result needs the page's content.
+const PAGE_TEXT_DEFAULT = 800;
+const PAGE_TEXT_MAX = 6000;
 
-function finalPages(trace: any): Array<{ goal: string; url: string; title: string; text: string; truncated: boolean }> {
+function finalPages(trace: any, textChars: number): Array<{ goal: string; url: string; title: string; text: string; truncated: boolean }> {
   const runs: any[] = Array.isArray(trace?.runs) ? trace.runs : [];
   return runs.flatMap((r) => {
     const page = Array.isArray(r?.pages) ? r.pages.at(-1) : null;
@@ -103,7 +106,7 @@ function finalPages(trace: any): Array<{ goal: string; url: string; title: strin
     const text = typeof page.text === "string" ? page.text : "";
     return [{
       goal: String(r.goal ?? r.name ?? ""), url: String(page.url ?? r.url ?? ""), title: String(page.title ?? r.title ?? ""),
-      text: text.slice(0, PAGE_TEXT_CHARS), truncated: text.length > PAGE_TEXT_CHARS,
+      text: text.slice(0, textChars), truncated: text.length > textChars,
     }];
   });
 }
@@ -197,7 +200,7 @@ export function jobOps(cfg: GatewayConfig): Record<string, Op> {
 
     async browse_status(params) {
       const id = optStr(params, "id", ID_RE);
-      if (id) return view(cfg, id, true);
+      if (id) return view(cfg, id, true, optInt(params, "text_chars", 0, PAGE_TEXT_MAX) ?? PAGE_TEXT_DEFAULT);
       return { runs: jobIds(cfg).slice(-10).reverse().map((j) => view(cfg, j, false)) };
     },
 

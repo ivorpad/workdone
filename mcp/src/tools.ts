@@ -280,8 +280,8 @@ export const TOOLS: Record<string, ToolDef> = {
   browse_status: {
     title: "Browser run status",
     description:
-      "With id: a browser run's state (running, done, blocked, failed, stopped, lost), the summary with each goal's status and final URL, the end of its step log, and final_pages: for each goal, the page it ended on with its URL, title and visible text (up to 6000 characters). Check DONE against that text. Without id: the last 10 runs.",
-    input: { id: z.string().optional() },
+      "With id: a browser run's state (running, done, blocked, failed, stopped, lost), the summary with each goal's status and final URL, the end of its step log, and final_pages: for each goal, the page it ended on with its URL, title and the start of its visible text (800 characters; text_chars up to 6000 when checking the result needs more). Check DONE against that text. Without id: the last 10 runs.",
+    input: { id: z.string().optional(), text_chars: z.number().int().min(0).max(6000).optional().describe("How much of each final page's text to return (default 800).") },
     annotations: READ,
   },
   browse_stop: {
@@ -391,7 +391,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.5.6" },
+    { name: "herdr-remote", version: "0.5.7" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

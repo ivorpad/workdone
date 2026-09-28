@@ -46,6 +46,8 @@ test("a run starts detached, reports its result once, and keeps its trace", asyn
   expect(v).toMatchObject({ state: "done", label: "orders", summary: { ok: true, steps: 4 } });
   expect(v.log_tail).toContain("CLICK");
   expect(v.final_pages).toEqual([{ goal: "done", url: "https://shop.example/orders", title: "Orders", text: "Order 42 shipped", truncated: false }]);
+  const short: any = await gw.handle("browse_status", { id: started.id, text_chars: 5 });
+  expect(short.final_pages[0]).toMatchObject({ text: "Order", truncated: true });
   const poll: any = await gw.handle("watch_poll", {});
   expect(poll.messages).toEqual(['browser run "orders" done in 4 steps: https://shop.example/orders']);
   expect(poll.remaining).toBe(0);
