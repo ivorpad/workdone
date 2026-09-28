@@ -43,6 +43,11 @@ const RETIRED = new Set([
   "beaver", "otter", "bison", "walrus", "raccoon", "hedgehog", "chicken", "rooster", "horse", "mouse", "sheep", "puppy",
 ]);
 
+// Default efforts the owner chose, by alias name, over what the CLI lists as its default.
+const DEFAULT_EFFORT: Record<string, string> = {
+  panda: "xhigh-fast",
+};
+
 // Cursor models that get the first names in the pool, the ones said most often. The rest
 // follow in the order Cursor lists them.
 const CURSOR_FIRST = [
@@ -158,6 +163,8 @@ function main() {
       name = POOLS[m.kind]!.find((n) => !taken.has(n)) ?? `${m.kind === "cursor" ? "beast" : m.kind === "codex" ? "tree" : "bird"}${taken.size + 1}`;
       taken.add(name);
     }
+    const want = DEFAULT_EFFORT[name];
+    if (want && m.efforts && want in m.efforts) m.effort = want;
     next[name] = m;
   }
   // A CLI missing on this machine keeps its old aliases; a model a CLI stopped offering, or
