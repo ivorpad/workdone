@@ -1,11 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
 import type { Watched } from "../gateway/state.ts";
-import { decide, message } from "../gateway/watcher.ts";
+import { decide, decideBackground, message } from "../gateway/watcher.ts";
 
 const now = Date.parse("2026-09-25T12:00:00Z");
 const since = (msAgo: number) => new Date(now - msAgo).toISOString();
@@ -91,6 +91,8 @@ describe("managed watch", () => {
     expect(run(managed({ last_status: "blocked", seq: 4 }), ["blocked@6"]).events).toEqual(["blocked@6:blocked"]);
     // Someone looked at a done agent: idle, a new seq, and no turn.
     expect(run(managed({ last_status: "done", seq: 5 }), ["idle@6", "idle@6"]).events).toEqual([]);
+    // A pane on screen goes back to idle after a turn: idle, then idle with a new seq.
+    expect(run(managed({ seq: 5 }), ["idle@5", "idle@9", "idle@9"]).events).toEqual(["idle@9:finished"]);
   });
   test("a prompt that went through does not wait out the grace period", () => {
     const w = managed({ busy: true, prompted_at: since(0), seq: 10 });
@@ -107,6 +109,18 @@ describe("managed watch", () => {
   test("an exited agent is reported and dropped; age never drops a managed entry", () => {
     expect(decide(managed(), undefined, now)).toEqual({ event: "gone", drop: true });
     expect(decide(managed({ since: since(30 * 24 * 3600_000) }), { agent_status: "idle" }, now)).toEqual({});
+  });
+});
+
+describe("an agent in the background of its pane", () => {
+  const w: Watched = { name: "worker", cwd: null, since: since(0), last_status: "working", managed: true, busy: true, kind: "cursor" };
+  test("reported once per state, and the watch stays", () => {
+    expect(decideBackground(w, { pid: 5, stopped: false }, now)).toEqual({ event: "background", set: { last_status: "background" } });
+    expect(decideBackground({ ...w, last_status: "background" }, { pid: 5, stopped: false }, now)).toEqual({});
+    expect(decideBackground({ ...w, last_status: "background" }, { pid: 5, stopped: true }, now)).toEqual({ event: "background", set: { last_status: "stopped" } });
+  });
+  test("back in the foreground, the turn it was on still ends in a finish", () => {
+    expect(decide({ ...w, last_status: "background" }, { agent_status: "idle" }, now)).toMatchObject({ event: "finished" });
   });
 });
 
@@ -266,6 +280,45 @@ for (let i = 0; i < 20; i++) new StateStore(${JSON.stringify(state)}).manage(pro
     const procs = ["a", "b", "c"].map((p) => Bun.spawn(["bun", script, p]));
     await Promise.all(procs.map((p) => p.exited));
     expect(Object.keys(JSON.parse(readFileSync(join(state, "watch.json"), "utf8"))).length).toBe(60);
+  });
+  test("a watched agent that left the foreground is found among its shell's children", async () => {
+    const { gw, state, agents, watch, saved } = setup();
+    agents.length = 0;
+    // A process whose command line names cursor-agent, started by this test process,
+    // which plays the pane's shell.
+    const bin = mkdtempSync(join(tmpdir(), "herdr-bg-"));
+    symlinkSync("/bin/sleep", join(bin, "cursor-agent"));
+    const job = Bun.spawn([join(bin, "cursor-agent"), "30"]);
+    const shell = { pane_id: "w1:p1", cwd: "/srv/allowed/app" };
+    const herdr = gw.herdr;
+    (gw as any).herdr = async (method: string, params: any) =>
+      method === "pane.get" ? { pane: shell }
+      : method === "pane.list" ? { panes: [shell] }
+      : method === "pane.process_info" ? { process_info: { shell_pid: process.pid } }
+      : herdr(method, params);
+    watch({ "w1:p1": { name: "worker", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true, kind: "cursor" } });
+    try {
+      expect(await gw.handle("watch_poll", {})).toEqual({
+        messages: [`worker in app is running in the background of its pane (pid ${job.pid}), out of Herdr's sight and unable to take input; fg in that shell brings it back`],
+        remaining: 1,
+      });
+      expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
+      process.kill(job.pid, "SIGSTOP");
+      await Bun.sleep(100);
+      expect(((await gw.handle("watch_poll", {})) as any).messages).toEqual([`worker in app is stopped in the background of its pane (pid ${job.pid}); fg in that shell resumes it`]);
+      expect(saved()["w1:p1"]).toMatchObject({ last_status: "stopped", busy: true });
+      // ChatGPT sees it too: as a watched pane, and in overview.
+      const listed: any = await gw.handle("list_panes", {});
+      expect(listed.panes[0]).toMatchObject({ pane_id: "w1:p1", agent: null, watch: { mode: "managed", state: "stopped" } });
+      const overview: any = await gw.handle("overview", {});
+      expect(overview.background).toEqual([expect.objectContaining({ pane_id: "w1:p1", agent: "cursor", status: "stopped" })]);
+      expect(state).toBeString();
+    } finally {
+      process.kill(job.pid, "SIGCONT");
+      job.kill();
+      await job.exited;
+    }
+    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["worker in app is gone (pane closed or agent exited)"], remaining: 0 });
   });
   test("notify runs notifyCommand with the message as the last argument", async () => {
     const out = join(mkdtempSync(join(tmpdir(), "herdr-notify-")), "sent.txt");

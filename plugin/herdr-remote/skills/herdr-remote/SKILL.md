@@ -1,6 +1,6 @@
 ---
 name: herdr-remote
-description: Check on, prompt and coordinate the coding agents (Claude, Codex, Cursor), terminal panes, files and shell on the user's machines (the Mac and the OVH server) through Herdr. Use when the user mentions WorkDone, Herdr, their Mac or OVH agents, Cursor or Grok workers, a pane, tab, workspace or agent by name, asks what their agents are doing, to prompt or start one, to run a command or a repo task, to read or save a file on those machines, to do something on a website in their signed-in browser, or to get a Jev judgment.
+description: Check on, prompt and coordinate the coding agents, terminal panes, files and shell on the user's machines (the Mac and the OVH server) through Herdr. Use when the user mentions WorkDone, Herdr, their Mac or OVH agents or workers, a pane, tab, workspace or agent by name, asks what their agents are doing, to prompt or start one, to run a command or a repo task, to read or save a file on those machines, to do something on a website in their signed-in browser, or to get a Jev judgment.
 ---
 
 # WorkDone (Herdr Remote)
@@ -20,7 +20,7 @@ Each gateway only exposes panes whose working directory is inside the roots the 
 - Agent states: `idle` and `done` mean the agent is ready for input. `working` means it is busy. `blocked` means it is showing an approval or question dialog. `unknown` means Herdr can't tell.
 - `overview`, `get_agent` and `read_agent` also return `attention`: `dialog` when a dialog is up (including one Herdr doesn't flag, so the status can still say `idle`), `question` when the agent stopped and its last reply asks the user something, otherwise null. `watch` says whether the user gets phone notifications about the agent, and `watch.last_event` is the last one sent (`finished`, `question`, `blocked` or `gone`, with its excerpt).
 - Only prompt an agent that is `idle` or `done`. If it's `working`, ask the user whether to wait (`wait_agent`) or to leave it alone.
-- `prompt_agent` with `wait: true` and a `timeout_ms` of at most 110000. For Claude and Cursor agents the result includes `reply`, the agent's answer as clean text. Check `reply.matches_prompt`; if it is false, the answer may be to an earlier prompt, so `read_agent` with `source: "reply"` again after a moment.
+- `prompt_agent` with `wait: true` and a `timeout_ms` of at most 110000. For agents that keep a transcript the result includes `reply`, the agent's answer as clean text. Check `reply.matches_prompt`; if it is false, the answer may be to an earlier prompt, so `read_agent` with `source: "reply"` again after a moment.
 - A timeout doesn't mean the prompt was lost. Read before you resend anything. The user gets a phone notification when a prompted agent finishes after the call returned, on any machine and even while the Mac is asleep, so for long work you can say that and stop.
 - `read_agent` with `source: "reply"` gives the last answer and the prompt in progress. Use `recent_unwrapped` (idle agents) or `visible` (working agents) for the screen, and `detection` for a dialog.
 - If the agent is `blocked`, read the dialog, show the user what it's asking, and only after they decide use `send_agent_keys` (for example `["esc"]` to dismiss, or `["1"]`/`["enter"]` to pick an option). Never approve a permission dialog on your own.
@@ -31,22 +31,22 @@ Each gateway only exposes panes whose working directory is inside the roots the 
 - `spawn_agent` does everything in one call: it makes a place (a new workspace in `repo` or `cwd` by default, a tab with `workspace_id`, a split with `split_from`, or a new git worktree with `worktree_branch` plus `repo`), starts the agent, waits until it is ready and sends `prompt`. If it comes back `blocked`, it is usually the folder trust dialog: read it and ask the user.
 - `create_workspace`, `create_tab`, `split_pane`, `rename`, `focus`, `move_pane` and `close` manage the layout. `close` kills what runs in the pane, tab or workspace, so confirm with the user first unless the bridge created it for this task.
 
-## Cursor workers
+## Workers
 
-Herdr starts kind `cursor` as `cursor-agent`. It appears in `bridge_status` `agent_kinds` on machines where it is set up (the Mac).
+Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each machine offers, and `agents` gives each kind's `efforts` (reasoning effort, least to most; a `-fast` variant answers sooner) and its default `effort`. Each kind is a name the user picked and the model behind it is fixed in the gateway config, so pass the name and an `effort` as they are and don't add model flags in `args`. When the user names a kind, use it; otherwise ask which one. The user often dictates, so a name or effort may arrive misheard ("lama", "extra hi"): use the closest one in `agent_kinds` or `efforts` and say which you picked.
 
-- New worker: `spawn_agent` with `kind: "cursor"`, a `name`, a place (`cwd` or `repo`, or `split_from`, `workspace_id`, `worktree_branch`), Cursor's flags in `args`, and the task in `prompt`:
+- New worker: `spawn_agent` with `kind`, a `name`, a place (`cwd` or `repo`, or `split_from`, `workspace_id`, `worktree_branch`), and the task in `prompt`:
 
   ```json
-  {"machine": "mac", "kind": "cursor", "name": "relay-automations", "cwd": "~/src/tries/2026-08-26-relay",
-   "args": ["--model", "grok-4.7-xhigh", "--auto-review"], "prompt": "Continue the Automations MVP on feat/automations-mvp..."}
+  {"machine": "mac", "kind": "otter", "effort": "high", "name": "relay-automations", "cwd": "~/src/tries/2026-08-26-relay",
+   "prompt": "Continue the Automations MVP on feat/automations-mvp..."}
   ```
 
-  In a shell pane that already exists: `start_agent` with `pane_id`, `kind: "cursor"`, `name` and `args`, then `prompt_agent`.
-- Don't start agents by typing `cursor-agent ...` with `run_command_in_pane`. For one that is already running that way, call `watch_agent` with its pane ID from `list_agents`.
+  In a shell pane that already exists: `start_agent` with `pane_id`, `kind` and `name`, then `prompt_agent`.
+- Don't start agents by typing their command with `run_command_in_pane`. For one that is already running that way, call `watch_agent` with its pane ID from `list_agents`.
 - `spawn_agent` and `start_agent` watch the agent unless you pass `watch: false`. A watched agent sends the user one phone notification each time it finishes a turn, asks something, stops at an approval dialog or exits, with a short excerpt. It stays watched until it exits or you call `watch_agent` with `stop: true`. After starting or prompting a worker, tell the user they'll be notified and stop; don't poll it.
 - Steer it with `prompt_agent` like any agent. `read_agent` with `source: "reply"` returns its last answer.
-- In a folder Cursor hasn't been trusted with, it first shows "Workspace Trust Required", which Herdr reports as `idle`. WorkDone checks the screen: `spawn_agent` returns `status: "blocked"` without sending the prompt, and `prompt_agent` fails with `agent_blocked`. Show the user. If they agree to trust the folder, `send_pane_input` with `text: "a"` answers it, and `--trust` in `args` skips the prompt next time.
+- In a folder it hasn't been trusted with, an agent can first show "Workspace Trust Required", which Herdr reports as `idle`. WorkDone checks the screen: `spawn_agent` returns `status: "blocked"` without sending the prompt, and `prompt_agent` fails with `agent_blocked`. Show the user. If they agree to trust the folder, `send_pane_input` with `text: "a"` answers it.
 
 ## Commands and files
 

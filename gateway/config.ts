@@ -1,7 +1,8 @@
 // Gateway config loading and the allowed-root scope check.
 
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { DEFAULT_REDACT, parseAliases, type AgentAlias } from "./mask.ts";
 
 export const GATEWAY_VERSION = "0.3.0";
 
@@ -28,6 +29,8 @@ export interface GatewayConfig {
   allowedRoots: string[];
   repos: Record<string, RepoConfig>;
   agentKinds: string[];
+  agentAliases: Record<string, AgentAlias>;
+  redact: string[];
   allowRawPaneRun: boolean;
   allowWorktreeRemove: boolean;
   allowExec: boolean;
@@ -141,6 +144,12 @@ export function loadConfig(raw: unknown): GatewayConfig {
     }
     notifyCommand = c.notifyCommand.map((a: string) => expandHome(a));
   }
+  // Inline, or the path of a JSON file such as the one scripts/agent-aliases.ts writes.
+  const aliasSource = typeof c.agentAliases === "string" ? JSON.parse(readFileSync(absPath(c.agentAliases, "agentAliases"), "utf8")) : c.agentAliases;
+  const agentAliases: Record<string, AgentAlias> = parseAliases(aliasSource, AGENT_NAME_RE);
+  if (c.redact !== undefined && (!Array.isArray(c.redact) || !c.redact.every((w: unknown) => typeof w === "string" && w))) {
+    throw new Error("redact must be an array of non-empty strings");
+  }
   const envShell = process.env.SHELL?.startsWith("/") ? process.env.SHELL : "/bin/sh";
   const extraPath = pathList(c.extraPath, "extraPath");
   return {
@@ -151,6 +160,8 @@ export function loadConfig(raw: unknown): GatewayConfig {
     agentKinds: Array.isArray(c.agentKinds)
       ? c.agentKinds.filter((k: unknown) => typeof k === "string")
       : ["claude", "codex", ...(findExecutable("cursor-agent", extraPath) ? ["cursor"] : [])],
+    agentAliases,
+    redact: c.redact ?? DEFAULT_REDACT,
     allowRawPaneRun: c.allowRawPaneRun === true,
     allowWorktreeRemove: c.allowWorktreeRemove === true,
     allowExec: c.allowExec === true,

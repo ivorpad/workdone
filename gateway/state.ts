@@ -74,6 +74,21 @@ export class StateStore {
     this.write(`created-${kind}.json`, this.created(kind).filter((x) => x !== id));
   }
 
+  // The alias each agent started through the bridge was started as, by pane ID and by name.
+  alias(target: string): string | null {
+    const v = this.read("aliases.json") as Record<string, unknown> | undefined;
+    const a = v && Object.hasOwn(v, target) ? v[target] : null;
+    return typeof a === "string" ? a : null;
+  }
+
+  setAlias(paneId: string, name: string, alias: string) {
+    const v = this.read("aliases.json");
+    const cur = v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, string>) : {};
+    delete cur[paneId];
+    delete cur[name];
+    this.write("aliases.json", Object.fromEntries([...Object.entries(cur), [paneId, alias], [name, alias]].slice(-400)));
+  }
+
   watched(): Record<string, Watched> {
     const v = this.read("watch.json");
     return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Watched>) : {};

@@ -152,6 +152,19 @@ export function findBinary(name: string, cfg: GatewayConfig): string | null {
   return findExecutable(name, cfg.extraPath);
 }
 
+// The processes a shell started, e.g. the jobs of the shell in a pane. Fixed argv, no shell.
+export async function childProcesses(cfg: GatewayConfig, parent: number): Promise<Array<{ pid: number; stat: string; args: string }>> {
+  const res = await runProcess(["/bin/ps", "-A", "-o", "pid=,ppid=,stat=,args="], {
+    cwd: "/", env: childEnv(cfg), timeoutMs: 5000, maxBytes: 2_000_000,
+  });
+  const out: Array<{ pid: number; stat: string; args: string }> = [];
+  for (const line of res.stdout.split("\n")) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+    if (m && Number(m[2]) === parent) out.push({ pid: Number(m[1]), stat: m[3]!, args: m[4]! });
+  }
+  return out;
+}
+
 export function isDirectory(p: string): boolean {
   try {
     return statSync(p).isDirectory();

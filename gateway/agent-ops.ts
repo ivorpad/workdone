@@ -13,6 +13,7 @@ import { pollWatched, sendNotification } from "./watcher.ts";
 import { agentView, lastLines, paneView, textOf, watchInfo, watchView } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done"]);
+const SHELL_STARTING = new Set(["agent_pane_busy", "agent_pane_unavailable"]);
 
 function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
@@ -107,16 +108,19 @@ export function agentOps(g: Gateway): Record<string, Op> {
       );
       const counts: Record<string, number> = {};
       for (const i of items) counts[String(i.status)] = (counts[String(i.status)] ?? 0) + 1;
-      return { counts, agents: items };
+      // Watched agents Herdr can't see because they run in the background of their pane.
+      const seen = new Set(agents.map((a: any) => a.pane_id));
+      const background = Object.entries(watched)
+        .filter(([id, w]) => !seen.has(id) && (w.last_status === "background" || w.last_status === "stopped"))
+        .map(([id, w]) => ({ pane_id: id, name: w.name, agent: w.kind ?? null, status: w.last_status, cwd: w.cwd, watch: watchView(w) }));
+      return background.length ? { counts, agents: items, background } : { counts, agents: items };
     },
 
     // Where the agent goes: a new worktree (worktree_branch + repo), a split of an
     // existing pane (split_from), a new tab (workspace_id), or else a new workspace.
     async spawn_agent(params) {
-      const kind = str(params, "kind");
-      if (!g.cfg.agentKinds.includes(kind)) throw new GatewayError("invalid_params", `kind must be one of ${g.cfg.agentKinds.join(", ")}`);
+      const { kind, alias, args } = g.agentKind(params);
       const name = str(params, "name", AGENT_NAME_RE);
-      const args = g.agentArgs(params);
       const watch = optBool(params, "watch", true);
       const prompt = optStr(params, "prompt");
       if (prompt && prompt.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `prompt exceeds ${g.cfg.maxPromptChars} characters`);
@@ -145,10 +149,24 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const paneId: string | undefined = placed?.pane?.pane_id;
       if (!paneId) throw new GatewayError("spawn_failed", "Herdr did not return a pane for the new agent");
 
-      // agent_not_ready here means the agent started but sits at a dialog (e.g. folder trust).
-      await g.herdr("agent.start", { pane_id: paneId, kind, name, args, timeout_ms: Math.min(30_000, left()) }, 45_000).catch((err) => {
-        if (!(err instanceof GatewayError && err.code === "agent_not_ready")) throw err;
-      });
+      // A new pane's shell can take a few seconds to reach its prompt, and Herdr won't
+      // start an agent before that. agent_not_ready means the agent started but sits at
+      // a dialog (e.g. folder trust).
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await g.herdr("agent.start", { pane_id: paneId, kind, name, args, timeout_ms: Math.min(30_000, left()) }, 45_000);
+          break;
+        } catch (err) {
+          if (!(err instanceof GatewayError)) throw err;
+          if (err.code === "agent_not_ready") break;
+          if (SHELL_STARTING.has(err.code) && attempt < 20 && left() > 40_000) {
+            await Bun.sleep(500);
+            continue;
+          }
+          throw new GatewayError(err.code, `${err.message}; the new pane is ${paneId}: start_agent there, or close it`);
+        }
+      }
+      g.mask.started(paneId, name, alias);
       const waited = await g.herdr(
         "agent.wait", { target: paneId, until: ["idle", "done", "blocked"], timeout_ms: Math.max(1000, Math.min(45_000, left())) }, 55_000,
       ).catch(() => null);

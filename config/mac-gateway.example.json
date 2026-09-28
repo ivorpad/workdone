@@ -8,6 +8,7 @@
     }
   },
   "agentKinds": ["claude", "codex", "cursor"],
+  "agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json",
   "allowExec": false,
   "allowFileRead": false,
   "allowFileWrite": false,

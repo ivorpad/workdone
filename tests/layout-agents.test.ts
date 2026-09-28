@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig, type HerdrCall } from "../gateway/config.ts";
+import { GatewayError, loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
 
 const SESSION = "0b0f7d3e-1111-4222-8333-944455556666";
@@ -150,6 +150,21 @@ describe("agents", () => {
     expect(sent.map(([m]) => m)).toEqual(["workspace.create", "agent.start", "agent.wait", "agent.get", "agent.prompt"]);
     expect(sent[0]![1]).toMatchObject({ cwd: "/srv/allowed/app", label: "worker", focus: false });
   });
+  test("spawn_agent waits for a new pane's shell before starting the agent", async () => {
+    const { gw, herdr } = gateway();
+    let refusals = 2;
+    const slow: typeof herdr = async (method, params) => {
+      if (method === "agent.start" && refusals-- > 0) throw new GatewayError("agent_pane_busy", "agent target pane is not an available shell");
+      return herdr(method, params);
+    };
+    const res: any = await new Gateway(gw.cfg, slow).handle("spawn_agent", { kind: "claude", name: "late", repo: "app" });
+    expect(res).toMatchObject({ status: "idle", name: "late" });
+    const never: typeof herdr = async (method, params) => {
+      if (method === "agent.start") throw new GatewayError("agent_kind_unknown", "no such kind");
+      return herdr(method, params);
+    };
+    await expect(new Gateway(gw.cfg, never).handle("spawn_agent", { kind: "claude", name: "x", repo: "app" })).rejects.toThrow(/the new pane is w9\d:p1/);
+  });
   test("agent args need exec", async () => {
     const { gw } = gateway();
     await expect(gw.handle("spawn_agent", { kind: "claude", name: "w", repo: "app", args: ["--model", "x"] })).rejects.toMatchObject({ code: "capability_disabled" });
@@ -289,5 +304,74 @@ describe("cursor and managed agents", () => {
     cursorTranscript(state, [cursorAsk("Reply with OK"), cursorSay("OK"), { type: "turn_ended", status: "success" }]);
     const res: any = await gw.handle("prompt_agent", { target: "w4:p1", text: "Reply with OK", wait: true });
     expect(res.reply).toMatchObject({ text: "OK", matches_prompt: true });
+  });
+});
+
+describe("agent aliases", () => {
+  const agentAliases = {
+    otter: { kind: "claude", args: ["--model", "opus", "--effort", "{effort}"], efforts: ["low", "high", "xhigh", "max"], effort: "high" },
+    fox: { kind: "cursor", args: ["--model", "{effort}"], efforts: { high: "grok-4.7-high", "high-fast": "grok-4.7-high-fast" } },
+  };
+
+  test("effort picks the args, and defaults to the alias's own", async () => {
+    const { gw, sent } = gateway({ agentAliases });
+    await gw.handle("spawn_agent", { kind: "fox", effort: "high-fast", name: "a", repo: "app" });
+    await gw.handle("spawn_agent", { kind: " Otter.", effort: "Max", name: "b", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "Fox", effort: "High Fast", name: "d", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "otter", effort: "extra high", name: "e", repo: "app" });
+    const starts = sent.filter(([m]) => m === "agent.start").map(([, p]) => p.args);
+    expect(starts).toEqual([
+      ["--model", "grok-4.7-high-fast"], ["--model", "opus", "--effort", "max"],
+      ["--model", "grok-4.7-high-fast"], ["--model", "opus", "--effort", "xhigh"],
+    ]);
+    await expect(gw.handle("spawn_agent", { kind: "fox", effort: "max", name: "c", repo: "app" })).rejects.toThrow("fox: effort must be one of high, high-fast");
+    const status: any = await gw.handle("bridge_status", {});
+    expect(status.agents).toEqual({ otter: { efforts: ["low", "high", "xhigh", "max"], effort: "high" }, fox: { efforts: ["high", "high-fast"], effort: "high" } });
+  });
+
+  test("a bad alias fails the config", () => {
+    const load = (a: unknown) => () => loadConfig({ allowedRoots: ["/srv/allowed"], agentAliases: { x: a } });
+    expect(load({ kind: "claude", args: ["--effort", "{effort}"] })).toThrow("exactly when efforts");
+    expect(load({ kind: "claude", args: ["--effort", "{effort}"], efforts: ["low"], effort: "max" })).toThrow("not in efforts");
+  });
+
+  test("an alias starts its kind with its args, and the result names the alias", async () => {
+    const { gw, sent } = gateway({ agentAliases });
+    const res: any = await gw.handle("spawn_agent", { kind: "otter", name: "w", repo: "app" });
+    expect(sent.find(([m]) => m === "agent.start")![1]).toMatchObject({ kind: "claude", args: ["--model", "opus", "--effort", "high"] });
+    const shown = JSON.stringify(gw.mask.result("spawn_agent", res));
+    expect(shown).toContain('"kind":"otter"');
+    expect(shown).not.toMatch(/claude/i);
+    // The alias sticks to the pane and the name, not just the kind.
+    const listed: any = gw.mask.result("list_agents", await gw.handle("list_agents", {}));
+    expect(listed.agents.find((a: any) => a.name === "w").agent).toBe("otter");
+    expect(listed.agents.find((a: any) => a.pane_id === "w1:p1").agent).toBe("otter");
+  });
+
+  test("screens, titles and errors lose vendor and model names but keep paths", async () => {
+    const { gw } = gateway({ agentAliases });
+    screen = TRUST_SCREEN + "\n claude-opus-5-thinking-high · Opus 5.5 · ~/.claude/x";
+    const res: any = gw.mask.result("read_agent", await gw.handle("read_agent", { target: "w4:p1", source: "visible" }), "w4:p1");
+    expect(res.agent.agent).toBe("fox");
+    expect(res.agent.cwd).toBe("/srv/allowed/app");
+    expect(res.text).toContain("live $ fox");
+    expect(res.text).toContain("/srv/allowed/app");
+    expect(res.text).not.toMatch(/cursor-agent|Cursor|grok|claude|Opus/);
+    expect(gw.mask.text("pane w1 runs Claude Code")).toBe("pane w1 runs agent");
+  });
+
+  test("bridge_status offers the aliases, and file ops are not touched", async () => {
+    const { gw } = gateway({ agentAliases });
+    const status: any = await gw.handle("bridge_status", {});
+    expect(status.agent_kinds).toEqual(["otter", "fox"]);
+    await expect(gw.handle("spawn_agent", { kind: "gemini", name: "x", repo: "app" })).rejects.toThrow("kind must be one of otter, fox");
+    const file = { path: "/srv/allowed/app/CLAUDE.md", text: "Claude reads this" };
+    expect(gw.mask.result("read_file", file)).toEqual(file);
+  });
+
+  test("without aliases nothing is masked", async () => {
+    const { gw } = gateway();
+    const res = { agent: { pane_id: "w1:p1", agent: "claude" }, text: "Claude Code" };
+    expect(gw.mask.result("read_agent", res)).toEqual(res);
   });
 });

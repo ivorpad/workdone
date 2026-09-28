@@ -13,7 +13,7 @@ import { basename, resolve } from "node:path";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { herdrSocket } from "./herdr-socket.ts";
-import { childEnv, runProcess } from "./process.ts";
+import { childEnv, childProcesses, runProcess } from "./process.ts";
 import { StateStore, seenState, type Watched } from "./state.ts";
 import { agentReply } from "./transcript.ts";
 import { textOf } from "./views.ts";
@@ -29,7 +29,7 @@ function log(event: string, extra: Record<string, unknown> = {}) {
   console.error(JSON.stringify({ ts: new Date().toISOString(), event, ...extra }));
 }
 
-export type WatchEvent = "finished" | "blocked" | "gone";
+export type WatchEvent = "finished" | "blocked" | "gone" | "background";
 
 export interface Decision {
   event?: WatchEvent;
@@ -60,8 +60,10 @@ export function decide(w: Watched, agent: any, now: number): Decision {
       if (!ACTIVE.has(w.last_status ?? "") && !moved && started && now - Date.parse(started) <= START_GRACE_MS) return {};
       return { event: "finished", drop: !w.managed, set: { ...seen, busy: false, prompted_at: undefined } };
     }
-    // done is a completion nobody has looked at yet, so a turn ran since the last poll.
+    // A turn ran between two polls. done is a completion nobody has looked at yet; idle
+    // with a new seq left idle and came back. done to idle alone is someone looking.
     if (status === "done" && (w.last_status !== "done" || moved)) return { event: "finished", set: seen };
+    if (status === "idle" && w.last_status === "idle" && moved) return { event: "finished", set: seen };
     return status !== w.last_status || moved || seen.session !== w.session ? { set: seen } : {};
   }
   if (status === "blocked") return w.last_status === "blocked" && !moved ? {} : { event: "blocked", set: seen };
@@ -72,8 +74,33 @@ export function decide(w: Watched, agent: any, now: number): Decision {
 }
 
 export interface Note {
-  type: "finished" | "question" | "blocked" | "gone";
+  type: "finished" | "question" | "blocked" | "gone" | "background" | "stopped";
   excerpt: string | null;
+  pid?: number;
+}
+
+// A watched agent Herdr stopped seeing may still be alive. A job that is stopped and
+// then continued from outside (SIGSTOP and SIGCONT from a memory guard, or ctrl+z then
+// bg) runs on in the background while its shell holds the terminal, and Herdr only
+// looks at the foreground. So look among the pane shell's own children.
+const AGENT_PROCESS: Record<string, RegExp> = { cursor: /cursor-agent/, claude: /\bclaude\b/, codex: /\bcodex\b/ };
+
+export async function backgroundAgent(cfg: GatewayConfig, herdr: HerdrCall, paneId: string, kind: string): Promise<{ pid: number; stopped: boolean } | null> {
+  const pane = (await herdr("pane.get", { pane_id: paneId }))?.pane;
+  if (!pane || !paneInScope(pane, cfg.allowedRoots)) return null;
+  const info = (await herdr("pane.process_info", { pane_id: paneId }))?.process_info;
+  if (typeof info?.shell_pid !== "number") return null;
+  const re = AGENT_PROCESS[kind] ?? new RegExp(`\\b${kind.replace(/[^a-z0-9_-]/gi, "")}\\b`);
+  const jobs = (await childProcesses(cfg, info.shell_pid)).filter((j) => re.test(j.args));
+  const job = jobs.find((j) => !j.stat.includes("T")) ?? jobs[0];
+  return job ? { pid: job.pid, stopped: job.stat.includes("T") } : null;
+}
+
+// Reported once per state, and the entry stays: the agent is still there.
+export function decideBackground(w: Watched, bg: { pid: number; stopped: boolean }, now: number): Decision {
+  if (!w.managed && now - Date.parse(w.since) > MAX_AGE_MS) return { drop: true };
+  const status = bg.stopped ? "stopped" : "background";
+  return w.last_status === status ? {} : { event: "background", set: { last_status: status } };
 }
 
 function clip(s: string, max: number): string {
@@ -91,6 +118,8 @@ export function message(w: Watched, agent: any, paneId: string, note: Note): str
     question: `${who} asks${where}`,
     blocked: `${who}${where} is waiting for an answer`,
     gone: `${who}${where} is gone (pane closed or agent exited)`,
+    background: `${who}${where} is running in the background of its pane (pid ${note.pid}), out of Herdr's sight and unable to take input; fg in that shell brings it back`,
+    stopped: `${who}${where} is stopped in the background of its pane (pid ${note.pid}); fg in that shell resumes it`,
   }[note.type];
   return clip((note.excerpt ? `${head}: ${note.excerpt}` : head).replace(/\s+/g, " "), 450);
 }
@@ -117,7 +146,7 @@ async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Prom
 // An excerpt is a bonus: when it cannot be read, the event is still reported.
 export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: WatchEvent, agent: any): Promise<Note> {
   try {
-    if (event === "gone") return { type: "gone", excerpt: null };
+    if (event === "gone" || event === "background") return { type: "gone", excerpt: null };
     if (event === "blocked") return { type: "blocked", excerpt: dialogExcerpt(await read(herdr, agent.pane_id, "detection")) || null };
     const text = await finalText(cfg, herdr, agent);
     if (!text?.trim()) return { type: "finished", excerpt: null };
@@ -137,7 +166,12 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   const agents: any[] = (await herdr("agent.list", {})).agents ?? [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
-  const decided = Object.entries(watched).map(([paneId, w]) => ({ paneId, w, agent: byPane.get(paneId), d: decide(w, byPane.get(paneId), now) }));
+  const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; bg: { pid: number; stopped: boolean } | null }> = [];
+  for (const [paneId, w] of Object.entries(watched)) {
+    const agent = byPane.get(paneId);
+    const bg = !agent && w.kind ? await backgroundAgent(cfg, herdr, paneId, w.kind).catch(() => null) : null;
+    decided.push({ paneId, w, agent, bg, d: bg ? decideBackground(w, bg, now) : decide(w, agent, now) });
+  }
   // Record decisions first, and only for entries nobody rewrote since the read above:
   // a prompt or a watch that landed meanwhile knows more than this pass.
   const remaining = store.updateWatched((fresh) => {
@@ -152,9 +186,9 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   // Excerpts can take a couple of seconds (a transcript trails the status), so they come after.
   const messages: string[] = [];
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
-  for (const { paneId, w, agent, d } of decided) {
+  for (const { paneId, w, agent, d, bg } of decided) {
     if (!d.event) continue;
-    const note = await describe(cfg, herdr, d.event, agent);
+    const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
     messages.push(message(w, agent, paneId, note));
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }

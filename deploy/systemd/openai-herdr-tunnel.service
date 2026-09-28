@@ -12,6 +12,10 @@ Group=herdr-mcp
 EnvironmentFile=/etc/herdr-mcp/tunnel.env
 Environment=TUNNEL_CLIENT_PROFILE_DIR=/etc/herdr-mcp/tunnel-client
 Environment=HOME=/var/lib/herdr-mcp
+# The client probes the MCP server once when it starts and leaves the channel disabled
+# if that fails. herdr-mcp takes a moment to listen after it starts, and restarting it
+# restarts this unit too, so wait until it answers.
+ExecStartPre=/bin/sh -c 'i=0; until /usr/bin/curl -fsS -o /dev/null -m 1 http://127.0.0.1:8787/healthz; do i=$$((i+1)); [ "$$i" -ge 30 ] && exit 1; sleep 1; done'
 ExecStart=/opt/tunnel-client/tunnel-client run --profile herdr-mcp --log.level=info --log.format=json
 Restart=always
 RestartSec=5

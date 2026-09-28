@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "WorkDone",
     "shortDescription": "Check on and prompt your Herdr agents, and work with files and commands on your Mac and OVH.",
-    "longDescription": "WorkDone shows what the coding agents in Herdr (Claude, Codex, Cursor) are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Your phone gets a notification when a watched agent finishes, asks you something or stops at a dialog. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
+    "longDescription": "WorkDone shows what the coding agents in Herdr are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Your phone gets a notification when a watched agent finishes, asks you something or stops at a dialog. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
     "developerName": "Ivor",
     "category": "Coding",
     "capabilities": [
@@ -27,8 +27,8 @@
     "defaultPrompt": [
       "What are my agents doing right now, on both machines?",
       "Ask the idle relay agent to summarise its last change.",
-      "Start a Claude agent in a new worktree of relay and have it fix the lint errors.",
-      "Start a Cursor Grok worker in relay on the automations task and let me know when it needs me."
+      "Start an agent in a new worktree of relay and have it fix the lint errors.",
+      "Start an otter worker in relay on the automations task and let me know when it needs me."
     ],
     "screenshots": []
   }

@@ -106,11 +106,11 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
     const result: any = await gateway.handle(op, params);
     // The notifier polls every few seconds; only polls that found something are worth a line.
     if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ms: Date.now() - started });
-    respond({ id, ok: true, result });
+    respond({ id, ok: true, result: gateway.mask.result(op, result, params.target ?? params.pane_id) });
   } catch (err) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));
     audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ms: Date.now() - started });
-    respond({ id, ok: false, error: { code: e.code, message: e.message } });
+    respond({ id, ok: false, error: { code: e.code, message: gateway.mask.text(e.message) } });
   }
 }
 

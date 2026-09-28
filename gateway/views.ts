@@ -33,7 +33,14 @@ export function paneView(p: any) {
 // is reported, "managed" for every turn until it exits. last_event is the last report.
 export function watchView(w: Watched | undefined) {
   if (!w) return null;
-  return { mode: w.managed ? "managed" : "turn", since: w.since, last_event: w.last_event ?? null };
+  return { mode: w.managed ? "managed" : "turn", since: w.since, last_event: w.last_event ?? null, ...(w.last_status === "background" || w.last_status === "stopped" ? { state: w.last_status } : {}) };
+}
+
+// A watched pane keeps its watch in pane listings: an agent that went to the background
+// shows up there as a pane with agent null.
+export function withWatch<T extends { pane_id: string }>(view: T, watched: Record<string, Watched>) {
+  const w = watched[view.pane_id];
+  return w ? { ...view, watch: watchView(w) } : view;
 }
 
 export function watchInfo(a: any): WatchInfo {

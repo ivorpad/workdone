@@ -10,5 +10,5 @@
     "types": ["bun"],
     "lib": ["ESNext"]
   },
-  "include": ["gateway", "mcp/src", "mcp/test", "tests"]
+  "include": ["gateway", "mcp/src", "mcp/test", "tests", "scripts"]
 }

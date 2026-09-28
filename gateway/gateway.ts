@@ -12,19 +12,27 @@ import { agentOps, lifecycle } from "./agent-ops.ts";
 import { openDialog } from "./attention.ts";
 import { hostOps } from "./host-ops.ts";
 import { layoutOps } from "./layout-ops.ts";
-import { optBool, optEnum, optInt, str, type Op, type Params } from "./params.ts";
+import { Mask, aliasArgs } from "./mask.ts";
+import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { StateStore } from "./state.ts";
 import { agentReply } from "./transcript.ts";
-import { agentView, paneView, textOf, watchInfo } from "./views.ts";
+import { agentView, paneView, textOf, watchInfo, withWatch } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done", "blocked"]);
 
+const spoken = (s: string) => s.trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9.-]/g, "").replace(/^[-.]+|[-.]+$/g, "");
+const EFFORT_WORDS: Record<string, string> = {
+  "extra-high": "xhigh", "x-high": "xhigh", "extrahigh": "xhigh", "maximum": "max", "med": "medium", "extra-high-fast": "xhigh-fast",
+};
+
 export class Gateway {
   readonly state: StateStore;
+  readonly mask: Mask;
   private extra: Record<string, Op>;
 
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
+    this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
     this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this) };
   }
 
@@ -45,7 +53,7 @@ export class Gateway {
 
   async shellPane(paneId: string) {
     const pane = await this.scopedPane(paneId);
-    if (pane.agent) throw new GatewayError("pane_busy", `pane ${paneId} is running ${pane.agent}; use the agent tools instead`);
+    if (pane.agent) throw new GatewayError("pane_busy", `pane ${paneId} has an agent running; use the agent tools instead`);
     return pane;
   }
 
@@ -86,7 +94,12 @@ export class Gateway {
           herdr_protocol: pong.protocol,
           allowed_roots: cfg.allowedRoots,
           repos: Object.keys(cfg.repos),
-          agent_kinds: cfg.agentKinds,
+          agent_kinds: this.mask.on ? Object.keys(cfg.agentAliases) : cfg.agentKinds,
+          ...(this.mask.on && {
+            agents: Object.fromEntries(Object.entries(cfg.agentAliases).map(([name, a]) => [
+              name, { efforts: Object.keys(a.efforts), effort: a.effort, ...(a.note && { note: a.note }) },
+            ])),
+          }),
           capabilities: {
             exec: cfg.allowExec,
             file_read: cfg.allowFileRead,
@@ -118,7 +131,7 @@ export class Gateway {
           return null;
         });
         if (source === "reply") {
-          if (!reply) throw new GatewayError("reply_unavailable", "no transcript for this agent (reply works for Claude and Cursor agents); read with source recent_unwrapped");
+          if (!reply) throw new GatewayError("reply_unavailable", "no transcript for this agent; read with source recent_unwrapped");
           return { agent: { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply })) }, reply };
         }
         const res = await this.herdr("agent.read", {
@@ -189,7 +202,8 @@ export class Gateway {
 
       case "list_panes": {
         const res = await this.herdr("pane.list", {});
-        return { panes: (res.panes ?? []).filter((p: any) => paneInScope(p, cfg.allowedRoots)).map(paneView) };
+        const watched = this.state.watched();
+        return { panes: (res.panes ?? []).filter((p: any) => paneInScope(p, cfg.allowedRoots)).map((p: any) => withWatch(paneView(p), watched)) };
       }
 
       case "read_pane": {
@@ -201,7 +215,7 @@ export class Gateway {
           format: "text",
           strip_ansi: true,
         });
-        return { pane: paneView(pane), text: res.text ?? res.read?.text ?? res };
+        return { pane: withWatch(paneView(pane), this.state.watched()), text: res.text ?? res.read?.text ?? res };
       }
 
       case "split_pane": {
@@ -219,10 +233,8 @@ export class Gateway {
 
       case "start_agent": {
         const pane = await this.shellPane(str(params, "pane_id", TARGET_RE));
-        const kind = str(params, "kind");
-        if (!cfg.agentKinds.includes(kind)) throw new GatewayError("invalid_params", `kind must be one of ${cfg.agentKinds.join(", ")}`);
+        const { kind, alias, args } = this.agentKind(params);
         const name = str(params, "name", AGENT_NAME_RE);
-        const args = this.agentArgs(params);
         // A shell pane has no agent, so anything still watched there is left over from one that exited.
         this.state.unwatch(pane.pane_id);
         const manage = (agent: any) => {
@@ -230,11 +242,15 @@ export class Gateway {
         };
         try {
           const res = await this.herdr("agent.start", { pane_id: pane.pane_id, kind, name, args, timeout_ms: 30_000 }, 45_000);
+          this.mask.started(pane.pane_id, name, alias);
           manage(res?.agent ?? { agent_status: "unknown" });
           return res;
         } catch (err) {
           // agent_not_ready: it started but sits at a dialog, e.g. folder trust.
-          if (err instanceof GatewayError && err.code === "agent_not_ready") manage({ agent_status: "blocked" });
+          if (err instanceof GatewayError && err.code === "agent_not_ready") {
+            this.mask.started(pane.pane_id, name, alias);
+            manage({ agent_status: "blocked" });
+          }
           throw err;
         }
       }
@@ -296,6 +312,27 @@ export class Gateway {
       default:
         throw new GatewayError("unknown_operation", `unknown operation: ${String(op).slice(0, 64)}`);
     }
+  }
+
+  // The Herdr kind and args for a new agent. With aliases configured, kind names an
+  // alias and its args, at the effort asked for, come first; a plain Herdr kind still works.
+  agentKind(params: Params): { kind: string; alias: string; args: string[] } {
+    // Names often arrive through dictation: "Tiger.", "Extra High".
+    const want = spoken(str(params, "kind"));
+    const e = optStr(params, "effort");
+    const effort = e === undefined ? undefined : (EFFORT_WORDS[spoken(e)] ?? spoken(e));
+    const extra = this.agentArgs(params);
+    const a = Object.hasOwn(this.cfg.agentAliases, want) ? this.cfg.agentAliases[want]! : null;
+    if (a) {
+      try {
+        return { kind: a.kind, alias: want, args: [...aliasArgs(a, effort), ...extra] };
+      } catch (err) {
+        throw new GatewayError("invalid_params", `${want}: ${(err as Error).message}`);
+      }
+    }
+    if (this.cfg.agentKinds.includes(want)) return { kind: want, alias: this.mask.aliasOf(null, want), args: extra };
+    const offered = this.mask.on ? Object.keys(this.cfg.agentAliases) : this.cfg.agentKinds;
+    throw new GatewayError("invalid_params", `kind must be one of ${offered.join(", ")}`);
   }
 
   // Extra command-line arguments for a new agent. They can do anything a shell can

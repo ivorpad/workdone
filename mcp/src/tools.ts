@@ -19,7 +19,8 @@ const source = z
   .describe("Which snapshot to read. recent_unwrapped (default) suits transcripts and logs.");
 const timeoutMs = z.number().int().min(1000).max(110_000).optional().describe("Wait budget in ms, at most 110000.");
 const layoutKind = z.enum(["pane", "tab", "workspace"]);
-const agentKind = z.string().describe("Agent kind from bridge_status agent_kinds: claude, codex or cursor (cursor-agent; pass --model and other flags in args).");
+const agentKind = z.string().describe("Agent kind, one of bridge_status agent_kinds for that machine.");
+const effort = z.string().optional().describe("Reasoning effort, one of bridge_status agents[kind].efforts (default: agents[kind].effort).");
 const watch = z.boolean().optional().describe("Notify the owner's phone whenever it finishes a turn, asks something, stops at a dialog or exits (default true).");
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -66,14 +67,14 @@ export const TOOLS: Record<string, ToolDef> = {
   read_agent: {
     title: "Read agent output",
     description:
-      "Read an agent. source=reply returns its last complete answer as clean text from its transcript (Claude and Cursor agents), plus the prompt it is working on now. The other sources return terminal text; use recent_unwrapped or detection to see a dialog.",
+      "Read an agent. source=reply returns its last complete answer as clean text from its transcript (agents that keep one), plus the prompt it is working on now. The other sources return terminal text; use recent_unwrapped or detection to see a dialog.",
     input: { target, lines, source: z.enum(["reply", "recent_unwrapped", "recent", "visible", "detection"]).optional().describe("reply, or a terminal snapshot (default recent_unwrapped).") },
     annotations: READ,
   },
   prompt_agent: {
     title: "Prompt agent",
     description:
-      "Submit a prompt to an idle agent. With wait=true, blocks until the agent settles (idle, done or blocked) or the timeout passes, and returns its reply for Claude and Cursor agents (check reply.matches_prompt). If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if the agent shows an approval dialog.",
+      "Submit a prompt to an idle agent. With wait=true, blocks until the agent settles (idle, done or blocked) or the timeout passes, and returns its reply for agents that keep a transcript (check reply.matches_prompt). If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if the agent shows an approval dialog.",
     input: {
       target,
       text: z.string().min(1).describe("The prompt text."),
@@ -95,7 +96,7 @@ export const TOOLS: Record<string, ToolDef> = {
   watch_agent: {
     title: "Watch agent",
     description:
-      "Notify the owner's phone every time this agent finishes a turn, asks a question, stops at an approval dialog or exits, with a short excerpt, until it exits or you call again with stop=true. Use it for agents started outside WorkDone, e.g. cursor-agent run in a pane; start_agent and spawn_agent already watch the agents they start.",
+      "Notify the owner's phone every time this agent finishes a turn, asks a question, stops at an approval dialog or exits, with a short excerpt, until it exits or you call again with stop=true. Use it for agents started outside WorkDone, e.g. typed into a pane; start_agent and spawn_agent already watch the agents they start.",
     input: { target, stop: z.boolean().optional().describe("Stop notifying about this agent.") },
     annotations: WRITE,
   },
@@ -112,6 +113,7 @@ export const TOOLS: Record<string, ToolDef> = {
       "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. The owner is notified whenever it finishes or needs them (watch). If it comes back blocked, it is usually the folder trust dialog: read_agent and ask the user.",
     input: {
       kind: agentKind,
+      effort,
       name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe("Unique lowercase name for the agent."),
       repo: repo.optional(),
       cwd,
@@ -132,6 +134,7 @@ export const TOOLS: Record<string, ToolDef> = {
     input: {
       pane_id: paneId,
       kind: agentKind,
+      effort,
       name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe("Unique lowercase name for the agent."),
       args: z.array(z.string()).max(20).optional().describe("Extra command-line arguments for the agent (needs exec)."),
       watch,
@@ -350,7 +353,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
-        "For agent work prefer prompt_agent with wait=true, which returns the reply, and spawn_agent for new agents, Cursor included (kind cursor). " +
+        "For agent work prefer prompt_agent with wait=true, which returns the reply, and spawn_agent for new agents (kind from bridge_status agent_kinds). " +
         "Agents started another way get phone notifications after watch_agent. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +
         "The Mac is often asleep: machine_offline means that machine did not answer, so carry on with the others and pass machine on every action.",
