@@ -46,6 +46,7 @@ const RETIRED = new Set([
 // Default efforts the owner chose, by alias name, over what the CLI lists as its default.
 const DEFAULT_EFFORT: Record<string, string> = {
   panda: "xhigh-fast",
+  falcon: "max",
 };
 
 // Cursor models that get the first names in the pool, the ones said most often. The rest
@@ -71,7 +72,7 @@ function run(cmd: string[]): string | null {
 const CLAUDE_CODE: Array<[name: string, model: string]> = [
   ["eagle", "claude-fable-5-1"],
   ["robin", "claude-opus-5-5"],
-  ["falcon", "claude-sonnet-5"],
+  ["falcon", "claude-sonnet-5-5"],
 ];
 
 function claudeModels(): Array<Alias & { name: string }> {

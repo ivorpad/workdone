@@ -58,7 +58,7 @@ The same 37 names on the Mac, OVH and syno. Birds run in Claude Code, trees and 
 |---|---|---|
 | eagle | Claude Fable 5.1 (`claude-fable-5-1`) | high |
 | robin | Claude Opus 5.5 (`claude-opus-5-5`) | high |
-| falcon | Claude Sonnet 5 (`claude-sonnet-5`) | high |
+| falcon | Claude Sonnet 5.5 (`claude-sonnet-5-5`) | max |
 
 **Codex.** Efforts: low, medium, high, xhigh, max, and ultra where marked.
 
