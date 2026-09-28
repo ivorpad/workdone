@@ -47,6 +47,26 @@ Each gateway rereads `gateway.json` on every call, so a capability turned off ta
 
 With `allowExec` on, the allowed roots stop being a boundary for anything but the file tools: a command can `cd` anywhere the user can.
 
+## The browser on OVH and its viewer
+
+`browse` drives one persistent Chromium on OVH: the Portainer stack `agent-computer` (id 32), whose files live in `~/src/tries/2026-08-19-agent-computer/deploy/ovh/` (`stack.yml`, and a README with the build and update steps). Its profile is the Docker volume `agent-computer-ovh-config`, so logins survive restarts and redeploys; removing that volume signs every site out.
+
+What reaches it, since 28-09:
+
+| Who | Where | Check |
+|---|---|---|
+| You, from a device on your tailnet | https://ovh-vps.your-tailnet.ts.net | being on the tailnet; no password |
+| WorkDone (`browse`, the MCP server, `exec`) | CDP `127.0.0.1:9223`, control `127.0.0.1:9224` on OVH | bearer from `ovh:~/.config/agent-computer/ovh.env` |
+| jev-browser on OVH | relay `127.0.0.1:9230`, which adds the bearer | local only |
+
+- **Tailnet only.** The stack publishes the viewer on OVH's loopback (`127.0.0.1:3000`), and `tailscale serve` puts it on the tailnet with Tailscale's HTTPS certificate: `ssh ovh 'sudo tailscale serve --bg --https=443 http://127.0.0.1:3000'`, checked with `tailscale serve status`, removed with `tailscale serve --https=443 off`. Never use `tailscale funnel` for it: that makes it public.
+- **No Cloudflare.** It used to be `headless.example.dev` through cloudflared and Cloudflare Access. That hostname, its tunnel route and its Access app are gone; the name now falls through to the `*.example.dev` wildcard, which serves a Cloudflare error.
+- **No password.** The viewer had Basic auth (user `agent`) behind Access. With the tailnet as the gate it was only a second prompt, so the stack no longer sets `PASSWORD`. The old password is still in `ovh.env`, unused.
+- **Off the `edge` network.** The browser container sits on the stack's own network, so no other container on OVH (cloudflared, the public stacks) can reach the viewer or CDP. Everything above goes through the loopback ports.
+- **Clipboard.** On (`SELKIES_CLIPBOARD_ENABLED: "true"`), so you can paste into it, e.g. a password from your manager. Allow the clipboard prompt the first time you paste. If paste still does nothing, the viewer page kept an old setting in your browser's local storage (`…/_clipboard_enabled` = `false`, saved while the server had it off): clear the site data for `ovh-vps.your-tailnet.ts.net`, or remove those `_clipboard` keys, and reload. The viewer's sidebar has a clipboard box as a fallback; the remote browser runs on Linux, so paste inside it with Ctrl+V.
+
+Changing the stack: edit `stack.yml` in the agent-computer repo and update stack 32 through Portainer's API with the stack's existing `Env` array, as its deploy README shows; the on-box portainer script sends an empty env and drops the secrets. Each update recreates the container: reload the viewer afterwards.
+
 ## Signed-in sites for `browse` on OVH
 
 `browse` runs in the persistent Chromium on OVH, the one you watch at https://ovh-vps.your-tailnet.ts.net (tailnet only). It only knows the logins its own profile holds, and it keeps them across restarts and while the Mac sleeps. There are two ways to give it one.
@@ -75,7 +95,7 @@ scripts/export-browser-sessions.py --run --only linkedin.com,github.com
 
 Google and YouTube do not survive a copy: Chrome ties Google's session cookies to the Mac, so on OVH they land signed out. Sign in to Google on OVH itself.
 
-**Sign in on OVH itself.** Open https://ovh-vps.your-tailnet.ts.net from a device on your tailnet (no password: being on the tailnet is the access check) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. LinkedIn does: on 28-09 an imported LinkedIn session verified as signed in and was revoked by LinkedIn about a minute later, and the feed redirected to `/uas/login`. Once that happens the copied cookies are dead, so do not import them again. A login made on OVH belongs to OVH's IP and lasts.
+**Sign in on OVH itself.** Open https://ovh-vps.your-tailnet.ts.net from a device on your tailnet (no password: being on the tailnet is the access check) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. On 28-09: an imported LinkedIn session verified as signed in and LinkedIn revoked it about a minute later (the feed redirected to `/uas/login`); a second export, after the Mac signed in again, held. An imported GitHub session verified, then was signed out about 10 minutes later. Google never works as a copy. Once a copy is revoked its cookies are dead, so do not import the same ones again. A login made on OVH belongs to OVH's IP and lasts.
 
 **See what the browser has open**, without the viewer. CDP is on OVH's loopback and wants the bearer token from `ovh.env`:
 
