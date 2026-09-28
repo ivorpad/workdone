@@ -13,8 +13,8 @@ case "$goal" in
   fail) echo "jev-browser run: no Chrome on 9223" >&2; exit 2 ;;
 esac
 echo "step 1 CLICK [3]" >&2
-status=DONE; code=0
-[ "$goal" = block ] && status=BLOCKED && code=1
+status=done; code=0
+[ "$goal" = block ] && status=blocked && code=1
 for a in "$@"; do case "$prev" in --trace) echo '{"runs":[]}' > "$a" ;; esac; prev=$a; done
 printf '{"ok": %s, "steps": 4, "elapsed_ms": 900, "runs": [{"name": "goal 1", "status": "%s", "url": "%s/orders", "title": "Orders", "elapsed_ms": 900, "steps": 4}]}\\n' "$([ $code = 0 ] && echo true || echo false)" "$status" "$url"
 exit $code
@@ -63,6 +63,17 @@ test("blocked and failed runs say so", async () => {
     `browser run ${b.id} blocked at goal 1 in 4 steps: https://a.example/orders`,
     `browser run ${f.id} failed to start: jev-browser run: no Chrome on 9223`,
   ].sort());
+});
+
+test("the message names the first goal that did not finish", async () => {
+  const gw = setup();
+  const r: any = await gw.handle("browse", { url: "https://a.example", goals: ["block"] });
+  await settled(gw, r.id);
+  const summary = join((gw.cfg as any).stateDir, "jobs", r.id, "summary.json");
+  const s = JSON.parse(readFileSync(summary, "utf8"));
+  s.runs = [{ ...s.runs[0], status: "done" }, { ...s.runs[0], status: "blocked" }];
+  writeFileSync(summary, JSON.stringify(s));
+  expect(((await gw.handle("watch_poll", {})) as any).messages[0]).toContain("blocked at goal 2");
 });
 
 test("a running run keeps the notifier polling until it is stopped", async () => {

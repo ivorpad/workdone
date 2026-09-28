@@ -112,7 +112,7 @@ function message(v: Record<string, any>): string {
   const steps = typeof v.summary?.steps === "number" ? ` in ${v.summary.steps} steps` : "";
   const head = {
     done: `browser run ${name} done${steps}${where}`,
-    blocked: `browser run ${name} blocked at goal ${runs.findIndex((r) => r.status !== "DONE") + 1 || runs.length}${steps}${where}`,
+    blocked: `browser run ${name} blocked at goal ${runs.findIndex((r) => String(r.status).toLowerCase() !== "done") + 1 || runs.length}${steps}${where}`,
     failed: `browser run ${name} failed to start`,
     stopped: `browser run ${name} stopped`,
     lost: `browser run ${name} ended without a result`,
