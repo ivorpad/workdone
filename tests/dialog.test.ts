@@ -106,6 +106,20 @@ describe("answer_agent and steer_agent", () => {
     expect(claude.pressed).toEqual(["1"]);
   });
 
+  test("an answered menu that is still being acted on is waited out", async () => {
+    const trusting = screen("cursor-start").replace("[q] Quit", "[q] Quit\n  ⏳ Trusting workspace...");
+    let reads = 0;
+    const t = setup("cursor", "idle", screen("cursor-start"));
+    const herdr = (t.gw as any).herdr;
+    (t.gw as any).herdr = async (method: string, params: any) => {
+      if (method === "agent.read" && t.pressed.length) return { text: ++reads < 3 ? trusting : screen("cursor-idle") };
+      return herdr(method, params);
+    };
+    const res: any = await t.gw.handle("answer_agent", { target: "w1:p1", option: 1 });
+    expect(res.dialog).toBeNull();
+    expect(reads).toBe(3);
+  });
+
   test("text goes to the option that opens a field, typed apart from its enter", async () => {
     const { gw, pressed } = setup("claude", "blocked", screen("claude-ask"));
     await gw.handle("answer_agent", { target: "w1:p1", text: "Teal\nplease" });

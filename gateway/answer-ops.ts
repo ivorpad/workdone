@@ -22,6 +22,9 @@ export const timing = { key: 250, text: 450, settle: 1500 };
 //   cursor  enter queues it, a second enter ("enter steer") sends it now
 const STEER_ENTERS: Record<string, number> = { cursor: 2 };
 
+// A menu that was answered and is still being acted on.
+const BUSY_RE = /⏳|Trusting workspace\.\.\./;
+
 export function dialogView(d: Dialog) {
   return { text: d.text, options: d.options, multi: d.multi, free_text: d.free_text };
 }
@@ -53,7 +56,14 @@ export function answerOps(g: Gateway): Record<string, Op> {
 
   async function after(paneId: string) {
     await Bun.sleep(timing.settle);
-    const [agent, now] = await Promise.all([g.scopedAgent(paneId), screen(paneId)]);
+    let now = await screen(paneId);
+    // Cursor draws "⏳ Trusting workspace..." under the menu it just answered and keeps
+    // the menu up for several seconds on a slow machine. Wait that out, up to 15 s.
+    for (let i = 0; i < 15 && BUSY_RE.test(now) && parseDialog(now); i++) {
+      await Bun.sleep(timing.settle ? 1000 : 0);
+      now = await screen(paneId);
+    }
+    const agent = await g.scopedAgent(paneId);
     const next = parseDialog(now);
     return { status: agent.agent_status, dialog: next ? dialogView(next) : null, ...(next ? {} : { screen_tail: lastLines(now, 12) }) };
   }
