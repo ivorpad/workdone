@@ -146,20 +146,23 @@ export function loadConfig(raw: unknown): GatewayConfig {
   }
   // Inline, or the path of a JSON file such as the one scripts/agent-aliases.ts writes.
   const aliasSource = typeof c.agentAliases === "string" ? JSON.parse(readFileSync(absPath(c.agentAliases, "agentAliases"), "utf8")) : c.agentAliases;
-  const agentAliases: Record<string, AgentAlias> = parseAliases(aliasSource, AGENT_NAME_RE);
+  const allAliases: Record<string, AgentAlias> = parseAliases(aliasSource, AGENT_NAME_RE);
   if (c.redact !== undefined && (!Array.isArray(c.redact) || !c.redact.every((w: unknown) => typeof w === "string" && w))) {
     throw new Error("redact must be an array of non-empty strings");
   }
-  const envShell = process.env.SHELL?.startsWith("/") ? process.env.SHELL : "/bin/sh";
   const extraPath = pathList(c.extraPath, "extraPath");
+  // Herdr starts kind "cursor" as cursor-agent. Without a list in the config, offer it where it is installed.
+  const agentKinds: string[] = Array.isArray(c.agentKinds)
+    ? c.agentKinds.filter((k: unknown) => typeof k === "string")
+    : ["claude", "codex", ...(findExecutable("cursor-agent", extraPath) ? ["cursor"] : [])];
+  // One alias file serves every machine; each offers only the aliases of kinds it has.
+  const agentAliases = Object.fromEntries(Object.entries(allAliases).filter(([, a]) => agentKinds.includes(a.kind)));
+  const envShell = process.env.SHELL?.startsWith("/") ? process.env.SHELL : "/bin/sh";
   return {
     herdrSocketPath: expandHome(c.herdrSocketPath ?? "~/.config/herdr/herdr.sock"),
     allowedRoots,
     repos,
-    // Herdr starts kind "cursor" as cursor-agent. Without a list in the config, offer it where it is installed.
-    agentKinds: Array.isArray(c.agentKinds)
-      ? c.agentKinds.filter((k: unknown) => typeof k === "string")
-      : ["claude", "codex", ...(findExecutable("cursor-agent", extraPath) ? ["cursor"] : [])],
+    agentKinds,
     agentAliases,
     redact: c.redact ?? DEFAULT_REDACT,
     allowRawPaneRun: c.allowRawPaneRun === true,

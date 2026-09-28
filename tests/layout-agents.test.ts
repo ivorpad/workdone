@@ -329,6 +329,11 @@ describe("agent aliases", () => {
     expect(status.agents).toEqual({ otter: { efforts: ["low", "high", "xhigh", "max"], effort: "high" }, fox: { efforts: ["high", "high-fast"], effort: "high" } });
   });
 
+  test("a machine offers only the aliases of kinds it has", () => {
+    const cfg = loadConfig({ allowedRoots: ["/srv/allowed"], agentKinds: ["claude"], agentAliases });
+    expect(Object.keys(cfg.agentAliases)).toEqual(["otter"]);
+  });
+
   test("a bad alias fails the config", () => {
     const load = (a: unknown) => () => loadConfig({ allowedRoots: ["/srv/allowed"], agentAliases: { x: a } });
     expect(load({ kind: "claude", args: ["--effort", "{effort}"] })).toThrow("exactly when efforts");
