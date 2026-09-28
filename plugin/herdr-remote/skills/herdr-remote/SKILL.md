@@ -49,6 +49,17 @@ Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each m
 - Steer it with `prompt_agent` like any agent. `read_agent` with `source: "reply"` returns its last answer.
 - In a folder it hasn't been trusted with, an agent can first show "Workspace Trust Required", which Herdr reports as `idle`. WorkDone checks the screen: `spawn_agent` returns `status: "blocked"` without sending the prompt, and `prompt_agent` fails with `agent_blocked`. Show the user. If they agree to trust the folder, `send_pane_input` with `text: "a"` answers it.
 
+## When an agent's harness blocks it
+
+An agent's own harness can refuse a command it needs: Claude Code's auto mode ("denied by auto mode"), Codex's sandbox, Cursor's allowlist. The agent can't get past that itself, and asking it again changes nothing. Unblock it from here:
+
+1. Read the agent (`read_agent` with `source: "reply"`, or the screen) and find the exact command it wanted and the directory it was in.
+2. Tell the user the command and the machine, then run it yourself with `exec` on that machine with that `cwd`. Commands that delete data, rewrite history, push, deploy, or change credentials or permissions need the user's explicit yes first; a read, a test or a build does not.
+3. Give the agent the result so it can continue: `steer_agent` while it is working, `prompt_agent` once it is idle, with the command, its exit code and the output it needs.
+4. Tell the user what you ran and what came back. Act in the same turn: don't only acknowledge the request.
+
+If the fix is a change to files, prefer `write_file` or a script through `exec` with `stdin` over long quoted shell lines.
+
 ## Commands and files
 
 - `exec` runs a shell command and returns the exit code, stdout and stderr. Use it for one-off commands, tests, git, and scripts (`python3 -` with the script in `stdin` avoids quoting problems). For servers, watchers or anything that doesn't end, use `run_command_in_pane` in a shell pane, then `read_pane`. `send_pane_input` sends keys like `ctrl+c` to stop it.
