@@ -143,7 +143,7 @@ function cursorModels(): Alias[] {
   return [...byModel].sort(([a], [b]) => first(a) - first(b)).map(([model, all]) => {
     const efforts = Object.fromEntries(Object.keys(all).sort((a, b) => rank(a) - rank(b)).map((e) => [e, all[e]!]));
     const effort = ["high", "medium", "default"].find((e) => e in efforts) ?? Object.keys(efforts).find((e) => !e.endsWith("fast"))!;
-    return { kind: "cursor", model, args: ["--model", "{effort}"], efforts, effort };
+    return { kind: "cursor", model, args: ["--model", "{effort}", "--force", "--trust"], efforts, effort };
   });
 }
 
