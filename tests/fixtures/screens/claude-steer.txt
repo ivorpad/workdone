@@ -1,0 +1,20 @@
+⏺ Two
+
+✻ Cooked for 3s · done 10:17 AM
+
+❯ Run sleep 20 with Bash, then sleep 20 again, then say finished.
+
+  Running 1 shell command…
+  ⎿  $ sleep 20
+
+❯ Actually skip the second sleep and reply STEERED.
+  ctrl+enter to send now
+
+✽ Moseying… (8s · ↓ 188 tokens)
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Press up to edit queued messages
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  \~/src/tries/2026-09-28-dialog-capture | Opus 5.5 (1M context)
+  $0.20 | 4% ctx | 4m | +0 -0
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents

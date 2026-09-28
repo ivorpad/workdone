@@ -1,0 +1,7 @@
+
+  GPT-5.5 retires on October 14, 2026. Switch to GPT-5.6 Sol to continue working in Codex.
+
+› 1. Try new model
+  2. Use existing model
+
+  enter/esc confirm · ctrl+c quit

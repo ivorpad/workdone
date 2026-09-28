@@ -9,7 +9,9 @@ import {
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
+import { answerOps, dialogView } from "./answer-ops.ts";
 import { openDialog } from "./attention.ts";
+import { parseDialog } from "./dialog.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
 import { layoutOps } from "./layout-ops.ts";
@@ -34,7 +36,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
-    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...jobOps(cfg) };
+    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg) };
   }
 
   async scopedAgent(target: string) {
@@ -153,12 +155,19 @@ export class Gateway {
         if (text.length > cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${cfg.maxPromptChars} characters`);
         const wait = params.wait === true;
         const timeout = this.waitMs(params, 60_000);
-        // Herdr refuses to prompt a blocked agent itself, but it does not flag Cursor's
-        // workspace trust prompt. Without the screen there is no telling, so a failed read fails the prompt.
-        if (agent.agent === "cursor" && agent.agent_status !== "blocked") {
-          const screen = await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 60, format: "text", strip_ansi: true });
-          const dialog = openDialog(textOf(screen));
-          if (dialog) throw new GatewayError("agent_blocked", `the agent is showing a dialog Herdr does not flag: ${dialog}. Show the user and let them decide before answering it`);
+        // Herdr refuses to prompt a blocked agent itself, but it does not flag every menu:
+        // Cursor's and Codex's folder trust, Codex's update and model notices. Typed text
+        // would land in the menu. Without the screen there is no telling, so a failed read fails the prompt.
+        if (agent.agent_status !== "blocked") {
+          const screen = textOf(await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 60, format: "text", strip_ansi: true }));
+          const menu = parseDialog(screen);
+          const dialog = menu ? menu.text : agent.agent === "cursor" ? openDialog(screen) : null;
+          if (dialog) {
+            throw new GatewayError(
+              "agent_blocked",
+              `the agent is showing a menu Herdr does not flag: ${dialog.replace(/\s*\n\s*/g, " / ")}. Show the user the options and answer_agent with their choice`,
+            );
+          }
         }
         let res: any;
         try {

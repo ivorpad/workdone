@@ -1,0 +1,40 @@
+
+✻ Cogitated for 3s · done 10:17 AM
+
+❯ Use AskUserQuestion to ask: pick a number, options One, Two, Three. Then reply with just my pick.
+
+⏺ User answered Claude's questions:
+  ⎿  · Pick a number? → Two
+
+⏺ Two
+
+✻ Cooked for 3s · done 10:17 AM
+
+❯ Run sleep 20 with Bash, then sleep 20 again, then say finished.
+
+  Ran 1 shell command
+
+❯ Actually skip the second sleep and reply STEERED.
+
+⏺ STEERED
+
+✻ Baked for 38s · done 10:19 AM
+
+❯ Use AskUserQuestion with ONE question only: Toppings, options Cheese, Ham, Olives, multiSelect true. Then reply with exactly what I chose.
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Toppings  ✔ Submit  →
+
+Which toppings do you want?
+
+❯ 1. [ ] Cheese
+         Cheese
+  2. [ ] Ham
+         Ham
+  3. [ ] Olives
+         Olives
+  4. [ ] Type something
+     Submit
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

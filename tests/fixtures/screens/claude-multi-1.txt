@@ -1,0 +1,32 @@
+
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Opus 5.5 (1M context) · Claude Max
+ ▝▝   ▝▝   ~/src/tries/2026-09-28-dialog-capture
+
+
+❯ Use your AskUserQuestion tool to ask me one question: which color do I prefer, with options Red, Green and Blue. Do nothing else and then reply with just the color I picked.
+
+⏺ User answered Claude's questions:
+  ⎿  · Which color do you prefer? → Teal
+
+⏺ Teal
+
+✻ Cooked for 3s · done 10:16 AM
+
+❯ Use AskUserQuestion once with two questions: 1) Size, options Small, Medium, Large (single choice); 2) Toppings, options Cheese, Ham, Olives (multiSelect true). Then reply with exactly what I chose.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Size  ☐ Toppings  ✔ Submit  →
+
+Which size do you want?
+
+❯ 1. Small
+     Small
+  2. Medium
+     Medium
+  3. Large
+     Large
+  4. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel

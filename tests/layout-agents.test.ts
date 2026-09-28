@@ -147,7 +147,7 @@ describe("agents", () => {
     const res: any = await gw.handle("spawn_agent", { kind: "claude", name: "worker", repo: "app", prompt: "run the tests" });
     expect(res.status).toBe("idle");
     expect(res.prompt.submitted).toBe(true);
-    expect(sent.map(([m]) => m)).toEqual(["workspace.create", "agent.start", "agent.wait", "agent.get", "agent.prompt"]);
+    expect(sent.map(([m]) => m)).toEqual(["workspace.create", "agent.start", "agent.wait", "agent.get", "agent.read", "agent.prompt"]);
     expect(sent[0]![1]).toMatchObject({ cwd: "/srv/allowed/app", label: "worker", focus: false });
   });
   test("spawn_agent waits for a new pane's shell before starting the agent", async () => {
@@ -280,12 +280,14 @@ describe("cursor and managed agents", () => {
     expect(res.note).toContain("Do you trust the contents of this directory?");
     expect(res.prompt).toBeUndefined();
   });
-  test("the trust check is for Cursor agents, and a screen it cannot read stops the prompt", async () => {
+  test("a menu on any agent's screen stops the prompt, a quoted one does not", async () => {
     const { gw, panes, sent } = gateway();
-    screen = TRUST_SCREEN;
-    // Claude and Codex dialogs are Herdr's to flag; their screens can quote the phrase.
+    // A menu with an input box drawn under it was answered: it is only scrollback.
+    screen = TRUST_SCREEN + "\n" + "─".repeat(40) + "\n❯ \n" + "─".repeat(40);
     await gw.handle("prompt_agent", { target: "w1:p1", text: "go" });
     expect(sent.at(-1)![0]).toBe("agent.prompt");
+    screen = TRUST_SCREEN;
+    await expect(gw.handle("prompt_agent", { target: "w1:p1", text: "go" })).rejects.toMatchObject({ code: "agent_blocked" });
     panes["w4:p1"].agent_status = "idle";
     screen = new Error("herdr_timeout");
     await expect(gw.handle("prompt_agent", { target: "w4:p1", text: "go" })).rejects.toThrow("herdr_timeout");

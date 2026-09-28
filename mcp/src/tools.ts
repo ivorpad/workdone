@@ -48,7 +48,7 @@ export const TOOLS: Record<string, ToolDef> = {
   overview: {
     title: "Overview of agents",
     description:
-      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (blocked at an approval or question UI) or question (stopped and its last reply asks the owner something); watch says whether WorkDone notifies the owner about it and what it last reported.",
+      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up: an approval, a question, folder trust; choices lists its numbered options for answer_agent) or question (stopped and its last reply asks the owner something); watch says whether WorkDone notifies the owner about it and what it last reported.",
     input: {},
     annotations: READ,
   },
@@ -60,7 +60,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   get_agent: {
     title: "Get agent",
-    description: "Show one agent's status, location, attention (dialog or question, else null) and watch (whether WorkDone notifies the owner about it, and its last report).",
+    description: "Show one agent's status, location, attention (dialog or question, else null), choices (the numbered options of a menu that is up, for answer_agent) and watch (whether WorkDone notifies the owner about it, and its last report).",
     input: { target },
     annotations: READ,
   },
@@ -74,7 +74,7 @@ export const TOOLS: Record<string, ToolDef> = {
   prompt_agent: {
     title: "Prompt agent",
     description:
-      "Submit a prompt to an idle agent. With wait=true, blocks until the agent settles (idle, done or blocked) or the timeout passes, and returns its reply for agents that keep a transcript (check reply.matches_prompt). If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if the agent shows an approval dialog.",
+      "Submit a prompt to an idle agent. With wait=true, blocks until the agent settles (idle, done or blocked) or the timeout passes, and returns its reply for agents that keep a transcript (check reply.matches_prompt). If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if the agent shows a menu: answer it with answer_agent first. For an agent that is working, use steer_agent.",
     input: {
       target,
       text: z.string().min(1).describe("The prompt text."),
@@ -100,10 +100,29 @@ export const TOOLS: Record<string, ToolDef> = {
     input: { target, stop: z.boolean().optional().describe("Stop notifying about this agent.") },
     annotations: WRITE,
   },
+  answer_agent: {
+    title: "Answer agent menu",
+    description:
+      "Answer the menu an agent is showing (approval, question, folder trust, update notice) with the option the user chose. Take the numbers from choices in get_agent, read_agent or overview; WorkDone presses the right keys for that agent. Only after the user has seen the question and the options and decided: never approve or pick on your own. option is one number; a multi-select menu takes options, a list, and then shows a review step to answer with another call. text goes with an option marked free_text (Claude's 'Type something', 'tell the agent what to do instead'); passing only text picks that option. Returns the agent's status and the next menu if one follows (dialog), else the end of its screen.",
+    input: {
+      target,
+      option: z.number().int().min(1).optional().describe("The chosen option's n."),
+      options: z.array(z.number().int().min(1)).optional().describe("Multi-select only: every option that should end up checked."),
+      text: z.string().optional().describe("For an option marked free_text: what to type."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  },
+  steer_agent: {
+    title: "Steer working agent",
+    description:
+      "Send a message to an agent while it works, e.g. a correction or 'stop after this step'. WorkDone types it the way that agent takes a mid-turn message: most queue it until the current tool call ends; some send it at once (delivery says which). An idle agent gets it as a normal prompt. Fails with agent_blocked when a menu is up, so a message never answers one.",
+    input: { target, text: z.string().min(1).describe("The message.") },
+    annotations: WRITE,
+  },
   send_agent_keys: {
     title: "Send keys to agent",
     description:
-      "Send a few logical keys to an agent's UI, e.g. to answer an approval dialog or interrupt. Allowed: enter esc tab shift+tab up down left right space backspace ctrl+c y n 1-9. Read the agent first and confirm with the user before approving anything.",
+      "Send a few raw keys to an agent's UI, e.g. esc or ctrl+c to interrupt. To answer a menu use answer_agent, which knows each agent's keys. Allowed: enter esc tab shift+tab up down left right space backspace ctrl+c y n 1-9. Confirm with the user before approving anything.",
     input: { target, keys: z.array(z.string()).min(1).max(10) },
     annotations: WRITE,
   },
@@ -372,7 +391,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.4.0" },
+    { name: "herdr-remote", version: "0.5.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

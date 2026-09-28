@@ -2,7 +2,9 @@
 // start, wait for ready, first prompt), watches that report every turn of an agent,
 // and what each agent needs from its owner.
 
+import { dialogView } from "./answer-ops.ts";
 import { attentionOf, openDialog, screenReply } from "./attention.ts";
+import { parseDialog } from "./dialog.ts";
 import { AGENT_NAME_RE, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
 import type { Gateway } from "./gateway.ts";
 import { optBool, optStr, str, type Op } from "./params.ts";
@@ -20,10 +22,18 @@ function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
 
-// Beyond Herdr's status: attention is "dialog" when a dialog is up and "question" when
-// the agent stopped and its latest text asks the owner something; watch says whether
-// the bridge reports on it. Pass what the caller already read to skip reading it again.
+// Beyond Herdr's status: attention is "dialog" when a menu is up and "question" when
+// the agent stopped and its latest text asks the owner something; choices is the menu
+// read into options for answer_agent; watch says whether the bridge reports on it.
+// Pass what the caller already read to skip reading it again.
 export async function lifecycle(g: Gateway, agent: any, watched: Record<string, Watched>, known: { reply?: Reply | null; screen?: string } = {}) {
+  const watch = watchView(watched[agent.pane_id]);
+  const read = async (source: string) =>
+    known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: true }).catch(() => null));
+  if (agent.agent_status === "blocked") {
+    const menu = parseDialog(await read("visible"));
+    return { attention: "dialog" as const, ...(menu ? { choices: dialogView(menu) } : {}), watch };
+  }
   let text: string | null = null;
   if (SETTLED.has(agent.agent_status)) {
     const reply = known.reply !== undefined ? known.reply : await agentReply(g.cfg, agent).catch(() => null);
@@ -31,14 +41,15 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
       // A prompt newer than the last answer makes that answer stale.
       text = reply.in_progress ? reply.in_progress.latest_text : reply.text;
     } else {
-      const screen = known.screen ?? textOf(
-        await g.herdr("agent.read", { target: agent.pane_id, source: "recent_unwrapped", lines: 60, format: "text", strip_ansi: true }).catch(() => null),
-      );
-      if (agent.agent === "cursor" && openDialog(screen)) return { attention: "dialog" as const, watch: watchView(watched[agent.pane_id]) };
+      // No transcript: the screen, where a menu Herdr does not flag can be up.
+      const screen = await read("recent_unwrapped");
+      const menu = parseDialog(screen);
+      if (menu) return { attention: "dialog" as const, choices: dialogView(menu), watch };
+      if (agent.agent === "cursor" && openDialog(screen)) return { attention: "dialog" as const, watch };
       text = screenReply(screen);
     }
   }
-  return { attention: attentionOf(agent.agent_status, text), watch: watchView(watched[agent.pane_id]) };
+  return { attention: attentionOf(agent.agent_status, text), watch };
 }
 
 export function agentOps(g: Gateway): Record<string, Op> {

@@ -1,0 +1,48 @@
+╭─────────────────────────────────────────────────╮
+│ ✨ Update available! 0.157.0 -> 0.158.0         │
+│ Run npm install -g @openai/codex to update.     │
+│                                                 │
+│ See full release notes:                         │
+│ https://github.com/openai/codex/releases/latest │
+╰─────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.157.0)                       │
+│                                                  │
+│ model:     GPT-5.5 low   /model to change        │
+│ directory: ~/src/tries/2026-09-28-dialog-capture │
+╰──────────────────────────────────────────────────╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                                       Tip: Paste an image with Ctrl+V to attach it to your next message.
+
+› Ask Codex to do anything
+
+  GPT-5.5 low · ~/src/tries/2026-09-28-dialog-capture
+  ? for shortcuts                                                                                                                                                                                                ⚠ 1 warning · f2 to view
