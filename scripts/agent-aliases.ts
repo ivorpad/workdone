@@ -38,7 +38,7 @@ const POOLS: Record<string, string[]> = {
 // Cursor models that get the first names in the pool, the ones said most often. The rest
 // follow in the order Cursor lists them.
 const CURSOR_FIRST = [
-  "claude-opus-5-5", "claude-fable-5-1", "gpt-5.6-sol", "grok-4.7", "claude-sonnet-5", "gemini-3.8-flash",
+  "gpt-5.6-sol", "grok-4.7", "gemini-3.8-flash",
   "composer-2.5", "kimi-k3", "glm-5.2", "gpt-5.6-terra", "gpt-5.6-luna", "muse-spark-1.3",
 ];
 
@@ -53,13 +53,20 @@ function run(cmd: string[]): string | null {
   }
 }
 
-function claudeModels(): Alias[] {
+// Claude models run only in Claude Code, and only these, pinned by full ID so an update
+// to Claude Code's own "opus"/"sonnet" aliases never changes what a name means.
+const CLAUDE_CODE: Array<[name: string, model: string]> = [
+  ["eagle", "claude-fable-5-1"],
+  ["robin", "claude-opus-5-5"],
+  ["falcon", "claude-sonnet-5"],
+];
+
+function claudeModels(): Array<Alias & { name: string }> {
   if (!Bun.which("claude")) return [];
-  const withEffort = (model: string): Alias => ({
-    kind: "claude", model, args: ["--model", model, "--effort", "{effort}"],
+  return CLAUDE_CODE.map(([name, model]) => ({
+    name, kind: "claude", model, args: ["--model", model, "--effort", "{effort}"],
     efforts: Object.fromEntries(CLAUDE_EFFORTS.map((e) => [e, e])), effort: "high",
-  });
-  return [withEffort("fable"), withEffort("opus"), withEffort("sonnet"), { kind: "claude", model: "haiku", args: ["--model", "haiku"] }];
+  }));
 }
 
 function codexModels(): Alias[] {
@@ -118,6 +125,8 @@ function cursorModels(): Alias[] {
   // Least to most effort, each followed by its fast variant.
   const rank = (e: string) => EFFORT_ORDER.indexOf(e.replace(/-?fast$/, "") || "default") * 2 + (e.endsWith("fast") ? 1 : 0);
   const first = (m: string) => (CURSOR_FIRST.includes(m) ? CURSOR_FIRST.indexOf(m) : CURSOR_FIRST.length);
+  // Claude models go through Claude Code only.
+  for (const model of [...byModel.keys()]) if (/^claude-/.test(model)) byModel.delete(model);
   return [...byModel].sort(([a], [b]) => first(a) - first(b)).map(([model, all]) => {
     const efforts = Object.fromEntries(Object.keys(all).sort((a, b) => rank(a) - rank(b)).map((e) => [e, all[e]!]));
     const effort = ["high", "medium", "default"].find((e) => e in efforts) ?? Object.keys(efforts).find((e) => !e.endsWith("fast"))!;
@@ -129,21 +138,24 @@ function main() {
   const file = resolve((process.argv[2] ?? "~/.config/herdr-chatgpt/agent-aliases.json").replace(/^~(?=\/)/, process.env.HOME ?? "~"));
   const old: Record<string, Alias> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const nameOf = new Map(Object.entries(old).map(([name, a]) => [`${a.kind}/${a.model}`, name]));
-  const models = [...claudeModels(), ...codexModels(), ...cursorModels()];
+  const models: Array<Alias & { name?: string }> = [...claudeModels(), ...codexModels(), ...cursorModels()];
   if (models.length === 0) throw new Error("found no claude, codex or cursor-agent to list models from");
 
   const taken = new Set(Object.keys(old));
   const next: Record<string, Alias> = {};
   for (const m of models) {
-    let name = nameOf.get(`${m.kind}/${m.model}`);
+    let name = m.name ?? nameOf.get(`${m.kind}/${m.model}`);
+    delete m.name;
     if (!name) {
       name = POOLS[m.kind]!.find((n) => !taken.has(n)) ?? `${m.kind === "cursor" ? "beast" : m.kind === "codex" ? "tree" : "bird"}${taken.size + 1}`;
       taken.add(name);
     }
     next[name] = m;
   }
-  // Models a CLI no longer lists keep their alias, so an agent started with one still reads right.
-  for (const [name, a] of Object.entries(old)) if (!(name in next)) next[name] = a;
+  // A CLI missing on this machine keeps its old aliases; a model a CLI stopped offering, or
+  // one this script no longer maps (Claude models in Cursor), loses its alias.
+  const listed = new Set(models.map((m) => m.kind));
+  for (const [name, a] of Object.entries(old)) if (!(name in next) && !listed.has(a.kind)) next[name] = a;
 
   mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
   writeFileSync(file, JSON.stringify(next, null, 2) + "\n", { mode: 0o600 });

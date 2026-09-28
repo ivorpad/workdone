@@ -391,7 +391,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.5.1" },
+    { name: "herdr-remote", version: "0.5.2" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
