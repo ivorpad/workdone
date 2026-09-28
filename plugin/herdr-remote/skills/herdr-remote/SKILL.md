@@ -52,6 +52,7 @@ Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each m
 ## Commands and files
 
 - `exec` runs a shell command and returns the exit code, stdout and stderr. Use it for one-off commands, tests, git, and scripts (`python3 -` with the script in `stdin` avoids quoting problems). For servers, watchers or anything that doesn't end, use `run_command_in_pane` in a shell pane, then `read_pane`. `send_pane_input` sends keys like `ctrl+c` to stop it.
+- `exec` returns its result in the same call, and no agent or pane is involved: it cannot be waiting on an approval or a prompt. Read the result before answering, and never tell the user an `exec` is still running or stuck in an agent's pane. A command that runs past `timeout_ms` comes back with `timed_out: true`.
 - `read_file` reads text, converts PDF and Office files to Markdown, and returns images. Page long files with `offset` and `next_offset`. `list_dir` and `search_files` find things.
 - `write_file` defaults to `mode: "create"`, which refuses to overwrite. Say what you are about to overwrite before using `mode: "overwrite"`. `delete_path` moves things into the gateway's trash folder, so a deletion can be undone.
 
