@@ -256,7 +256,7 @@ export const TOOLS: Record<string, ToolDef> = {
   exec: {
     title: "Run shell command",
     description:
-      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands.",
+      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands. The user does not see this result: show them the output they asked for in a code block, with the exit code.",
     input: {
       command: z.string().min(1),
       cwd,
@@ -391,7 +391,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.5.3" },
+    { name: "herdr-remote", version: "0.5.6" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

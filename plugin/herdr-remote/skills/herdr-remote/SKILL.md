@@ -64,6 +64,7 @@ If the fix is a change to files, prefer `write_file` or a script through `exec` 
 
 - `exec` runs a shell command and returns the exit code, stdout and stderr. Use it for one-off commands, tests, git, and scripts (`python3 -` with the script in `stdin` avoids quoting problems). For servers, watchers or anything that doesn't end, use `run_command_in_pane` in a shell pane, then `read_pane`. `send_pane_input` sends keys like `ctrl+c` to stop it.
 - `exec` returns its result in the same call, and no agent or pane is involved: it cannot be waiting on an approval or a prompt. Read the result before answering, and never tell the user an `exec` is still running or stuck in an agent's pane. A command that runs past `timeout_ms` comes back with `timed_out: true`.
+- Show what came back. The user does not see tool results, only your reply, so put the output they asked for in a code block with the exit code: all of it when it is short, the part that matters when it is long (say what you left out). Don't replace output with a summary unless they asked for one.
 - `read_file` reads text, converts PDF and Office files to Markdown, and returns images. Page long files with `offset` and `next_offset`. `list_dir` and `search_files` find things.
 - `write_file` defaults to `mode: "create"`, which refuses to overwrite. Say what you are about to overwrite before using `mode: "overwrite"`. `delete_path` moves things into the gateway's trash folder, so a deletion can be undone.
 
