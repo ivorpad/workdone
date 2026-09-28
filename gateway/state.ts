@@ -89,6 +89,16 @@ export class StateStore {
     this.write("aliases.json", Object.fromEntries([...Object.entries(cur), [paneId, alias], [name, alias]].slice(-400)));
   }
 
+  // The workspace pane exec opens its tabs in.
+  execWorkspace(): string | null {
+    const v = this.read("exec-workspace.json") as { id?: unknown } | undefined;
+    return typeof v?.id === "string" ? v.id : null;
+  }
+
+  setExecWorkspace(id: string) {
+    this.write("exec-workspace.json", { id });
+  }
+
   watched(): Record<string, Watched> {
     const v = this.read("watch.json");
     return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Watched>) : {};

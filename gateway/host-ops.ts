@@ -113,18 +113,24 @@ function needWrite(cfg: GatewayConfig) {
   if (!cfg.allowFileWrite) throw new GatewayError("capability_disabled", "file writes are disabled in the gateway config");
 }
 
+// exec's parameters, shared with the pane-based exec (pane-exec.ts).
+export function execParams(cfg: GatewayConfig, params: Params, repoPath: (key: string) => string) {
+  if (!cfg.allowExec) throw new GatewayError("capability_disabled", "exec is disabled in the gateway config");
+  const command = str(params, "command");
+  if (command.length > 20_000) throw new GatewayError("invalid_params", "command exceeds 20000 characters");
+  const stdin = params.stdin === undefined || params.stdin === null ? undefined : String(params.stdin);
+  if (stdin !== undefined && stdin.length > cfg.maxFileBytes) throw new GatewayError("invalid_params", "stdin is too large");
+  const repo = optStr(params, "repo");
+  const cwd = params.cwd !== undefined && params.cwd !== null ? resolved(cfg, params, "cwd") : repo ? repoPath(repo) : cfg.allowedRoots[0]!;
+  if (!isDirectory(cwd)) throw new GatewayError("not_directory", `${cwd} is not a directory`);
+  const timeoutMs = optInt(params, "timeout_ms", 1000, cfg.maxWaitMs) ?? Math.min(60_000, cfg.maxWaitMs);
+  return { command, stdin, cwd, timeoutMs };
+}
+
 export function hostOps(cfg: GatewayConfig, repoPath: (key: string) => string): Record<string, Op> {
   return {
     async exec(params) {
-      if (!cfg.allowExec) throw new GatewayError("capability_disabled", "exec is disabled in the gateway config");
-      const command = str(params, "command");
-      if (command.length > 20_000) throw new GatewayError("invalid_params", "command exceeds 20000 characters");
-      const stdin = params.stdin === undefined || params.stdin === null ? undefined : String(params.stdin);
-      if (stdin !== undefined && stdin.length > cfg.maxFileBytes) throw new GatewayError("invalid_params", "stdin is too large");
-      const repo = optStr(params, "repo");
-      const cwd = params.cwd !== undefined && params.cwd !== null ? resolved(cfg, params, "cwd") : repo ? repoPath(repo) : cfg.allowedRoots[0]!;
-      if (!isDirectory(cwd)) throw new GatewayError("not_directory", `${cwd} is not a directory`);
-      const timeoutMs = optInt(params, "timeout_ms", 1000, cfg.maxWaitMs) ?? Math.min(60_000, cfg.maxWaitMs);
+      const { command, stdin, cwd, timeoutMs } = execParams(cfg, params, repoPath);
       const res = await runProcess([cfg.shell, "-lc", command], { cwd, env: childEnv(cfg), timeoutMs, maxBytes: cfg.maxOutputBytes, stdin });
       return { cwd, ...res };
     },

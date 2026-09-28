@@ -13,6 +13,7 @@ import { answerOps, dialogView } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
+import { paneExecOps } from "./pane-exec.ts";
 import { layoutOps } from "./layout-ops.ts";
 import { Mask, aliasArgs } from "./mask.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
@@ -35,7 +36,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
-    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg) };
+    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {

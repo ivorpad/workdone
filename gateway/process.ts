@@ -62,6 +62,13 @@ class Capture {
   }
 }
 
+// The start and end of some output, as exec returns it.
+export function clipOutput(buf: Buffer, maxBytes: number): { text: string; truncated: boolean } {
+  const c = new Capture(maxBytes);
+  c.push(buf);
+  return c.result();
+}
+
 export function runProcess(argv: string[], opts: RunOptions): Promise<RunResult> {
   return new Promise((resolvePromise, reject) => {
     const started = Date.now();

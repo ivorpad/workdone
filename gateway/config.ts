@@ -33,6 +33,9 @@ export interface GatewayConfig {
   agentAliases: Record<string, AgentAlias>;
   redact: string[];
   browser: BrowserConfig | null;
+  // Run exec in a Herdr pane, in the owner's desktop session (keychain, .zshrc, ssh-agent),
+  // instead of as the gateway's own ssh login.
+  execInPane: boolean;
   // Files the file tools never serve: the alias map when it lives outside the config dir.
   privatePaths: string[];
   allowRawPaneRun: boolean;
@@ -170,6 +173,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     agentAliases,
     redact: c.redact ?? DEFAULT_REDACT,
     browser: parseBrowser(c.browser),
+    execInPane: c.execInPane === true,
     privatePaths: typeof c.agentAliases === "string" ? [expandHome(c.agentAliases)] : [],
     allowRawPaneRun: c.allowRawPaneRun === true,
     allowWorktreeRemove: c.allowWorktreeRemove === true,
