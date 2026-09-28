@@ -47,6 +47,37 @@ Each gateway rereads `gateway.json` on every call, so a capability turned off ta
 
 With `allowExec` on, the allowed roots stop being a boundary for anything but the file tools: a command can `cd` anywhere the user can.
 
+## Signed-in sites for `browse` on OVH
+
+`browse` runs in the persistent Chromium on OVH, the one you watch at https://headless.example.dev. It only knows the logins its own profile holds, and it keeps them across restarts and while the Mac sleeps. There are two ways to give it one.
+
+**Copy a login from the Mac.** From this Mac, with Chrome's `Profile 2` holding the login:
+
+```sh
+cd ~/src/tries/2026-08-19-agent-computer/deploy/ovh
+python3 ovh_session.py import --domains github.com \
+  --verify-url https://github.com/settings/profile --expect "Public profile" --reject url:/login
+```
+
+It copies that domain's cookies and local storage into OVH's profile, opens `--verify-url` there, and prints a verdict: `signed-in` when the `--expect` text shows and no `--reject` URL was hit. `--domains` takes a comma-separated list. The captured file is deleted afterwards. Check again any time without copying:
+
+```sh
+python3 ovh_session.py verify --url https://github.com/settings/profile --expect "Public profile" --reject url:/login
+```
+
+**Sign in on OVH itself.** Open https://headless.example.dev (Cloudflare Access, then the viewer password from `ovh:~/.config/agent-computer/ovh.env`) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. LinkedIn does: on 28-09 an imported LinkedIn session verified as signed in and was revoked by LinkedIn about a minute later, and the feed redirected to `/uas/login`. Once that happens the copied cookies are dead, so do not import them again. A login made on OVH belongs to OVH's IP and lasts.
+
+**See what the browser has open**, without the viewer. CDP is on OVH's loopback and wants the bearer token from `ovh.env`:
+
+```sh
+ssh ovh 'set -a; . ~/.config/agent-computer/ovh.env; set +a
+  H="Authorization: Bearer $AGENT_COMPUTER_API_TOKEN"
+  curl -s -H "$H" http://127.0.0.1:9223/json/list | jq -c ".[] | select(.type==\"page\") | {title, url}"
+  curl -s -H "$H" -X PUT "http://127.0.0.1:9223/json/new?https://www.linkedin.com/feed/"'
+```
+
+Every site this browser is signed in to is a site ChatGPT can act on as you through `browse`, around the clock. Add the ones you want it to use, not the whole profile, and when a login expires, sign in again the same way.
+
 ## Where the security checks live
 
 - **Each gateway.** It hides every pane and agent whose `cwd` or `foreground_cwd` is outside `allowedRoots` and reports them as "not found". A tab or workspace counts as in scope when it holds an in-scope pane, and closing one needs all of its panes in scope.
