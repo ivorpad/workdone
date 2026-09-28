@@ -1,0 +1,13 @@
+
+  monkey Agent
+  v2026.09.26-dd393fe
+  Tip: Use /config to customize monkey settings and behavior.
+
+
+
+
+  → Plan, search, build anything
+
+
+  monkey
+  ~/src/workdone-smoke

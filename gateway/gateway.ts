@@ -10,7 +10,6 @@ import {
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
 import { answerOps, dialogView } from "./answer-ops.ts";
-import { openDialog } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
@@ -160,8 +159,7 @@ export class Gateway {
         // would land in the menu. Without the screen there is no telling, so a failed read fails the prompt.
         if (agent.agent_status !== "blocked") {
           const screen = textOf(await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 60, format: "text", strip_ansi: true }));
-          const menu = parseDialog(screen);
-          const dialog = menu ? menu.text : agent.agent === "cursor" ? openDialog(screen) : null;
+          const dialog = parseDialog(screen)?.text;
           if (dialog) {
             throw new GatewayError(
               "agent_blocked",

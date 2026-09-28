@@ -59,7 +59,8 @@ describe("parseDialog", () => {
   });
 
   test("no menu: idle and working screens, answered menus, text fields", () => {
-    for (const name of ["claude-ask-after", "claude-steer", "codex-after-migrate", "codex-steer", "cursor-idle", "cursor-skip", "cursor-steer-2"]) {
+    // cursor-trusted-narrow: the trust box stays in scrollback above the input line, with no rules around it.
+    for (const name of ["cursor-trusted-narrow", "claude-ask-after", "claude-steer", "codex-after-migrate", "codex-steer", "cursor-idle", "cursor-skip", "cursor-steer-2"]) {
       expect([name, parseDialog(screen(name))]).toEqual([name, null]);
     }
     // A numbered list in an agent's answer is not a menu: nothing points at it.

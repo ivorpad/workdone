@@ -3,7 +3,7 @@
 // and what each agent needs from its owner.
 
 import { dialogView } from "./answer-ops.ts";
-import { attentionOf, openDialog, screenReply } from "./attention.ts";
+import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
 import { AGENT_NAME_RE, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
 import type { Gateway } from "./gateway.ts";
@@ -45,7 +45,6 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
       const screen = await read("recent_unwrapped");
       const menu = parseDialog(screen);
       if (menu) return { attention: "dialog" as const, choices: dialogView(menu), watch };
-      if (agent.agent === "cursor" && openDialog(screen)) return { attention: "dialog" as const, watch };
       text = screenReply(screen);
     }
   }
