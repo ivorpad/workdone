@@ -11,6 +11,7 @@ import {
 import { agentOps, lifecycle } from "./agent-ops.ts";
 import { openDialog } from "./attention.ts";
 import { hostOps } from "./host-ops.ts";
+import { jobOps } from "./jobs.ts";
 import { layoutOps } from "./layout-ops.ts";
 import { Mask, aliasArgs } from "./mask.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
@@ -33,7 +34,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
-    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this) };
+    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...jobOps(cfg) };
   }
 
   async scopedAgent(target: string) {
@@ -108,6 +109,7 @@ export class Gateway {
             close_any: cfg.allowCloseAny,
             worktree_remove: cfg.allowWorktreeRemove,
             documents: cfg.documentConverter !== null,
+            browser: cfg.browser !== null && cfg.allowExec,
           },
         };
       }

@@ -2,9 +2,10 @@
 
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { parseBrowser, type BrowserConfig } from "./jobs.ts";
 import { DEFAULT_REDACT, parseAliases, type AgentAlias } from "./mask.ts";
 
-export const GATEWAY_VERSION = "0.3.0";
+export const GATEWAY_VERSION = "0.4.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -31,6 +32,7 @@ export interface GatewayConfig {
   agentKinds: string[];
   agentAliases: Record<string, AgentAlias>;
   redact: string[];
+  browser: BrowserConfig | null;
   allowRawPaneRun: boolean;
   allowWorktreeRemove: boolean;
   allowExec: boolean;
@@ -165,6 +167,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     agentKinds,
     agentAliases,
     redact: c.redact ?? DEFAULT_REDACT,
+    browser: parseBrowser(c.browser),
     allowRawPaneRun: c.allowRawPaneRun === true,
     allowWorktreeRemove: c.allowWorktreeRemove === true,
     allowExec: c.allowExec === true,

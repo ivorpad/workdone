@@ -12,6 +12,7 @@
   "shell": "/usr/bin/zsh",
   "extraPath": ["~/.local/bin", "~/.bun/bin", "/usr/local/bin"],
   "transcriptRoots": ["~/.claude/projects"],
+  "browser": { "command": ["~/.local/bin/jev-browser", "run"], "cwd": "~/src/jev-browser" },
   "documentConverter": null,
   "notifyCommand": null,
   "maxReadLines": 400,

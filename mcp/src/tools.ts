@@ -247,6 +247,30 @@ export const TOOLS: Record<string, ToolDef> = {
     },
     annotations: SHELL,
   },
+  browse: {
+    title: "Browser run",
+    description:
+      "Start a Jev browser run in the persistent signed-in browser (machine ovh, where browser is on in bridge_status; the user watches it at https://headless.example.dev) and return its id at once. Goals run in order in one tab; give each one outcome and a stop rule. The owner gets a phone notification when the run ends, so say that and stop instead of polling. Every step is a paid model call. DONE is the model's claim: check the final URL and page text with browse_status before telling the user it worked.",
+    input: {
+      url: z.string().describe("http(s) page to open first."),
+      goals: z.array(z.string().min(1)).min(1).max(10).describe("One outcome per goal, e.g. 'Open the latest order. As soon as the order page is showing you are DONE.'"),
+      label: z.string().max(80).optional().describe("Short name for the run in notifications."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+  },
+  browse_status: {
+    title: "Browser run status",
+    description:
+      "With id: a browser run's state (running, done, blocked, failed, stopped, lost), the summary with each goal's status and final URL, the end of its step log and the trace file path (read_file it for page text). Without id: the last 10 runs.",
+    input: { id: z.string().optional() },
+    annotations: READ,
+  },
+  browse_stop: {
+    title: "Stop browser run",
+    description: "Stop a running browser run. The tab stays where it was.",
+    input: { id: z.string() },
+    annotations: WRITE,
+  },
   list_dir: {
     title: "List directory",
     description: "List a directory: names, types, sizes and modified times, folders first.",
@@ -342,13 +366,13 @@ function render(res: GatewayResponse): { content: Content[]; isError: boolean } 
   return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], isError: false };
 }
 
-// Tools that can put an agent on its machine's watch list.
-const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_agent"]);
+// Tools that can put an agent or a browser run on its machine's watch list.
+const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_agent", "browse"]);
 
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.3.0" },
+    { name: "herdr-remote", version: "0.4.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

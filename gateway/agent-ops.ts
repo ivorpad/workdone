@@ -9,6 +9,7 @@ import { optBool, optStr, str, type Op } from "./params.ts";
 import { gitSummary } from "./process.ts";
 import type { Watched } from "./state.ts";
 import { agentReply, type Reply } from "./transcript.ts";
+import { pollJobs } from "./jobs.ts";
 import { pollWatched, sendNotification } from "./watcher.ts";
 import { agentView, lastLines, paneView, textOf, watchInfo, watchView } from "./views.ts";
 
@@ -44,7 +45,9 @@ export function agentOps(g: Gateway): Record<string, Op> {
   return {
     // Internal, used by the MCP server's notifier rather than by ChatGPT.
     async watch_poll() {
-      return await pollWatched(g.cfg, g.herdr, Date.now());
+      const agents = await pollWatched(g.cfg, g.herdr, Date.now());
+      const runs = pollJobs(g.cfg);
+      return { messages: [...agents.messages, ...runs.messages], remaining: agents.remaining + runs.remaining };
     },
 
     async notify(params) {

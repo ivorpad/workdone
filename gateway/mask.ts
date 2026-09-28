@@ -75,8 +75,11 @@ export function redactPattern(words: string[]): RegExp | null {
   return new RegExp(`(?<![A-Za-z0-9_])(?:${alt})[\\w.-]*(?: \\d[\\d.]*)?`, "g");
 }
 
-// File and shell ops return file contents and paths that must round-trip unchanged.
-const UNMASKED_OPS = new Set(["exec", "list_dir", "read_file", "write_file", "move_path", "delete_path", "search_files"]);
+// File and shell ops return file contents and paths that must round-trip unchanged, and
+// browser runs report URLs and page titles that say nothing about the agents.
+const UNMASKED_OPS = new Set([
+  "exec", "list_dir", "read_file", "write_file", "move_path", "delete_path", "search_files", "browse", "browse_status", "browse_stop",
+]);
 // Strings under these keys are IDs or paths ChatGPT passes back.
 const KEEP_KEYS = /(^|_)(id|ids|path|cwd|root|roots|branch|name)$/;
 const GENERIC = "agent";
