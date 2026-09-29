@@ -5,9 +5,10 @@
 import { approveMenus, dialogView } from "./answer-ops.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
-import { AGENT_NAME_RE, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
+import { AGENT_NAME_RE, AGENT_STATUSES, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
+import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import type { Gateway } from "./gateway.ts";
-import { optBool, optInt, optStr, str, type Op } from "./params.ts";
+import { optBool, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { childProcesses, gitSummary } from "./process.ts";
 import { showDone, showWatched } from "./sidebar.ts";
 import type { Watched } from "./state.ts";
@@ -74,6 +75,89 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
   return { attention: attentionOf(agent.agent_status, text), watch };
 }
 
+// One line on what an agent is doing or last said, for wait_agent's summary.
+async function progressLine(g: Gateway, agent: any): Promise<string | null> {
+  const reply = await agentReply(g.cfg, agent).catch(() => null);
+  const text = reply?.in_progress ? reply.in_progress.latest_text : reply?.text;
+  if (text) return clip(text.replace(/\s+/g, " ").trim(), 200);
+  const screen = textOf(await g.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 20, format: "text", strip_ansi: true }).catch(() => null));
+  const last = screen.split("\n").map((l) => l.trim()).filter(Boolean).at(-1);
+  return last ? clip(last, 200) : null;
+}
+
+// wait_agent: until one of the agents stops working (finished, asks something, sits at
+// a menu, or is gone) or the time is up. Go-ahead menus are answered on the way and
+// the wait goes on. Running out of time is an answer, not an error: every agent's
+// status comes back either way, so the caller can report and decide what to do next.
+async function waitAgents(g: Gateway, params: Params) {
+  const list = params.targets === undefined ? [str(params, "target", TARGET_RE)] : params.targets;
+  if (!Array.isArray(list) || list.length === 0 || list.length > 12 || !list.every((t) => typeof t === "string" && TARGET_RE.test(t))) {
+    throw new GatewayError("invalid_params", "targets must be 1-12 agent names or pane IDs");
+  }
+  const until = params.until === undefined ? null : params.until;
+  if (until !== null && (!Array.isArray(until) || !until.every((s) => AGENT_STATUSES.includes(s)))) {
+    throw new GatewayError("invalid_params", `until must be a list of ${AGENT_STATUSES.join(", ")}`);
+  }
+  const agents = await Promise.all(list.map((t: string) => g.scopedAgent(t)));
+  const timeout = g.waitMs(params, 60_000);
+  const deadline = Date.now() + timeout;
+  // until given: those states count; by default anything but working does.
+  const ready = (status: string) => (until ? until.includes(status) : status !== "working" && status !== "unknown");
+  const approved: Record<string, unknown[]> = {};
+  const subscribe = subscriberOf(g.herdr);
+  let sub: Subscription | null = null;
+  if (subscribe) {
+    sub = await subscribe([...agents.map((a: any) => ({ type: "pane.agent_status_changed", pane_id: a.pane_id })), { type: "pane.exited" }, { type: "pane.closed" }]).catch(() => null);
+  }
+  let now: any[] = [];
+  try {
+    for (;;) {
+      now = await Promise.all(agents.map((a: any) => g.herdr("agent.get", { target: a.pane_id }).then((r) => r.agent ?? r, () => null)));
+      // A go-ahead menu is not a reason to stop: answer it and keep waiting.
+      if (!until || !until.includes("blocked")) {
+        for (const [i, a] of now.entries()) {
+          if (a?.agent_status !== "blocked") continue;
+          const got = await approveMenus(g.cfg, g.herdr, a.pane_id, "wait_agent", { waitMs: 5000 });
+          if (!got.approved.length) continue;
+          (approved[a.name ?? a.pane_id] ??= []).push(...got.approved);
+          now[i] = (await g.herdr("agent.get", { target: a.pane_id }).catch(() => null))?.agent ?? a;
+        }
+      }
+      if (now.some((a) => !a || ready(a.agent_status)) || Date.now() >= deadline) break;
+      const left = deadline - Date.now();
+      if (sub) {
+        try {
+          // Also look again every few seconds: a status Herdr did not push still counts.
+          if (await sub.next(Math.min(left, 5000))) while (await sub.next(0).catch(() => null));
+        } catch {
+          sub = null;
+        }
+      } else {
+        await Bun.sleep(Math.min(left, 1000));
+      }
+    }
+  } finally {
+    sub?.close();
+  }
+  const watched = g.state.watched();
+  const views = await Promise.all(
+    agents.map(async (orig: any, i: number) => {
+      const a = now[i];
+      if (!a) return { name: orig.name ?? null, pane_id: orig.pane_id, status: "gone", ready: true };
+      const life = await lifecycle(g, a, watched);
+      const view: Record<string, unknown> = { ...agentView(a), ready: ready(a.agent_status), attention: life.attention };
+      if ("choices" in life) view.choices = life.choices;
+      const said = await progressLine(g, a);
+      if (said) view[a.agent_status === "working" ? "doing" : "last_said"] = said;
+      if (approved[a.name ?? a.pane_id]) view.auto_approved = approved[a.name ?? a.pane_id];
+      return view;
+    }),
+  );
+  const timedOut = !views.some((v) => v.ready);
+  // One target keeps the old shape (agent) next to the list.
+  return { timed_out: timedOut, ready: views.filter((v) => v.ready).map((v) => v.name ?? v.pane_id), agents: views, ...(views.length === 1 ? { agent: views[0] } : {}) };
+}
+
 export function agentOps(g: Gateway): Record<string, Op> {
   return {
     // Internal, used by the MCP server's notifier rather than by ChatGPT.
@@ -87,6 +171,10 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const found = await agents();
       const runs = jobs();
       return { messages: [...found.messages, ...runs.messages], remaining: found.remaining + runs.remaining };
+    },
+
+    async wait_agent(params) {
+      return await waitAgents(g, params);
     },
 
     async notify(params) {

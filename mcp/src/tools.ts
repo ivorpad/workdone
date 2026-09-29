@@ -77,14 +77,14 @@ export const TOOLS: Record<string, ToolDef> = {
   read_agent: {
     title: "Read agent output",
     description:
-      "Read an agent. source=reply returns its last complete answer as clean text from its transcript (agents that keep one), plus the prompt it is working on now. The other sources return terminal text; use recent_unwrapped or detection to see a dialog.",
+      "Read an agent. source=reply returns its last complete answer as clean text from its transcript (agents that keep one), plus the prompt it is working on now. The other sources return terminal text; use recent_unwrapped or detection to see a dialog. A working agent's scrollback can't be read, so for one it returns the visible screen (source says so) and in_progress, what it is doing now.",
     input: { target, lines, source: z.enum(["reply", "recent_unwrapped", "recent", "visible", "detection"]).optional().describe("reply, or a terminal snapshot (default recent_unwrapped).") },
     annotations: READ,
   },
   prompt_agent: {
     title: "Prompt agent",
     description:
-      "Submit a prompt to an idle agent. Folder trust and update notices it sits at are answered first. With wait=true, waits until the agent settles or the timeout passes, answering the permission menus it opens on the way (listed in auto_approved), and returns its reply for agents that keep a transcript (check reply.matches_prompt); status blocked means it stopped at a question. If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if another kind of menu is up: answer it with answer_agent first. For an agent that is working, use steer_agent.",
+      "Submit a prompt to an idle agent. Folder trust and update notices it sits at are answered first. With wait=true, waits until the agent settles or the timeout passes, answering the permission menus it opens on the way (listed in auto_approved), and returns its reply for agents that keep a transcript (check reply.matches_prompt); status blocked means it stopped at a question. Use wait only for a quick answer from one agent; when several agents are busy, send without wait and use wait_agent with targets. timed_out true means the prompt went in and the agent is still working, not a failure: the owner gets a phone notification when it finishes. Fails with agent_blocked if another kind of menu is up: answer it with answer_agent first. For an agent that is working, use steer_agent.",
     input: {
       target,
       text: z.string().min(1).describe("The prompt text."),
@@ -95,9 +95,11 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   wait_agent: {
     title: "Wait for agent",
-    description: "Wait until an agent reaches one of the given states. The default, any settled state, answers the go-ahead menus on the way (listed in auto_approved) and stops at a question.",
+    description:
+      "Wait until any of the given agents stops working (finishes, asks something, shows a menu, or is gone), or the timeout passes. Pass every agent you are waiting on in targets, so you hear about whichever needs you first instead of blocking on one. Go-ahead menus are answered on the way (auto_approved). Returns ready (which agents stopped) and agents: each one's status, ready, attention, choices when a menu is up, and doing (what a working agent is on now) or last_said. timed_out true is a normal answer, not an error: report progress to the user from agents and decide whether to wait again. Keep timeout_ms around 30000-60000 so the user hears from you between waits.",
     input: {
-      target,
+      target: target.optional().describe("One agent. Use targets for several."),
+      targets: z.array(z.string()).min(1).max(12).optional().describe("Agent names or pane IDs to wait on together (on one machine)."),
       until: z.array(z.enum(["idle", "working", "blocked", "done", "unknown"])).optional(),
       timeout_ms: timeoutMs,
     },
@@ -406,7 +408,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
-        "For agent work prefer prompt_agent with wait=true, which returns the reply, and spawn_agent for new agents (kind from bridge_status agent_kinds). " +
+        "Run agents in parallel: start or prompt every agent first without waiting (spawn_agent; prompt_agent without wait), then wait_agent with all of them in targets and a timeout of 30-60 s. After each return, tell the user in one line per agent what changed (finished, asks, why blocked), act on the ones that need something, and wait again only if the user wants you to follow along; otherwise stop, since they get phone notifications. Never block on one agent while others may need you, and treat timed_out as progress, not failure. prompt_agent with wait=true is for one quick answer from one agent. " +
         "Agents started another way get phone notifications after watch_agent. " +
         "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +

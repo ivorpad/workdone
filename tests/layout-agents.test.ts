@@ -385,18 +385,57 @@ describe("cursor and managed agents", () => {
     // Settled with the answer in hand: nothing left to report.
     expect(existsSync(join(state, "watch.json"))).toBe(false);
     // wait_agent: the default wait goes on past the menu; an explicit blocked stops there.
-    let waits = 0;
-    const stuck: HerdrCall = async (method, params: any) => {
-      if (method === "agent.wait" && waits++ === 0) return { agent: { ...panes["w1:p1"], agent_status: "blocked" } };
-      return herdr(method, params);
+    onKeys = () => {
+      panes["w1:p1"].agent_status = "idle";
+      screen = "Changed note.txt.\n";
     };
     panes["w1:p1"].agent_status = "blocked";
     screen = fixture("claude-edit");
-    const waited: any = await new Gateway(gw.cfg, stuck).handle("wait_agent", { target: "w1:p1" });
-    expect(waited).toMatchObject({ agent: { agent_status: "idle" }, auto_approved: [{ kind: "permission", option: "Yes" }] });
-    waits = 0;
+    const waited: any = await gw.handle("wait_agent", { target: "w1:p1" });
+    expect(waited).toMatchObject({ timed_out: false, ready: ["w1:p1"], agent: { status: "idle", auto_approved: [{ kind: "permission", option: "Yes" }] } });
+    panes["w1:p1"].agent_status = "blocked";
     screen = fixture("claude-edit");
-    expect(await new Gateway(gw.cfg, stuck).handle("wait_agent", { target: "w1:p1", until: ["blocked", "idle"] })).toMatchObject({ agent: { agent_status: "blocked" } });
+    expect(await gw.handle("wait_agent", { target: "w1:p1", until: ["blocked", "idle"] })).toMatchObject({ agent: { status: "blocked" } });
+  });
+  test("wait_agent with targets returns when any one is done, and a timeout is an answer", async () => {
+    const { gw, panes } = gateway();
+    screen = "Refactored the parser. All tests pass.\n";
+    // w4:p1 works on; w1:p1 finishes while waiting.
+    panes["w1:p1"].agent_status = "working";
+    setTimeout(() => (panes["w1:p1"].agent_status = "idle"), 300);
+    const res: any = await gw.handle("wait_agent", { targets: ["w1:p1", "w4:p1"], timeout_ms: 5000 });
+    expect(res.timed_out).toBe(false);
+    expect(res.ready).toEqual(["w1:p1"]);
+    expect(res.agents.map((a: any) => [a.pane_id, a.status, a.ready])).toEqual([["w1:p1", "idle", true], ["w4:p1", "working", false]]);
+    expect(res.agents[0].last_said).toContain("All tests pass");
+    expect(res.agents[1].doing).toBeDefined();
+    const started = Date.now();
+    const none: any = await gw.handle("wait_agent", { targets: ["w4:p1"], timeout_ms: 1200 });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1100);
+    expect(none).toMatchObject({ timed_out: true, ready: [], agent: { status: "working", ready: false } });
+    await expect(gw.handle("wait_agent", { targets: [] })).rejects.toMatchObject({ code: "invalid_params" });
+  });
+  test("prompt_agent that runs out of time says the agent is working instead of failing", async () => {
+    const { gw, herdr } = gateway();
+    screen = "ready\n";
+    const slow: HerdrCall = async (method, params: any) => {
+      if (method === "agent.prompt") throw new GatewayError("timeout", "agent wait timed out");
+      return herdr(method, params);
+    };
+    const res: any = await new Gateway(gw.cfg, slow).handle("prompt_agent", { target: "w1:p1", text: "go", wait: true, timeout_ms: 1000 });
+    expect(res).toMatchObject({ submitted: true, timed_out: true, status: "working" });
+    // Without wait a timeout is a real failure.
+    await expect(new Gateway(gw.cfg, slow).handle("prompt_agent", { target: "w1:p1", text: "go" })).rejects.toMatchObject({ code: "timeout" });
+  });
+  test("read_agent shows a working agent's visible screen when Herdr refuses scrollback", async () => {
+    const { gw, herdr } = gateway();
+    screen = "Editing src/parser.ts\n";
+    const busy: HerdrCall = async (method, params: any) => {
+      if (method === "agent.read" && params.source !== "visible") throw new GatewayError("agent_not_idle", "agent is working");
+      return herdr(method, params);
+    };
+    const res: any = await new Gateway(gw.cfg, busy).handle("read_agent", { target: "w4:p1" });
+    expect(res).toMatchObject({ source: "visible", text: "Editing src/parser.ts\n" });
   });
   test("a question stops the wait and stays for the owner", async () => {
     const { gw, herdr, panes } = gateway();

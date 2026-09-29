@@ -4,7 +4,7 @@
 
 import { hostname } from "node:os";
 import {
-  AGENT_NAME_RE, AGENT_STATUSES, ALLOWED_KEYS, BRANCH_RE, GATEWAY_VERSION, GatewayError, READ_SOURCES, TARGET_RE,
+  AGENT_NAME_RE, ALLOWED_KEYS, BRANCH_RE, GATEWAY_VERSION, GatewayError, READ_SOURCES, TARGET_RE,
   canonical, paneInScope, withinRoots,
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
@@ -198,15 +198,20 @@ export class Gateway {
           if (!reply) throw new GatewayError("reply_unavailable", "no transcript for this agent; read with source recent_unwrapped");
           return { agent: { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply })) }, reply };
         }
-        const res = await this.herdr("agent.read", {
-          target: agent.pane_id,
-          source,
-          lines: optInt(params, "lines", 1, cfg.maxReadLines) ?? 120,
-          format: "text",
-          strip_ansi: true,
+        const lines = optInt(params, "lines", 1, cfg.maxReadLines) ?? 120;
+        const read = (src: string) => this.herdr("agent.read", { target: agent.pane_id, source: src, lines, format: "text", strip_ansi: true });
+        let used: string = source;
+        // Herdr only scrolls back through an idle agent's screen: show a working one's visible screen.
+        const res = await read(source).catch(async (err) => {
+          if (!(err instanceof GatewayError && err.code === "agent_not_idle") || source === "visible") throw err;
+          used = "visible";
+          return await read("visible");
         });
         const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: textOf(res) })) };
-        return { agent: view, text: res.text ?? res.read?.text ?? res };
+        const out: Record<string, unknown> = { agent: view, text: res.text ?? res.read?.text ?? res };
+        if (used !== source) Object.assign(out, { source: used, note: "the agent is working, so this is its visible screen; scrollback reads work once it is idle" });
+        if (reply?.in_progress) out.in_progress = reply.in_progress;
+        return out;
       }
 
       case "prompt_agent": {
@@ -246,9 +251,17 @@ export class Gateway {
             wait ? timeout + 10_000 : undefined,
           );
         } catch (err) {
-          // A wait that times out still delivered the prompt: report on it when it finishes.
-          if (err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout")) this.state.prompted(agent.pane_id, watchInfo(agent), null, false);
-          throw err;
+          // A wait that times out still delivered the prompt: report on it when it
+          // finishes, and tell the caller it is working rather than failing the call.
+          if (!(wait && err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout"))) throw err;
+          this.state.prompted(agent.pane_id, watchInfo(agent), null, false);
+          clearNote(this.herdr, agent.pane_id);
+          const out: Record<string, unknown> = {
+            submitted: true, waited: true, timed_out: true, status: "working",
+            note: "the prompt went in and the agent is still working; the owner gets a phone notification when it finishes",
+          };
+          if (approved.length) out.auto_approved = approved;
+          return out;
         }
         let status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
         // Stopped at a menu mid-turn: a go-ahead is given and the wait goes on.
@@ -270,22 +283,6 @@ export class Gateway {
           if (reply) out.reply = reply;
         }
         return out;
-      }
-
-      case "wait_agent": {
-        const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
-        const until = params.until === undefined ? [] : params.until;
-        if (!Array.isArray(until) || !until.every((s) => AGENT_STATUSES.includes(s))) {
-          throw new GatewayError("invalid_params", `until must be a list of ${AGENT_STATUSES.join(", ")}`);
-        }
-        const timeout = this.waitMs(params, 60_000);
-        const deadline = Date.now() + timeout;
-        const res = await this.herdr("agent.wait", { target: agent.pane_id, until, timeout_ms: timeout }, timeout + 10_000);
-        // Waiting for any settled state (the default) goes on through go-ahead menus.
-        if (until.length > 0 || res?.agent?.agent_status !== "blocked") return res;
-        const through = await this.settleThrough(agent.pane_id, "wait_agent", deadline, res.agent);
-        if (!through.approved.length) return res;
-        return { ...res, agent: through.agent ?? (await this.herdr("agent.get", { target: agent.pane_id })).agent, auto_approved: through.approved };
       }
 
       case "send_agent_keys": {
