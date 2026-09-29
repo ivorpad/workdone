@@ -14,7 +14,7 @@ const calls: Array<[string, string, Record<string, unknown>]> = [];
 const fake: CallGateway = async (machine, op, params) => {
   calls.push([machine, op, params]);
   if (op === "run_command_in_pane") return { ok: false, error: { code: "capability_disabled", message: "off" } };
-  if (op === "list_agents" && machine === "ovh") return { ok: false, error: { code: "gateway_unreachable", message: "down" } };
+  if (op === "list_panes" && machine === "ovh") return { ok: false, error: { code: "gateway_unreachable", message: "down" } };
   if (op === "read_file") return { ok: true, result: { path: "/x.png", kind: "image", image: { mime: "image/png", data: "iVBORw==" } } };
   return { ok: true, result: { op, machine } };
 };
@@ -98,9 +98,9 @@ describe("http", () => {
     expect(calls.at(-1)).toEqual(["ovh", "exec", { command: "uname" }]);
   });
   test("listing without a machine asks every machine", async () => {
-    const result = await callTool("list_agents", {});
+    const result = await callTool("list_panes", {});
     const payload = JSON.parse(result.content[0].text);
-    expect(payload.mac).toEqual({ op: "list_agents", machine: "mac" });
+    expect(payload.mac).toEqual({ op: "list_panes", machine: "mac" });
     expect(payload.ovh.error.code).toBe("gateway_unreachable");
     expect(result.isError).toBe(false);
   });
@@ -111,7 +111,7 @@ describe("http", () => {
   });
   test("tools that can watch an agent mark its machine for the notifier", async () => {
     await callTool("prompt_agent", { machine: "ovh", target: "w1:p1", text: "go" });
-    await callTool("list_agents", {});
+    await callTool("list_panes", {});
     await callTool("watch_agent", { target: "w3T:pKV" });
     await callTool("start_agent", { machine: "ovh", pane_id: "w1:p2", kind: "cursor", name: "stays" });
     await callTool("spawn_agent", { kind: "cursor", name: "worker", repo: "relay" });

@@ -13,6 +13,8 @@
 // model notices, and Cursor's folder trust, read as idle. goAhead says which menus
 // only ask for a go-ahead, and which option gives it.
 
+import { gatedBy } from "./gated.ts";
+
 export interface Choice {
   n: number;
   label: string;
@@ -201,7 +203,7 @@ const TRUST_TEXT_RE = /\btrust this (?:folder|workspace)\b|do you trust the (?:c
 const TRUST_OPTION_RE = /^(?:yes, i trust|(?:\[[a-z]\] )?trust)\b/i;
 const PERMISSION_TEXT_RE =
   /\b(?:do you want|would you like) to (?:proceed|make|create|allow|run|write|delete|overwrite|apply|edit)\b|\b(?:run this command|write to this file|allow command|run a dynamic workflow)\?/i;
-const APPROVE_RE = /^(?:yes\b|proceed\b|run \(once\)|allow\b|approve\b)/i;
+export const APPROVE_RE = /^(?:yes\b|proceed\b|run \(once\)|allow\b|approve\b)/i;
 const DECLINE_RE = /^(?:no\b|skip\b|reject\b|deny\b|decline\b|cancel\b)/i;
 // Answers that outlast this one request.
 const PERSIST_RE = /don['’]t ask again|allowlist|always allow|run everything/i;
@@ -225,6 +227,8 @@ export function goAhead(d: Dialog): GoAhead | null {
     return n ? { kind: "notice", option: n } : null;
   }
   if (!PERMISSION_TEXT_RE.test(text) || !d.options.some((o) => DECLINE_RE.test(o.label) || o.free_text)) return null;
+  // A push, merge, deletion or deploy is the owner's call, whatever the menu looks like.
+  if (gatedBy(d.text)) return null;
   const n = d.options.find((o) => APPROVE_RE.test(o.label) && !PERSIST_RE.test(o.label))?.n;
   return n ? { kind: "permission", option: n } : null;
 }

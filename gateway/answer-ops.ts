@@ -10,7 +10,8 @@
 
 import { menuExcerpt } from "./attention.ts";
 import { GatewayError, TARGET_RE, type GatewayConfig, type HerdrCall } from "./config.ts";
-import { parseDialog, answerKeys, goAhead, type Dialog, type GoAheadKind } from "./dialog.ts";
+import { gatedBy } from "./gated.ts";
+import { APPROVE_RE, parseDialog, answerKeys, goAhead, type Dialog, type GoAheadKind } from "./dialog.ts";
 import { showApproved } from "./sidebar.ts";
 import type { Gateway } from "./gateway.ts";
 import { str, type Op } from "./params.ts";
@@ -34,7 +35,11 @@ const busy = (d: Dialog | null) => d !== null && BUSY_RE.test(d.text);
 // kind and go_ahead: what WorkDone would answer, or "question" and null for a decision.
 export function dialogView(d: Dialog) {
   const go = goAhead(d);
-  return { text: d.text, options: d.options, multi: d.multi, free_text: d.free_text, kind: go?.kind ?? "question", go_ahead: go?.option ?? null };
+  const gated = go ? null : gatedBy(d.text);
+  return {
+    text: d.text, options: d.options, multi: d.multi, free_text: d.free_text,
+    kind: go?.kind ?? (gated ? "gated" : "question"), go_ahead: go?.option ?? null, ...(gated ? { gated } : {}),
+  };
 }
 
 // One line: a newline would submit whatever came before it.
@@ -162,9 +167,18 @@ export function answerOps(g: Gateway): Record<string, Op> {
       // Reads the menu only once no one else is answering it: it may be gone by then.
       const res = await g.state.withPane(agent.pane_id, 20_000, async () => {
         const d = parseDialog(await menuScreen(g.herdr, agent.pane_id));
-        if (!d) throw new GatewayError("no_dialog", "the agent is not showing a menu; read_agent to see its screen, or prompt_agent to send it a message");
+        if (!d) {
+          // Usually WorkDone's notifier answered it first: say so rather than fail.
+          const now = (await g.herdr("agent.get", { target: agent.pane_id }).catch(() => null))?.agent ?? agent;
+          if (now.agent_status === "blocked") throw new GatewayError("no_dialog", "the agent is blocked but WorkDone can't read its menu; read_agent with source detection to see it");
+          return { answered: null, status: now.agent_status, note: "no menu is up any more (WorkDone may have answered it already); nothing was pressed" };
+        }
         const chosen = picks(params, d, text);
         const first = d.options[chosen[0]! - 1]!;
+        const gated = gatedBy(d.text);
+        if (gated && APPROVE_RE.test(first.label) && params.confirm !== true) {
+          throw new GatewayError("needs_confirmation", `this menu asks to run a ${gated}, which is the owner's call: ask them, then call again with confirm: true`);
+        }
         if (!d.multi) {
           // "No, and tell Codex what to do differently" and "Skip & tell the agent what to do
           // instead" work without text too; Claude's "Type something" does not.

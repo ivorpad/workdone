@@ -11,6 +11,7 @@ import {
 import { agentOps, lifecycle } from "./agent-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
+import { gatedBy } from "./gated.ts";
 import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
@@ -363,22 +364,8 @@ export class Gateway {
 
       case "list_repos": {
         return {
-          repos: Object.entries(cfg.repos).map(([key, r]) => ({ repo: key, path: r.path, tasks: r.tasks ?? {} })),
+          repos: Object.entries(cfg.repos).map(([key, r]) => ({ repo: key, path: r.path })),
         };
-      }
-
-      case "run_repo_task": {
-        const repo = this.repo(str(params, "repo"));
-        const taskName = str(params, "task");
-        const command = repo.tasks?.[taskName];
-        if (!command) throw new GatewayError("unknown_task", `task ${taskName} is not configured for this repo`);
-        const pane = await this.shellPane(str(params, "pane_id", TARGET_RE));
-        const cwd = canonical(pane.foreground_cwd ?? pane.cwd);
-        if (!withinRoots(cwd, [repo.path])) {
-          throw new GatewayError("pane_outside_repo", `pane cwd ${cwd} is not inside ${repo.path}; split a pane with repo set first`);
-        }
-        await this.herdr("pane.send_input", { pane_id: pane.pane_id, text: command, keys: ["enter"] });
-        return { started: true, pane_id: pane.pane_id, command };
       }
 
       case "run_command_in_pane": {
@@ -386,6 +373,10 @@ export class Gateway {
         const pane = await this.shellPane(str(params, "pane_id", TARGET_RE));
         const command = str(params, "command");
         if (command.includes("\n") || command.length > 4000) throw new GatewayError("invalid_params", "command must be a single line under 4000 characters");
+        const gated = gatedBy(command);
+        if (gated && params.confirm !== true) {
+          throw new GatewayError("needs_confirmation", `this command runs a ${gated}, which is the owner's call: ask them, then call again with confirm: true`);
+        }
         await this.herdr("pane.send_input", { pane_id: pane.pane_id, text: command, keys: ["enter"] });
         return { started: true, pane_id: pane.pane_id };
       }

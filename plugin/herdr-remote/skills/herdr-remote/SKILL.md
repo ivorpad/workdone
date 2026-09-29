@@ -1,6 +1,6 @@
 ---
 name: herdr-remote
-description: Check on, prompt and coordinate the coding agents, terminal panes, files and shell on the user's machines (the Mac and the OVH server) through Herdr. Use when the user mentions WorkDone, Herdr, their Mac or OVH agents or workers, a pane, tab, workspace or agent by name, asks what their agents are doing, to prompt or start one, to run a command or a repo task, to read or save a file on those machines, to do something on a website in their signed-in browser, or to get a Jev judgment.
+description: Check on, prompt and coordinate the coding agents, terminal panes, files and shell on the user's machines (the Mac and the OVH server) through Herdr. Use when the user mentions WorkDone, Herdr, their Mac or OVH agents or workers, a pane, tab, workspace or agent by name, asks what their agents are doing, to prompt or start one, to run a command or a to read or save a file on those machines, to do something on a website in their signed-in browser, or to get a Jev judgment.
 ---
 
 # WorkDone (Herdr Remote)
@@ -25,7 +25,8 @@ Each gateway only exposes panes whose working directory is inside the roots the 
 - `read_agent` with `source: "reply"` gives the last answer and the prompt in progress. Use `recent_unwrapped` (idle agents) or `visible` (working agents) for the screen, and `detection` for a dialog.
 - Agents never wait on a go-ahead. For every agent it watches (all that `spawn_agent` and `start_agent` started, and any given `watch_agent`), WorkDone answers by itself each menu that only asks for one: a permission to run a command, edit or create a file or fetch a page gets its allow-once option, folder trust is given, and update and model notices are skipped. The notifier does it within about 15 seconds, and `prompt_agent`, `wait_agent`, `spawn_agent`, `start_agent` and `watch_agent` do it while they run. `auto_approved` in a result, and `watch.last_event` of type `approved`, say what was answered: mention it when you report on the agent.
 - When `attention` is `dialog`, `choices` holds the menu: its `text` (the question, and the command or file it is about), numbered `options`, `kind` and `go_ahead`. If `go_ahead` is a number (`kind` is `permission`, `trust` or `notice`), answer it yourself at once with `answer_agent` and `option: go_ahead`, then tell the user what you approved. Don't ask first. That is how agents WorkDone doesn't watch get going again, so look for them in `overview`.
-- `kind: "question"` (`go_ahead` null) is a decision, or a menu WorkDone doesn't recognise. If it plainly asks for a go-ahead anyway (to run, edit, allow or continue), take the option that allows it once. If the user's instructions or the task already settle the answer, answer it and say what you picked. Otherwise show the user the question and every option and wait for their choice. For an option marked `free_text` ("Type something", "tell the agent what to do instead") pass the words as `text`. A multi-select (`multi: true`) takes `options`, a list, and then shows a review step to answer too. `answer_agent` returns the next menu if there is one (a question with several parts asks them one at a time).
+- `kind: "gated"` (`go_ahead` null, `gated` says what) asks to push, commit, merge, rebase, reset, delete, write to GitHub or deploy. WorkDone never approves these and neither do you on your own: show the user the menu and the command, and after their yes call `answer_agent` with their option and `confirm: true`.
+- `kind: "question"` (`go_ahead` null) is a decision, or a menu WorkDone doesn't recognise. If it plainly asks for a go-ahead anyway (to run, edit, allow or continue) and isn't gated, take the option that allows it once. If the user's instructions or the task already settle the answer, answer it and say what you picked. Otherwise show the user the question and every option and wait for their choice. For an option marked `free_text` ("Type something", "tell the agent what to do instead") pass the words as `text`. A multi-select (`multi: true`) takes `options`, a list, and then shows a review step to answer too. `answer_agent` returns the next menu if there is one (a question with several parts asks them one at a time).
 - Use `send_agent_keys` only for raw keys like `esc` or `ctrl+c` to interrupt. `answer_agent` knows which keys each agent wants.
 - When `attention` is `question`, pass the question to the user and wait for their answer. Don't answer product, security or release decisions for them.
 
@@ -58,21 +59,25 @@ Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each m
   ```
 
   In a shell pane that already exists: `start_agent` with `pane_id`, `kind` and `name`, then `prompt_agent`.
-- Don't start agents by typing their command with `run_command_in_pane`. For one that is already running that way, call `watch_agent` with its pane ID from `list_agents`.
+- Don't start agents by typing their command with `run_command_in_pane`. For one that is already running that way, call `watch_agent` with its pane ID from `overview`.
 - `spawn_agent` and `start_agent` watch the agent unless you pass `watch: false`. A watched agent sends the user one phone notification each time it finishes a turn, asks something (in its reply, or with a question menu) or exits, with a short excerpt; its go-ahead menus are answered, not reported. It stays watched until it exits or you call `watch_agent` with `stop: true`. After starting or prompting workers, tell the user they'll be notified. Stop there, or follow along with `wait_agent` and `targets` as in "Several agents at once"; don't poll with `read_agent`.
 - Steer it with `prompt_agent` like any agent. `read_agent` with `source: "reply"` returns its last answer.
 - In a folder it hasn't been trusted with, an agent can first show a folder trust menu, which Herdr may report as `idle`. `spawn_agent`, `start_agent` and `prompt_agent` answer it, and Codex's update and model notices, before the first prompt goes in.
 
 ## When an agent's harness blocks it
 
-An agent's own harness can refuse a command it needs: Claude Code's auto mode ("denied by auto mode"), Codex's sandbox, Cursor's allowlist. The agent can't get past that itself, and asking it again changes nothing. Unblock it from here:
+An agent's own harness can refuse a command: Claude Code's auto mode ("denied by auto mode"), Codex's sandbox, Cursor's allowlist. Only for reads, tests and builds may you run it for the agent:
 
-1. Read the agent (`read_agent` with `source: "reply"`, or the screen) and find the exact command it wanted and the directory it was in.
-2. Tell the user the command and the machine, then run it yourself with `exec` on that machine with that `cwd`. Commands that delete data, rewrite history, push, deploy, or change credentials or permissions need the user's explicit yes first; a read, a test or a build does not.
-3. Give the agent the result so it can continue: `steer_agent` while it is working, `prompt_agent` once it is idle, with the command, its exit code and the output it needs.
-4. Tell the user what you ran and what came back. Act in the same turn: don't only acknowledge the request.
+1. Read the agent (`read_agent` with `source: "reply"`, or the screen) and find the exact command and directory.
+2. If it is a read, a test or a build, tell the user the command and machine, run it with `exec` in that `cwd`, and give the agent the result (`steer_agent` while it works, `prompt_agent` once idle).
+3. Anything else, and always a push, commit, merge, rebase, reset, delete, GitHub write or deploy, is refused for a reason: tell the user what the agent wants to run and why it was stopped, and let them decide. `exec` refuses those with `needs_confirmation`; pass `confirm: true` only after the user's explicit yes in this chat, never to get past a repo's own rules.
 
-If the fix is a change to files, prefer `write_file` or a script through `exec` with `stdin` over long quoted shell lines.
+## You coordinate; agents do the work
+
+- Agents own their commits, pushes and issue updates. Don't commit, push or comment on GitHub on an agent's behalf.
+- Don't write status, roster, ledger, parity or handoff files or commits. Progress lives in the agents' commits and replies; `overview` and `wait_agent` read it.
+- Don't re-run an agent's tests yourself to double-check it. If you doubt a result, ask the agent for the command and its output, or ask the user.
+- Keep `exec` for what you need to answer the user: a read, a quick check, a command they asked for.
 
 ## Keep tool output to what the task needs
 

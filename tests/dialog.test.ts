@@ -198,7 +198,8 @@ describe("answer_agent and steer_agent", () => {
     const m = setup("claude", "blocked", screen("claude-multi-2"));
     await expect(m.gw.handle("answer_agent", { target: "w1:p1", option: 2, text: "x" })).rejects.toThrow("multiple-choice");
     const idle = setup("claude", "idle", screen("claude-steer"));
-    await expect(idle.gw.handle("answer_agent", { target: "w1:p1", option: 1 })).rejects.toMatchObject({ code: "no_dialog" });
+    // The menu is gone (answered already): nothing pressed, and not an error.
+    expect(await idle.gw.handle("answer_agent", { target: "w1:p1", option: 1 })).toMatchObject({ answered: null, status: "idle" });
     expect([...pressed, ...m.pressed, ...idle.pressed]).toEqual([]);
   });
 

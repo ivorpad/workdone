@@ -6,8 +6,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
 
-const target = z.string().describe("Agent name or pane ID (e.g. w3T:pJR) from list_agents or overview.");
-const paneId = z.string().describe("Pane ID from list_panes, list_workspaces or list_agents (e.g. w3T:pJR).");
+const target = z.string().describe("Agent name or pane ID (e.g. w3T:pJR) from overview.");
+const paneId = z.string().describe("Pane ID from list_panes, list_workspaces or overview (e.g. w3T:pJR).");
 const repo = z.string().describe("Repo key from list_repos.");
 const path = z.string().describe("Absolute path or ~/..., inside the machine's allowed roots (see bridge_status).");
 const cwd = z.string().optional().describe("Directory inside the allowed roots. Use this or repo.");
@@ -26,6 +26,10 @@ const watch = z.boolean().optional().describe("Notify the owner's phone whenever
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+const confirm = z
+  .boolean()
+  .optional()
+  .describe("Only after the user said yes in this chat: lets a git push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub write (gh pr/issue/release, gh api POST/PATCH/PUT/DELETE), rm -rf or deploy go ahead. Without it those return needs_confirmation.");
 const SHELL = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
 
 interface ToolDef {
@@ -36,7 +40,7 @@ interface ToolDef {
 }
 
 // Called without a machine, these ask every machine and key the answer by machine name.
-export const FANOUT = new Set(["bridge_status", "overview", "prunable_agents", "list_agents", "list_panes", "list_workspaces", "list_repos"]);
+export const FANOUT = new Set(["bridge_status", "overview", "prunable_agents", "list_panes", "list_workspaces", "list_repos"]);
 
 export const TOOLS: Record<string, ToolDef> = {
   bridge_status: {
@@ -57,12 +61,6 @@ export const TOOLS: Record<string, ToolDef> = {
     description:
       "Read-only. Finds the agents whose work is finished, so their panes can be closed to free memory. done lists agents that are idle, ask nothing, have no prompt running, whose last turn already reached the owner's phone, and that sat idle for min_idle_minutes; each has its last_reply, git (uncommitted changes count) and close, the kind and id to pass to close (the workspace or tab WorkDone made for it when the agent is alone there), or null when WorkDone did not make its pane. exited lists panes WorkDone made whose agent is gone and whose shell runs nothing. not_done says why each other agent is still needed. This tool closes nothing: decide, then call close.",
     input: { min_idle_minutes: z.number().int().min(0).max(1440).optional().describe("How long an agent must have been idle to count as done (default 10).") },
-    annotations: READ,
-  },
-  list_agents: {
-    title: "List agents",
-    description: "List coding agents running in Herdr panes, with status (idle, working, blocked, done, unknown) and working directory.",
-    input: {},
     annotations: READ,
   },
   get_agent: {
@@ -115,12 +113,13 @@ export const TOOLS: Record<string, ToolDef> = {
   answer_agent: {
     title: "Answer agent menu",
     description:
-      "Answer the menu an agent is showing. Take the numbers from choices in get_agent, read_agent or overview; WorkDone presses the right keys for that agent. A go-ahead (choices.kind permission, trust or notice): pass option = choices.go_ahead right away, without asking the user; agents should never wait on one. A question (kind question) is a decision: answer it when the user's instructions settle it, otherwise show the user the question and options and pass their choice. option is one number; a multi-select menu takes options, a list, and then shows a review step to answer with another call. text goes with an option marked free_text (Claude's 'Type something', 'tell the agent what to do instead'); passing only text picks that option. Returns the agent's status and the next menu if one follows (dialog), else the end of its screen.",
+      "Answer the menu an agent is showing. Take the numbers from choices in get_agent, read_agent or overview; WorkDone presses the right keys for that agent. A go-ahead (choices.kind permission, trust or notice): pass option = choices.go_ahead right away, without asking the user; agents should never wait on one. A menu of kind gated asks to push, commit, merge, delete or deploy (gated names which): that is the user's call, so show them the menu and answer only after their yes, with confirm: true. A question (kind question) is a decision: answer it when the user's instructions settle it, otherwise show the user the question and options and pass their choice. option is one number; a multi-select menu takes options, a list, and then shows a review step to answer with another call. text goes with an option marked free_text (Claude's 'Type something', 'tell the agent what to do instead'); passing only text picks that option. Returns the agent's status and the next menu if one follows (dialog), else the end of its screen.",
     input: {
       target,
       option: z.number().int().min(1).optional().describe("The chosen option's n."),
       options: z.array(z.number().int().min(1)).optional().describe("Multi-select only: every option that should end up checked."),
       text: z.string().optional().describe("For an option marked free_text: what to type."),
+      confirm,
     },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   },
@@ -186,7 +185,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   read_pane: {
     title: "Read pane output",
-    description: "Read recent terminal output from any allowed pane, e.g. after run_repo_task or run_command_in_pane.",
+    description: "Read recent terminal output from any allowed pane, e.g. after run_command_in_pane.",
     input: { pane_id: paneId, lines, source },
     annotations: READ,
   },
@@ -243,38 +242,32 @@ export const TOOLS: Record<string, ToolDef> = {
   send_pane_input: {
     title: "Send input to pane",
     description: "Type text and/or keys into any pane, e.g. answer a prompt in a shell, stop a server with ctrl+c, or quit a pager with q. Keys use Herdr names: enter, esc, tab, up, ctrl+c, ctrl+d, f5, pageup. Needs raw pane input.",
-    input: { pane_id: paneId, text: z.string().optional(), keys: z.array(z.string()).max(20).optional() },
+    input: { pane_id: paneId, text: z.string().optional(), keys: z.array(z.string()).max(20).optional(), confirm },
     annotations: DESTRUCTIVE,
   },
   list_repos: {
     title: "List repos",
-    description: "List configured repos and the named tasks each one allows.",
+    description: "List configured repos and their paths.",
     input: {},
     annotations: READ,
-  },
-  run_repo_task: {
-    title: "Run repo task",
-    description:
-      "Run one of a repo's configured tasks in a shell pane whose directory is inside that repo. Returns immediately; use read_pane to follow output. exec returns output and exit code directly.",
-    input: { repo, task: z.string().describe("Task name from list_repos."), pane_id: paneId },
-    annotations: WRITE,
   },
   run_command_in_pane: {
     title: "Run command in pane",
     description: "Type a shell command into a shell pane and press enter, visible in Herdr. Use for servers, watchers and anything long-running; use exec when you want the output back.",
-    input: { pane_id: paneId, command: z.string().min(1) },
+    input: { pane_id: paneId, command: z.string().min(1), confirm },
     annotations: SHELL,
   },
   exec: {
     title: "Run shell command",
     description:
-      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands. The user does not see this result: show them the output they asked for in a code block, with the exit code.",
+      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands. The user does not see this result: show them the output they asked for in a code block, with the exit code. A git push, commit, merge, rebase, reset --hard, GitHub write, rm -rf or deploy returns needs_confirmation: agents own their commits, so hand that work to the agent, or ask the user and pass confirm: true only after their yes.",
     input: {
       command: z.string().min(1),
       cwd,
       repo: repo.optional(),
       timeout_ms: timeoutMs.describe("Kill it after this many ms (default 60000, max 110000)."),
       stdin: z.string().optional(),
+      confirm,
     },
     annotations: SHELL,
   },
@@ -410,7 +403,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
         "Run agents in parallel: start or prompt every agent first without waiting (spawn_agent; prompt_agent without wait), then wait_agent with all of them in targets and a timeout of 30-60 s. After each return, tell the user in one line per agent what changed (finished, asks, why blocked), act on the ones that need something, and wait again only if the user wants you to follow along; otherwise stop, since they get phone notifications. Never block on one agent while others may need you, and treat timed_out as progress, not failure. prompt_agent with wait=true is for one quick answer from one agent. " +
         "Agents started another way get phone notifications after watch_agent. " +
-        "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. " +
+        "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. Pushes, commits, merges, deletions, GitHub writes and deploys are the user's call: WorkDone never approves them (choices.kind gated), and exec and answer_agent refuse them with needs_confirmation until you pass confirm: true after the user's yes. Agents own their commits; don't commit, push or write status and ledger files yourself. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +
         "The Mac is often asleep: machine_offline means that machine did not answer, so carry on with the others and pass machine on every action.",
     },

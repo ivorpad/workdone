@@ -84,22 +84,14 @@ describe("ops", () => {
   test("unknown op", async () => {
     await expect(gw.handle("shell", {})).rejects.toMatchObject({ code: "unknown_operation" });
   });
-  test("repo task sends the configured command, never caller text", async () => {
-    await gw.handle("run_repo_task", { repo: "app", task: "test", pane_id: "w1:p2" });
-    expect(sent.at(-1)).toEqual(["pane.send_input", { pane_id: "w1:p2", text: "bun test", keys: ["enter"] }]);
-    await expect(gw.handle("run_repo_task", { repo: "app", task: "rm", pane_id: "w1:p2" })).rejects.toMatchObject({ code: "unknown_task" });
-  });
-  test("repo task refuses an agent pane", async () => {
-    await expect(gw.handle("run_repo_task", { repo: "app", task: "test", pane_id: "w1:p1" })).rejects.toMatchObject({ code: "pane_busy" });
-  });
   test("send_agent_keys only allows listed keys", async () => {
     await expect(gw.handle("send_agent_keys", { target: "w1:p1", keys: ["ctrl+d"] })).rejects.toMatchObject({ code: "invalid_params" });
   });
-  test("close_pane only closes panes the bridge created", async () => {
-    await expect(gw.handle("close_pane", { pane_id: "w1:p2" })).rejects.toMatchObject({ code: "not_bridge_pane" });
+  test("close only closes panes the bridge created", async () => {
+    await expect(gw.handle("close", { kind: "pane", id: "w1:p2" })).rejects.toMatchObject({ code: "not_bridge_pane" });
     await gw.handle("split_pane", { pane_id: "w1:p2", repo: "app" });
     panes["w1:p9"] = { pane_id: "w1:p9", cwd: "/srv/allowed/app" };
-    await gw.handle("close_pane", { pane_id: "w1:p9" });
+    await gw.handle("close", { kind: "pane", id: "w1:p9" });
     expect(sent.at(-1)).toEqual(["pane.close", { pane_id: "w1:p9" }]);
   });
 });

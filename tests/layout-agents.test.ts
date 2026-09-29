@@ -397,6 +397,24 @@ describe("cursor and managed agents", () => {
     screen = fixture("claude-edit");
     expect(await gw.handle("wait_agent", { target: "w1:p1", until: ["blocked", "idle"] })).toMatchObject({ agent: { status: "blocked" } });
   });
+  test("a push menu is the owner's call: never auto-approved, answered only with confirm", async () => {
+    const { gw, panes, sent } = gateway();
+    const pushMenu = ["Bash command", "", "  git push origin HEAD:refs/heads/feat/automations-mvp", "", "Do you want to proceed?", "❯ 1. Yes", "  2. No", "", "Esc to cancel"].join("\n");
+    panes["w1:p1"].agent_status = "blocked";
+    screen = pushMenu;
+    onKeys = () => {
+      panes["w1:p1"].agent_status = "working";
+      screen = "Pushing.\n";
+    };
+    const waited: any = await gw.handle("wait_agent", { target: "w1:p1", timeout_ms: 2000 });
+    expect(waited.agent).toMatchObject({ status: "blocked", attention: "dialog", choices: { kind: "gated", gated: "git push", go_ahead: null } });
+    expect(waited.agent.auto_approved).toBeUndefined();
+    expect(sent.some(([m]) => m === "agent.send_keys")).toBe(false);
+    await expect(gw.handle("answer_agent", { target: "w1:p1", option: 1 })).rejects.toMatchObject({ code: "needs_confirmation" });
+    // Declining needs no confirmation; approving does, after the owner's yes.
+    const res: any = await gw.handle("answer_agent", { target: "w1:p1", option: 1, confirm: true });
+    expect(res.answered).toMatchObject({ options: [1], labels: ["Yes"] });
+  });
   test("wait_agent with targets returns when any one is done, and a timeout is an answer", async () => {
     const { gw, panes } = gateway();
     screen = "Refactored the parser. All tests pass.\n";

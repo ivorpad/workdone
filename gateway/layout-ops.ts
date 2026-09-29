@@ -3,6 +3,7 @@
 // pane; closing one also needs every pane in it to be in scope.
 
 import { AGENT_NAME_RE, GatewayError, KEY_RE, TARGET_RE, paneInScope } from "./config.ts";
+import { gatedBy } from "./gated.ts";
 import type { Gateway } from "./gateway.ts";
 import { LABEL_RE, optBool, optEnum, optStr, optStrArray, str, type Op, type Params } from "./params.ts";
 import type { CreatedKind } from "./state.ts";
@@ -172,11 +173,6 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       return { closed: kind, id };
     },
 
-    // Older name, kept so a gateway update does not break an MCP server that still sends it.
-    async close_pane(params) {
-      return await ops.close!({ kind: "pane", id: params.pane_id });
-    },
-
     // Type text and keys into any in-scope pane, agent or shell. Text followed by
     // enter runs a command, so this sits behind the raw pane capability.
     async send_pane_input(params) {
@@ -186,6 +182,10 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       if (text && text.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${g.cfg.maxPromptChars} characters`);
       const keys = optStrArray(params, "keys", 20, KEY_RE) ?? [];
       if (!text && keys.length === 0) throw new GatewayError("invalid_params", "pass text, keys or both");
+      const gated = text && keys.includes("enter") ? gatedBy(text) : null;
+      if (gated && params.confirm !== true) {
+        throw new GatewayError("needs_confirmation", `this input runs a ${gated}, which is the owner's call: ask them, then call again with confirm: true`);
+      }
       await g.herdr("pane.send_input", { pane_id: pane.pane_id, ...(text ? { text } : {}), ...(keys.length ? { keys } : {}) });
       return { sent: true, pane_id: pane.pane_id };
     },

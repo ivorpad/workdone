@@ -7,6 +7,7 @@ import {
 } from "node:fs";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { GatewayError, canonical, expandHome, withinRoots, type GatewayConfig } from "./config.ts";
+import { gatedBy } from "./gated.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { childEnv, findBinary, isDirectory, runProcess } from "./process.ts";
 
@@ -120,6 +121,10 @@ export function execParams(cfg: GatewayConfig, params: Params, repoPath: (key: s
   if (command.length > 20_000) throw new GatewayError("invalid_params", "command exceeds 20000 characters");
   const stdin = params.stdin === undefined || params.stdin === null ? undefined : String(params.stdin);
   if (stdin !== undefined && stdin.length > cfg.maxFileBytes) throw new GatewayError("invalid_params", "stdin is too large");
+  const gated = gatedBy(`${command}\n${stdin ?? ""}`);
+  if (gated && params.confirm !== true) {
+    throw new GatewayError("needs_confirmation", `this command runs a ${gated}, which is the owner's call: ask them, then call again with confirm: true`);
+  }
   const repo = optStr(params, "repo");
   const cwd = params.cwd !== undefined && params.cwd !== null ? resolved(cfg, params, "cwd") : repo ? repoPath(repo) : cfg.allowedRoots[0]!;
   if (!isDirectory(cwd)) throw new GatewayError("not_directory", `${cwd} is not a directory`);
