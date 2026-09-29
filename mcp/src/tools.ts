@@ -21,7 +21,7 @@ const timeoutMs = z.number().int().min(1000).max(110_000).optional().describe("W
 const layoutKind = z.enum(["pane", "tab", "workspace"]);
 const agentKind = z.string().describe("Agent kind, one of bridge_status agent_kinds for that machine.");
 const effort = z.string().optional().describe("Reasoning effort, one of bridge_status agents[kind].efforts (default: agents[kind].effort).");
-const watch = z.boolean().optional().describe("Notify the owner's phone whenever it finishes a turn, asks something, stops at a dialog or exits (default true).");
+const watch = z.boolean().optional().describe("Notify the owner's phone whenever it finishes a turn, asks something or exits, and answer the menus it opens that only want a go-ahead (default true).");
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
@@ -36,7 +36,7 @@ interface ToolDef {
 }
 
 // Called without a machine, these ask every machine and key the answer by machine name.
-export const FANOUT = new Set(["bridge_status", "overview", "list_agents", "list_panes", "list_workspaces", "list_repos"]);
+export const FANOUT = new Set(["bridge_status", "overview", "prunable_agents", "list_agents", "list_panes", "list_workspaces", "list_repos"]);
 
 export const TOOLS: Record<string, ToolDef> = {
   bridge_status: {
@@ -48,8 +48,15 @@ export const TOOLS: Record<string, ToolDef> = {
   overview: {
     title: "Overview of agents",
     description:
-      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up: an approval, a question, folder trust; choices lists its numbered options for answer_agent) or question (stopped and its last reply asks the owner something); watch says whether WorkDone notifies the owner about it and what it last reported.",
+      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up; choices lists its numbered options for answer_agent, choices.kind says what it asks: permission, trust, notice or question, and choices.go_ahead is the option that lets the agent carry on, null for a question) or question (stopped and its last reply asks the owner something); watch says whether WorkDone watches it and what it last reported.",
     input: {},
+    annotations: READ,
+  },
+  prunable_agents: {
+    title: "Agents that are done",
+    description:
+      "Read-only. Finds the agents whose work is finished, so their panes can be closed to free memory. done lists agents that are idle, ask nothing, have no prompt running, whose last turn already reached the owner's phone, and that sat idle for min_idle_minutes; each has its last_reply, git (uncommitted changes count) and close, the kind and id to pass to close (the workspace or tab WorkDone made for it when the agent is alone there), or null when WorkDone did not make its pane. exited lists panes WorkDone made whose agent is gone and whose shell runs nothing. not_done says why each other agent is still needed. This tool closes nothing: decide, then call close.",
+    input: { min_idle_minutes: z.number().int().min(0).max(1440).optional().describe("How long an agent must have been idle to count as done (default 10).") },
     annotations: READ,
   },
   list_agents: {
@@ -60,8 +67,11 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   get_agent: {
     title: "Get agent",
-    description: "Show one agent's status, location, attention (dialog or question, else null), choices (the numbered options of a menu that is up, for answer_agent) and watch (whether WorkDone notifies the owner about it, and its last report).",
-    input: { target },
+    description: "Show one agent's status, location, attention (dialog or question, else null), choices (the menu that is up: numbered options for answer_agent, kind, and go_ahead, the option that lets it carry on or null for a question) and watch (whether WorkDone watches it, and its last report).",
+    input: {
+      target,
+      explain: z.boolean().optional().describe("Also return Herdr's reasoning for the status (rule that matched, skip and fallback reasons). Use it when the status looks wrong for what the screen shows."),
+    },
     annotations: READ,
   },
   read_agent: {
@@ -74,7 +84,7 @@ export const TOOLS: Record<string, ToolDef> = {
   prompt_agent: {
     title: "Prompt agent",
     description:
-      "Submit a prompt to an idle agent. With wait=true, blocks until the agent settles (idle, done or blocked) or the timeout passes, and returns its reply for agents that keep a transcript (check reply.matches_prompt). If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if the agent shows a menu: answer it with answer_agent first. For an agent that is working, use steer_agent.",
+      "Submit a prompt to an idle agent. Folder trust and update notices it sits at are answered first. With wait=true, waits until the agent settles or the timeout passes, answering the permission menus it opens on the way (listed in auto_approved), and returns its reply for agents that keep a transcript (check reply.matches_prompt); status blocked means it stopped at a question. If it is still working, the owner gets a phone notification when it finishes. Fails with agent_blocked if another kind of menu is up: answer it with answer_agent first. For an agent that is working, use steer_agent.",
     input: {
       target,
       text: z.string().min(1).describe("The prompt text."),
@@ -85,7 +95,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   wait_agent: {
     title: "Wait for agent",
-    description: "Wait until an agent reaches one of the given states (default: any settled state).",
+    description: "Wait until an agent reaches one of the given states. The default, any settled state, answers the go-ahead menus on the way (listed in auto_approved) and stops at a question.",
     input: {
       target,
       until: z.array(z.enum(["idle", "working", "blocked", "done", "unknown"])).optional(),
@@ -96,14 +106,14 @@ export const TOOLS: Record<string, ToolDef> = {
   watch_agent: {
     title: "Watch agent",
     description:
-      "Notify the owner's phone every time this agent finishes a turn, asks a question, stops at an approval dialog or exits, with a short excerpt, until it exits or you call again with stop=true. Use it for agents started outside WorkDone, e.g. typed into a pane; start_agent and spawn_agent already watch the agents they start.",
+      "Watch an agent until it exits or you call again with stop=true: the owner's phone gets a short notification every time it finishes a turn, asks a question or exits, and WorkDone answers every menu it opens that only wants a go-ahead (a permission, folder trust, an update notice), starting with one already up (auto_approved). Use it for agents started outside WorkDone, e.g. typed into a pane or started by another agent; start_agent and spawn_agent already watch the agents they start.",
     input: { target, stop: z.boolean().optional().describe("Stop notifying about this agent.") },
     annotations: WRITE,
   },
   answer_agent: {
     title: "Answer agent menu",
     description:
-      "Answer the menu an agent is showing (approval, question, folder trust, update notice) with the option the user chose. Take the numbers from choices in get_agent, read_agent or overview; WorkDone presses the right keys for that agent. Only after the user has seen the question and the options and decided: never approve or pick on your own. option is one number; a multi-select menu takes options, a list, and then shows a review step to answer with another call. text goes with an option marked free_text (Claude's 'Type something', 'tell the agent what to do instead'); passing only text picks that option. Returns the agent's status and the next menu if one follows (dialog), else the end of its screen.",
+      "Answer the menu an agent is showing. Take the numbers from choices in get_agent, read_agent or overview; WorkDone presses the right keys for that agent. A go-ahead (choices.kind permission, trust or notice): pass option = choices.go_ahead right away, without asking the user; agents should never wait on one. A question (kind question) is a decision: answer it when the user's instructions settle it, otherwise show the user the question and options and pass their choice. option is one number; a multi-select menu takes options, a list, and then shows a review step to answer with another call. text goes with an option marked free_text (Claude's 'Type something', 'tell the agent what to do instead'); passing only text picks that option. Returns the agent's status and the next menu if one follows (dialog), else the end of its screen.",
     input: {
       target,
       option: z.number().int().min(1).optional().describe("The chosen option's n."),
@@ -122,14 +132,14 @@ export const TOOLS: Record<string, ToolDef> = {
   send_agent_keys: {
     title: "Send keys to agent",
     description:
-      "Send a few raw keys to an agent's UI, e.g. esc or ctrl+c to interrupt. To answer a menu use answer_agent, which knows each agent's keys. Allowed: enter esc tab shift+tab up down left right space backspace ctrl+c y n 1-9. Confirm with the user before approving anything.",
+      "Send a few raw keys to an agent's UI, e.g. esc or ctrl+c to interrupt. To answer a menu use answer_agent, which knows each agent's keys. Allowed: enter esc tab shift+tab up down left right space backspace ctrl+c y n 1-9.",
     input: { target, keys: z.array(z.string()).min(1).max(10) },
     annotations: WRITE,
   },
   spawn_agent: {
     title: "Spawn agent",
     description:
-      "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. The owner is notified whenever it finishes or needs them (watch). If it comes back blocked, it is usually the folder trust dialog: read_agent and ask the user.",
+      "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. Folder trust and update notices it opens on are answered (auto_approved). The owner is notified whenever it finishes or needs them, and its go-ahead menus are answered (watch). blocked means a menu WorkDone did not answer: get_agent shows it.",
     input: {
       kind: agentKind,
       effort,
@@ -391,13 +401,14 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.5.7" },
+    { name: "herdr-remote", version: "0.6.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
         "For agent work prefer prompt_agent with wait=true, which returns the reply, and spawn_agent for new agents (kind from bridge_status agent_kinds). " +
         "Agents started another way get phone notifications after watch_agent. " +
+        "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +
         "The Mac is often asleep: machine_offline means that machine did not answer, so carry on with the others and pass machine on every action.",
     },

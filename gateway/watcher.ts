@@ -1,7 +1,8 @@
 // Reports on watched agents: when one finishes a turn, asks its owner something,
 // stops at a dialog or disappears. prompt_agent watches the turn it started when the
 // call returns before the agent settles. A managed agent (watch_agent, or started by
-// start_agent or spawn_agent) is reported on every turn until it exits.
+// start_agent or spawn_agent) is reported on every turn until it exits. A dialog that
+// only asks for a go-ahead (a permission, folder trust) is answered, not reported.
 //
 // Normally the MCP server on OVH polls each gateway's watch_poll op and sends the
 // messages through the gateway whose notifyCommand reaches the phone, so it keeps
@@ -10,9 +11,12 @@
 
 import { readFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
+import { approveMenus, type Approval } from "./answer-ops.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
+import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import { herdrSocket } from "./herdr-socket.ts";
+import { showWatched } from "./sidebar.ts";
 import { childEnv, childProcesses, runProcess } from "./process.ts";
 import { StateStore, seenState, type Watched } from "./state.ts";
 import { agentReply } from "./transcript.ts";
@@ -107,6 +111,11 @@ function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max - 1).trimEnd() + "…" : s;
 }
 
+// What WorkDone answered for an agent: each menu and the option it took.
+export function approvedExcerpt(approved: Approval[]): string {
+  return clip(approved.map((a) => `${a.menu} → ${a.option}`).join("; "), 450);
+}
+
 // One line for the phone: who, what happened, where, and an excerpt.
 export function message(w: Watched, agent: any, paneId: string, note: Note): string {
   const name = agent?.name ?? w.name;
@@ -178,8 +187,10 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     for (const { paneId, w, d } of decided) {
       const cur = fresh[paneId];
       if (!cur || cur.rev !== w.rev) continue;
-      if (d.drop) delete fresh[paneId];
-      else if (d.set) fresh[paneId] = { ...cur, ...d.set };
+      if (d.drop) {
+        delete fresh[paneId];
+        if (cur.managed) showWatched(herdr, paneId, false);
+      } else if (d.set) fresh[paneId] = { ...cur, ...d.set };
     }
     return Object.keys(fresh).length;
   });
@@ -187,6 +198,17 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   const messages: string[] = [];
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
   for (const { paneId, w, agent, d, bg } of decided) {
+    // A menu that only wants a go-ahead is answered rather than reported, on every poll
+    // it is up: the agent carries on, and the owner hears when the turn ends. A pane
+    // another process is answering right now (a tool call's wait, answer_agent) is left to it.
+    if (agent?.agent_status === "blocked" && !d.drop) {
+      const got = await approveMenus(cfg, herdr, paneId, "watch_poll", { waitMs: 0 }).catch(() => ({ approved: [] as Approval[], busy: false }));
+      if (got.busy) continue;
+      if (got.approved.length) {
+        events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(got.approved) }]);
+        continue;
+      }
+    }
     if (!d.event) continue;
     const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
     messages.push(message(w, agent, paneId, note));
@@ -198,6 +220,82 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     });
   }
   return { messages, remaining };
+}
+
+export interface Found {
+  messages: string[];
+  remaining: number;
+}
+
+// While waiting, how often browser runs (files, no events) and the watch list are looked at.
+const WAIT_TICK_MS = 2000;
+
+// Herdr events that can change what a pass reports. Status changes are subscribed per
+// pane; exits, closes and agents appearing or leaving are server-wide, so they are
+// filtered by pane when they arrive. Seen from Herdr 0.9.1:
+//   {"event":"pane.agent_status_changed","data":{"agent":"claude","agent_status":"done","pane_id":"w8Z:p1","workspace_id":"w8Z"}}
+//   {"event":"pane_agent_detected","data":{"agent":"cursor","pane_id":"w95:p1","type":"pane_agent_detected","workspace_id":"w95"}}
+export function watchSubscriptions(paneIds: string[]): Array<Record<string, unknown>> {
+  return [
+    ...paneIds.map((pane_id) => ({ type: "pane.agent_status_changed", pane_id })),
+    { type: "pane.exited" },
+    { type: "pane.closed" },
+    { type: "pane.agent_detected" },
+  ];
+}
+
+// watch_poll with wait_ms: a pass, and while passes find nothing, wait for Herdr to
+// report a change on a watched pane and pass again, until waitMs is up. The
+// subscription is open before the first pass, so a change during a pass wakes the
+// wait; one between two calls is caught by state_change_seq, as without waiting.
+// Without a subscription (nothing watched, a Herdr without events) it is one pass and
+// the caller keeps to its interval.
+export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: number, agents: () => Promise<Found>, jobs: () => Found): Promise<Found> {
+  const subscribe = subscriberOf(herdr);
+  const deadline = Date.now() + waitMs;
+  const watchedIds = () => Object.keys(new StateStore(cfg.stateDir).watched()).sort().join("\n");
+  let sub: Subscription | null = null;
+  let subscribed = "";
+  try {
+    for (;;) {
+      // A watch added or dropped meanwhile (prompt_agent in another process) changes what to hear.
+      const ids = watchedIds();
+      if (ids !== subscribed) {
+        sub?.close();
+        sub = null;
+        subscribed = ids;
+        if (subscribe && ids) sub = await subscribe(watchSubscriptions(ids.split("\n"))).catch(() => null);
+      }
+      const a = await agents();
+      const j = jobs();
+      const found = { messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining };
+      if (!sub || found.messages.length || found.remaining === 0 || Date.now() >= deadline) return found;
+      const panes = new Set(subscribed.split("\n"));
+      for (;;) {
+        const left = deadline - Date.now();
+        if (left <= 0) break;
+        let event: any;
+        try {
+          event = await sub.next(Math.min(WAIT_TICK_MS, left));
+        } catch {
+          // Herdr went away: one last pass says what is known.
+          sub = null;
+          break;
+        }
+        if (event) {
+          if (!panes.has(event.data?.pane_id)) continue;
+          // The next pass sees everything that already happened: skip the queued events.
+          while (await sub.next(0).catch(() => null));
+          break;
+        }
+        const runs = jobs();
+        if (runs.messages.length) return { messages: runs.messages, remaining: a.remaining + runs.remaining };
+        if (watchedIds() !== subscribed) break;
+      }
+    }
+  } finally {
+    sub?.close();
+  }
 }
 
 export async function sendNotification(cfg: GatewayConfig, message: string): Promise<{ exit_code: number | null }> {

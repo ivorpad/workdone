@@ -17,28 +17,31 @@ describe("notifier", () => {
       return { ok: true, result: { messages: [], remaining: 0 } };
     };
     const n = startNotifier(call, ["mac", "ovh", "syno"], "ovh", 3_600_000);
-    await n.tick();
-    n.stop();
+    await Bun.sleep(20);
+    expect(calls).toContainEqual(["syno", "watch_poll", { wait_ms: 20_000 }]);
     expect(calls).toContainEqual(["ovh", "notify", { message: "syno: fixer finished in app" }]);
+    // mac rests an interval after failing; the others are done.
+    expect(calls.filter(([m]) => m === "mac")).toHaveLength(1);
     calls.length = 0;
-    await n.tick();
-    expect(calls.map(([m, op]) => `${m}:${op}`)).toEqual(["mac:watch_poll"]);
     n.markPending("syno");
-    calls.length = 0;
-    await n.tick();
-    expect(calls.map(([m, op]) => `${m}:${op}`)).toEqual(["mac:watch_poll", "syno:watch_poll", "ovh:notify"]);
+    await Bun.sleep(20);
+    expect(calls.map(([m, op]) => `${m}:${op}`)).toEqual(["syno:watch_poll", "ovh:notify"]);
+    n.stop();
+    await n.idle();
   });
-  test("keeps polling a machine whose gateway fails for another reason", async () => {
+  test("keeps polling a machine whose gateway fails for another reason, an interval apart", async () => {
     let polls = 0;
     const call: CallGateway = async () => {
       polls++;
       return { ok: false, error: { code: "internal_error", message: "boom" } };
     };
-    const n = startNotifier(call, ["mac"], "mac", 3_600_000);
-    await n.tick();
-    await n.tick();
+    const n = startNotifier(call, ["mac"], "mac", 50);
+    await Bun.sleep(130);
     n.stop();
-    expect(polls).toBe(2);
+    await n.idle();
+    // Calls at about 0, 50 and 100 ms.
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(polls).toBeLessThanOrEqual(4);
   });
   test("drops a machine whose gateway does not know watch_poll", async () => {
     let polls = 0;
@@ -46,11 +49,72 @@ describe("notifier", () => {
       polls++;
       return { ok: false, error: { code: "unknown_operation", message: "old gateway" } };
     };
-    const n = startNotifier(call, ["mac"], "mac", 3_600_000);
-    await n.tick();
-    await n.tick();
-    n.stop();
+    const n = startNotifier(call, ["mac"], "mac", 10);
+    await n.idle();
     expect(polls).toBe(1);
+  });
+  test("a gateway that waits is called again as soon as it returns, one call at a time", async () => {
+    let polls = 0;
+    let inflight = 0;
+    let most = 0;
+    const call: CallGateway = async (_m, _op, params) => {
+      polls++;
+      most = Math.max(most, ++inflight);
+      await Bun.sleep(params.wait_ms as number);
+      inflight--;
+      return { ok: true, result: { messages: [], remaining: 1 } };
+    };
+    const n = startNotifier(call, ["mac"], "mac", 3_600_000, 20);
+    for (let i = 0; i < 5; i++) n.markPending("mac");
+    await Bun.sleep(110);
+    n.stop();
+    await n.idle();
+    expect(polls).toBeGreaterThanOrEqual(4);
+    expect(most).toBe(1);
+  });
+  test("a gateway that ignores wait_ms (older, or nothing to listen to) is not hot-looped", async () => {
+    let polls = 0;
+    const call: CallGateway = async () => {
+      polls++;
+      return { ok: true, result: { messages: [], remaining: 1 } };
+    };
+    const n = startNotifier(call, ["mac"], "mac", 50, 20_000);
+    await Bun.sleep(130);
+    n.stop();
+    await n.idle();
+    // Calls at about 0, 50 and 100 ms.
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(polls).toBeLessThanOrEqual(4);
+  });
+  test("messages from a quick return are sent and the next call goes out at once", async () => {
+    const calls: string[] = [];
+    let polls = 0;
+    const call: CallGateway = async (machine, op) => {
+      calls.push(`${machine}:${op}`);
+      if (op === "notify") return { ok: true, result: {} };
+      return { ok: true, result: { messages: ++polls === 1 ? ["fixer finished"] : [], remaining: 1 } };
+    };
+    const n = startNotifier(call, ["mac"], "mac", 3_600_000);
+    await Bun.sleep(30);
+    // The second call returned early with nothing: resting, so no third call yet.
+    expect(calls).toEqual(["mac:watch_poll", "mac:notify", "mac:watch_poll"]);
+    n.stop();
+    await n.idle();
+  });
+  test("an offline machine is rested between calls, and markPending wakes it", async () => {
+    let polls = 0;
+    const call: CallGateway = async () => {
+      polls++;
+      return { ok: false, error: { code: "machine_offline", message: "asleep" } };
+    };
+    const n = startNotifier(call, ["mac"], "mac", 3_600_000);
+    await Bun.sleep(30);
+    expect(polls).toBe(1);
+    n.markPending("mac");
+    await Bun.sleep(10);
+    expect(polls).toBe(2);
+    n.stop();
+    await n.idle();
   });
 });
 

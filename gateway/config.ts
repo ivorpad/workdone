@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
 import { DEFAULT_REDACT, parseAliases, type AgentAlias } from "./mask.ts";
 
-export const GATEWAY_VERSION = "0.5.0";
+export const GATEWAY_VERSION = "0.6.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -38,6 +38,9 @@ export interface GatewayConfig {
   execInPane: boolean;
   // Files the file tools never serve: the alias map when it lives outside the config dir.
   privatePaths: string[];
+  // Answer menus that only ask for a go-ahead (a permission, folder trust, an update
+  // notice) for watched agents and while a tool call waits. On unless set to false.
+  autoApprove: boolean;
   allowRawPaneRun: boolean;
   allowWorktreeRemove: boolean;
   allowExec: boolean;
@@ -175,6 +178,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     browser: parseBrowser(c.browser),
     execInPane: c.execInPane === true,
     privatePaths: typeof c.agentAliases === "string" ? [expandHome(c.agentAliases)] : [],
+    autoApprove: c.autoApprove !== false,
     allowRawPaneRun: c.allowRawPaneRun === true,
     allowWorktreeRemove: c.allowWorktreeRemove === true,
     allowExec: c.allowExec === true,

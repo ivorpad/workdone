@@ -9,8 +9,9 @@ import {
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
-import { answerOps, dialogView } from "./answer-ops.ts";
+import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
+import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
@@ -22,6 +23,28 @@ import { agentReply } from "./transcript.ts";
 import { agentView, paneView, textOf, watchInfo, withWatch } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done", "blocked"]);
+
+// agent.explain answers with evidence for every rule (about 8 KB for Claude). Keep the verdict,
+// the rules that matched, the skip and fallback reasons, and a clipped preview of the winning region.
+function explainView(e: any) {
+  const rules: any[] = Array.isArray(e?.evaluated_rules) ? e.evaluated_rules : [];
+  const won = e?.matched_rule ?? null;
+  const preview = rules.find((r) => r.id === won?.id)?.evidence?.region_preview;
+  return {
+    state: e?.state ?? null,
+    matched_rule: won && { id: won.id, state: won.state, region: won.region, priority: won.priority },
+    region_preview: typeof preview === "string" ? preview.slice(0, 300) : null,
+    also_matched: rules.filter((r) => r.matched && r.id !== won?.id).map((r) => `${r.id} (${r.state})`),
+    visible: { blocker: e?.visible_blocker ?? null, working: e?.visible_working ?? null, idle: e?.visible_idle ?? null },
+    skip_state_update: e?.skip_state_update ?? null,
+    skipped_update_reason: e?.skipped_update_reason ?? null,
+    fallback_reason: e?.fallback_reason ?? null,
+    screen_detection_skipped: e?.screen_detection_skipped ?? null,
+    screen_detection_skip_reason: e?.screen_detection_skip_reason ?? null,
+    manifest: e?.manifest_source ? `${e.manifest_source} ${e.manifest_version ?? ""}`.trim() : null,
+    warning: e?.warning ?? e?.remote_update_error ?? null,
+  };
+}
 
 const spoken = (s: string) => s.trim().toLowerCase().replace(/[\s_]+/g, "-").replace(/[^a-z0-9.-]/g, "").replace(/^[-.]+|[-.]+$/g, "");
 const EFFORT_WORDS: Record<string, string> = {
@@ -82,6 +105,35 @@ export class Gateway {
     return optInt(params, "timeout_ms", 1000, this.cfg.maxWaitMs) ?? Math.min(dflt, this.cfg.maxWaitMs);
   }
 
+  // From an agent Herdr reports blocked: gives the go-ahead to each menu that only wants
+  // one and waits again, until the agent settles, stops at a question, or deadline.
+  // agent is Herdr's agent as last seen, null when the wait ran out while it worked.
+  async settleThrough(paneId: string, via: string, deadline: number, agent: any): Promise<{ agent: any; approved: Approval[] }> {
+    const approved: Approval[] = [];
+    while (agent?.agent_status === "blocked" && approved.length < 20) {
+      const got = await approveMenus(this.cfg, this.herdr, paneId, via, { waitMs: 20_000 });
+      if (got.approved.length === 0) {
+        // A question, or a menu another process answered while this one waited for it.
+        agent = (await this.herdr("agent.get", { target: paneId })).agent;
+        if (agent?.agent_status === "blocked") break;
+      }
+      approved.push(...got.approved);
+      const left = deadline - Date.now();
+      if (left < 1000) {
+        agent = (await this.herdr("agent.get", { target: paneId })).agent;
+        break;
+      }
+      agent = await this.herdr("agent.wait", { target: paneId, until: ["idle", "done", "blocked"], timeout_ms: left }, left + 10_000).then(
+        (r) => r?.agent ?? r,
+        (err) => {
+          if (err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout")) return null;
+          throw err;
+        },
+      );
+    }
+    return { agent, approved };
+  }
+
   async handle(op: string, params: Params): Promise<unknown> {
     const extra = Object.hasOwn(this.extra, op) ? this.extra[op] : undefined;
     if (extra) return await extra(params);
@@ -112,6 +164,7 @@ export class Gateway {
             worktree_remove: cfg.allowWorktreeRemove,
             documents: cfg.documentConverter !== null,
             browser: cfg.browser !== null && cfg.allowExec,
+            auto_approve: cfg.autoApprove,
           },
         };
       }
@@ -123,7 +176,14 @@ export class Gateway {
 
       case "get_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
-        return { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())) };
+        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())) };
+        if (!optBool(params, "explain", false)) return view;
+        // Herdr's own reasoning for the status, to tell its detection apart from ours. Servers
+        // before agent.explain reject the method: get_agent still answers.
+        const explain = await this.herdr("agent.explain", { target: agent.pane_id })
+          .then((res) => explainView(res?.explain ?? res))
+          .catch((err) => ({ error: (err as GatewayError).code ?? "herdr_error" }));
+        return "error" in explain ? { ...view, explain: null, explain_error: explain.error } : { ...view, explain };
       }
 
       case "read_agent": {
@@ -155,16 +215,26 @@ export class Gateway {
         if (text.length > cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${cfg.maxPromptChars} characters`);
         const wait = params.wait === true;
         const timeout = this.waitMs(params, 60_000);
+        const deadline = Date.now() + timeout;
+        const approved: Approval[] = [];
         // Herdr refuses to prompt a blocked agent itself, but it does not flag every menu:
         // Cursor's and Codex's folder trust, Codex's update and model notices. Typed text
         // would land in the menu. Without the screen there is no telling, so a failed read fails the prompt.
         if (agent.agent_status !== "blocked") {
-          const screen = textOf(await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 60, format: "text", strip_ansi: true }));
-          const dialog = parseDialog(screen)?.text;
+          let dialog = parseDialog(await menuScreen(this.herdr, agent.pane_id));
+          // Those only want a go-ahead: give it, and prompt once the agent is ready.
+          if (dialog) {
+            const got = await approveMenus(cfg, this.herdr, agent.pane_id, "prompt_agent", { waitMs: 20_000, kinds: ["trust", "notice"] });
+            if (got.approved.length) {
+              approved.push(...got.approved);
+              await this.herdr("agent.wait", { target: agent.pane_id, until: ["idle", "done"], timeout_ms: 15_000 }, 25_000).catch(() => null);
+              dialog = parseDialog(await menuScreen(this.herdr, agent.pane_id));
+            }
+          }
           if (dialog) {
             throw new GatewayError(
               "agent_blocked",
-              `the agent is showing a menu Herdr does not flag: ${dialog.replace(/\s*\n\s*/g, " / ")}. Show the user the options and answer_agent with their choice`,
+              `the agent is showing a menu Herdr does not flag: ${dialog.text.replace(/\s*\n\s*/g, " / ")}. Answer it with answer_agent first`,
             );
           }
         }
@@ -172,7 +242,7 @@ export class Gateway {
         try {
           res = await this.herdr(
             "agent.prompt",
-            { target: agent.pane_id, text, wait: wait ? { timeout_ms: timeout } : null },
+            { target: agent.pane_id, text, wait: wait ? { timeout_ms: Math.max(1000, deadline - Date.now()) } : null },
             wait ? timeout + 10_000 : undefined,
           );
         } catch (err) {
@@ -180,10 +250,21 @@ export class Gateway {
           if (err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout")) this.state.prompted(agent.pane_id, watchInfo(agent), null, false);
           throw err;
         }
-        const status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
+        let status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
+        // Stopped at a menu mid-turn: a go-ahead is given and the wait goes on.
+        if (wait && status === "blocked") {
+          const through = await this.settleThrough(agent.pane_id, "prompt_agent", deadline, res?.agent ?? { agent_status: status });
+          if (through.approved.length) {
+            approved.push(...through.approved);
+            res = { ...res, agent: through.agent ?? (await this.herdr("agent.get", { target: agent.pane_id })).agent };
+            status = res.agent?.agent_status;
+          }
+        }
         const settled = wait && SETTLED.has(status);
         this.state.prompted(agent.pane_id, watchInfo(agent), res?.agent ?? { agent_status: status }, settled);
+        clearNote(this.herdr, agent.pane_id);
         const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res };
+        if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
           const reply = await agentReply(cfg, agent, { freshFor: text });
           if (reply) out.reply = reply;
@@ -198,7 +279,13 @@ export class Gateway {
           throw new GatewayError("invalid_params", `until must be a list of ${AGENT_STATUSES.join(", ")}`);
         }
         const timeout = this.waitMs(params, 60_000);
-        return await this.herdr("agent.wait", { target: agent.pane_id, until, timeout_ms: timeout }, timeout + 10_000);
+        const deadline = Date.now() + timeout;
+        const res = await this.herdr("agent.wait", { target: agent.pane_id, until, timeout_ms: timeout }, timeout + 10_000);
+        // Waiting for any settled state (the default) goes on through go-ahead menus.
+        if (until.length > 0 || res?.agent?.agent_status !== "blocked") return res;
+        const through = await this.settleThrough(agent.pane_id, "wait_agent", deadline, res.agent);
+        if (!through.approved.length) return res;
+        return { ...res, agent: through.agent ?? (await this.herdr("agent.get", { target: agent.pane_id })).agent, auto_approved: through.approved };
       }
 
       case "send_agent_keys": {
@@ -247,22 +334,34 @@ export class Gateway {
         const name = str(params, "name", AGENT_NAME_RE);
         // A shell pane has no agent, so anything still watched there is left over from one that exited.
         this.state.unwatch(pane.pane_id);
+        const watch = optBool(params, "watch", true);
+        showWatched(this.herdr, pane.pane_id, false);
         const manage = (agent: any) => {
-          if (optBool(params, "watch", true)) this.state.manage(pane.pane_id, { ...watchInfo(pane), name, kind }, agent, true);
+          if (!watch) return;
+          this.state.manage(pane.pane_id, { ...watchInfo(pane), name, kind }, agent, true);
+          showWatched(this.herdr, pane.pane_id, true);
         };
+        let res: any = null;
+        let notReady: GatewayError | null = null;
         try {
-          const res = await this.herdr("agent.start", { pane_id: pane.pane_id, kind, name, args, timeout_ms: 30_000 }, 45_000);
-          this.mask.started(pane.pane_id, name, alias);
-          manage(res?.agent ?? { agent_status: "unknown" });
-          return res;
+          res = await this.herdr("agent.start", { pane_id: pane.pane_id, kind, name, args, timeout_ms: 30_000 }, 45_000);
         } catch (err) {
           // agent_not_ready: it started but sits at a dialog, e.g. folder trust.
-          if (err instanceof GatewayError && err.code === "agent_not_ready") {
-            this.mask.started(pane.pane_id, name, alias);
-            manage({ agent_status: "blocked" });
-          }
-          throw err;
+          if (!(err instanceof GatewayError && err.code === "agent_not_ready")) throw err;
+          notReady = err;
         }
+        this.mask.started(pane.pane_id, name, alias);
+        // A new agent can open on menus that only want a go-ahead: folder trust, an update notice.
+        const got = await approveMenus(cfg, this.herdr, pane.pane_id, "start_agent", { waitMs: 20_000 });
+        if (got.approved.length) {
+          const ready = await this.herdr("agent.wait", { target: pane.pane_id, until: ["idle", "done", "blocked"], timeout_ms: 30_000 }, 40_000).catch(() => null);
+          res = { ...res, agent: ready?.agent ?? (await this.herdr("agent.get", { target: pane.pane_id }).catch(() => null))?.agent, auto_approved: got.approved };
+        } else if (notReady) {
+          manage({ agent_status: "blocked" });
+          throw notReady;
+        }
+        manage(res?.agent ?? { agent_status: "unknown" });
+        return res;
       }
 
       case "list_repos": {

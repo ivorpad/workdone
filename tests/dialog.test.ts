@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { timing } from "../gateway/answer-ops.ts";
+import { approveMenus, timing } from "../gateway/answer-ops.ts";
+import { menuExcerpt } from "../gateway/attention.ts";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
-import { answerKeys, parseDialog } from "../gateway/dialog.ts";
+import { answerKeys, goAhead, parseDialog } from "../gateway/dialog.ts";
 import { Gateway } from "../gateway/gateway.ts";
 
 // Screens captured from Claude Code, Codex and cursor-agent on 28-09 (tests/fixtures/screens).
@@ -68,6 +69,45 @@ describe("parseDialog", () => {
   });
 });
 
+describe("goAhead", () => {
+  const go = (name: string) => goAhead(parseDialog(screen(name))!);
+
+  test("permissions: allow once, never an allowlist or don't-ask-again", () => {
+    // Claude in auto mode under an ask rule (Bash, Write, Edit), in default mode, and the plan approval.
+    for (const name of ["claude-ask-rule", "claude-write", "claude-edit", "claude-write-config", "claude-perm", "claude-plan"]) {
+      expect([name, go(name)]).toEqual([name, { kind: "permission", option: 1 }]);
+    }
+    expect(parseDialog(screen("claude-plan"))!.options[2]).toMatchObject({ label: "Tell Claude what to change", free_text: true });
+    for (const name of ["codex-perm", "codex-edit", "cursor-perm", "cursor-write"]) expect([name, go(name)]).toEqual([name, { kind: "permission", option: 1 }]);
+  });
+
+  test("folder trust, and the update and model notices Codex opens on", () => {
+    expect(go("claude-trust")).toEqual({ kind: "trust", option: 2 });
+    for (const name of ["codex-trust", "codex-trust-2", "cursor-start", "cursor-trust-narrow"]) expect([name, go(name)]).toEqual([name, { kind: "trust", option: 1 }]);
+    // Skip the update rather than install it mid-task; keep the model the alias pins.
+    expect(go("codex-update")).toEqual({ kind: "notice", option: 2 });
+    expect(go("codex-migrate")).toEqual({ kind: "notice", option: 2 });
+  });
+
+  test("questions are the owner's", () => {
+    for (const name of ["claude-ask", "claude-ask-typing", "claude-multi-1", "claude-multi-2", "claude-multi-3", "claude-multiselect"]) {
+      expect([name, go(name)]).toEqual([name, null]);
+    }
+    // A yes/no that is not a request to run, edit or allow something.
+    expect(goAhead(parseDialog("Ship it now?\n❯ 1. Yes\n  2. No\nEnter to select · Esc to cancel")!)).toBeNull();
+  });
+
+  test("the record of an approval names the command or file, not the options", () => {
+    expect(menuExcerpt(parseDialog(screen("claude-ask-rule"))!)).toBe(
+      "Bash command / echo approve-capture / Print approve-capture / Ask rule Bash(echo:*) overrides auto mode for this command. / /permissions to let auto mode decide / Do you want to proceed?",
+    );
+    expect(menuExcerpt(parseDialog(screen("codex-edit"))!)).toBe(
+      "Would you like to make the following edits? / Description: Apply proposed file edits / Destination: /Users/me/codex-approve-capture.txt",
+    );
+    expect(menuExcerpt(parseDialog(screen("cursor-perm"))!)).toBe("$ kill 83616 2>/dev/null || true in . / Run this command? / Not in allowlist: kill, true");
+  });
+});
+
 describe("answer_agent and steer_agent", () => {
   timing.key = timing.text = timing.settle = 0;
 
@@ -126,20 +166,21 @@ describe("answer_agent and steer_agent", () => {
     expect(pressed).toEqual(["4", "text:Teal please", "enter"]);
     const c = setup("cursor", "blocked", screen("cursor-perm"));
     await c.gw.handle("answer_agent", { target: "w1:p1", option: 4, text: "Do not kill anything" });
-    expect(c.pressed).toEqual(["text:n", "text:Do not kill anything", "enter"]);
+    expect(c.pressed).toEqual(["n", "text:Do not kill anything", "enter"]);
     // Declining without text: Cursor's field still wants enter; Codex's option is enough.
     const skip = setup("cursor", "blocked", screen("cursor-perm"));
     await skip.gw.handle("answer_agent", { target: "w1:p1", option: 4 });
-    expect(skip.pressed).toEqual(["text:n", "enter"]);
+    expect(skip.pressed).toEqual(["n", "enter"]);
     const no = setup("codex", "blocked", screen("codex-perm"));
     await no.gw.handle("answer_agent", { target: "w1:p1", option: 3 });
     expect(no.pressed).toEqual(["3"]);
   });
 
-  test("letters are typed, arrows count from the cursor, multi-select tabs on", async () => {
+  test("letters are keys, arrows count from the cursor, multi-select tabs on", async () => {
+    // Cursor's approval menus ignore a letter typed as text (28-09, Write to this file?).
     const t = setup("cursor", "idle", screen("cursor-start"));
     await t.gw.handle("answer_agent", { target: "w1:p1", option: 1 });
-    expect(t.pressed).toEqual(["text:a"]);
+    expect(t.pressed).toEqual(["a"]);
     const c = setup("claude", "blocked", screen("claude-trust"));
     await c.gw.handle("answer_agent", { target: "w1:p1", option: 2 });
     expect(c.pressed).toEqual(["down", "enter"]);
@@ -186,9 +227,77 @@ describe("answer_agent and steer_agent", () => {
   test("get_agent shows a blocked agent's menu as choices, and a Codex menu Herdr calls idle", async () => {
     const b = setup("claude", "blocked", screen("claude-perm"));
     const res: any = await b.gw.handle("get_agent", { target: "w1:p1" });
-    expect(res).toMatchObject({ attention: "dialog", choices: { multi: false, free_text: false } });
+    expect(res).toMatchObject({ attention: "dialog", choices: { multi: false, free_text: false, kind: "permission", go_ahead: 1 } });
     expect(res.choices.options).toHaveLength(4);
     const idle = setup("codex", "idle", screen("codex-trust"));
-    expect(await idle.gw.handle("get_agent", { target: "w1:p1" })).toMatchObject({ attention: "dialog", choices: { options: [{ label: "Trust and continue" }, { label: "Back to Agent Command Center" }] } });
+    expect(await idle.gw.handle("get_agent", { target: "w1:p1" })).toMatchObject({
+      attention: "dialog", choices: { kind: "trust", go_ahead: 1, options: [{ label: "Trust and continue" }, { label: "Back to Agent Command Center" }] },
+    });
+    const ask = setup("claude", "blocked", screen("claude-ask"));
+    expect(await ask.gw.handle("get_agent", { target: "w1:p1" })).toMatchObject({ choices: { kind: "question", go_ahead: null } });
+  });
+});
+
+describe("approveMenus", () => {
+  timing.key = timing.text = timing.settle = 0;
+
+  // Each key press shows the next screen.
+  function setup(screens: string[], extra: Record<string, unknown> = {}) {
+    let at = 0;
+    const pressed: string[] = [];
+    const herdr: HerdrCall = async (method, params: any) => {
+      if (method === "agent.get") return { agent: { pane_id: "w1:p1", agent: "codex", agent_status: at < screens.length - 1 ? "blocked" : "idle", cwd: "/srv/allowed/app" } };
+      if (method === "agent.read") return { text: screens[at] };
+      if (method === "agent.send_keys") {
+        pressed.push(...params.keys);
+        at = Math.min(at + 1, screens.length - 1);
+      }
+      return {};
+    };
+    const state = mkdtempSync(join(tmpdir(), "herdr-go-"));
+    const cfg = loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, ...extra });
+    return { cfg, herdr, pressed, state };
+  }
+
+  test("one menu after another until the agent is ready, each in the audit log", async () => {
+    const t = setup([screen("codex-update"), screen("codex-trust"), screen("codex-after-migrate")]);
+    const res = await approveMenus(t.cfg, t.herdr, "w1:p1", "spawn_agent", { waitMs: 0 });
+    expect(t.pressed).toEqual(["2", "1"]);
+    expect(res.approved.map((a) => [a.kind, a.option])).toEqual([["notice", "Skip"], ["trust", "Trust and continue"]]);
+    expect(res.status).toBe("idle");
+    const audit = readFileSync(join(t.state, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(audit.map((e) => [e.op, e.via, e.args.option])).toEqual([["auto_approve", "spawn_agent", "Skip"], ["auto_approve", "spawn_agent", "Trust and continue"]]);
+  });
+
+  test("stops at a question, at a menu that stays up, and when kinds leaves it out", async () => {
+    const ask = setup([screen("claude-ask"), screen("claude-ask-after")]);
+    expect((await approveMenus(ask.cfg, ask.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toEqual([]);
+    expect(ask.pressed).toEqual([]);
+    // Keys that did not take: pressed once, not counted, and the audit log says so.
+    const stuck = setup([screen("cursor-write"), screen("cursor-write")]);
+    expect((await approveMenus(stuck.cfg, stuck.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toEqual([]);
+    expect(stuck.pressed).toEqual(["y"]);
+    expect(JSON.parse(readFileSync(join(stuck.state, "audit.jsonl"), "utf8"))).toMatchObject({ op: "auto_approve", ok: false, args: { option: "Proceed" } });
+    const perm = setup([screen("claude-edit"), screen("claude-ask-after")]);
+    expect((await approveMenus(perm.cfg, perm.herdr, "w1:p1", "prompt_agent", { waitMs: 0, kinds: ["trust", "notice"] })).approved).toEqual([]);
+    expect(perm.pressed).toEqual([]);
+  });
+
+  test("autoApprove false turns it off", async () => {
+    const t = setup([screen("claude-ask-rule"), screen("claude-ask-after")], { autoApprove: false });
+    expect(await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).toEqual({ approved: [], status: null });
+    expect(t.pressed).toEqual([]);
+  });
+
+  test("a pane another process is answering is left alone; a lock a dead process left is not", async () => {
+    const t = setup([screen("claude-ask-rule"), screen("claude-ask-after")]);
+    const lock = join(t.state, "answer-w1_p1.lock");
+    mkdirSync(lock);
+    expect(await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).toEqual({ approved: [], status: null, busy: true });
+    expect(t.pressed).toEqual([]);
+    utimesSync(lock, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    expect((await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toHaveLength(1);
+    expect(t.pressed).toEqual(["1"]);
+    expect(existsSync(lock)).toBe(false);
   });
 });

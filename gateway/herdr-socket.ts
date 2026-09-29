@@ -1,10 +1,12 @@
-// Minimal client for Herdr's newline-delimited JSON socket API: one request per connection.
+// Minimal client for Herdr's newline-delimited JSON socket API: one request per
+// connection. The call also carries subscribe, for events.subscribe's open stream.
 
 import { GatewayError, type HerdrCall } from "./config.ts";
+import { herdrSubscribe, type Subscribe } from "./herdr-events.ts";
 
-export function herdrSocket(socketPath: string): HerdrCall {
+export function herdrSocket(socketPath: string): HerdrCall & { subscribe: Subscribe } {
   let seq = 0;
-  return (method, params, timeoutMs = 20_000) =>
+  const call: HerdrCall = (method, params, timeoutMs = 20_000) =>
     new Promise((resolvePromise, reject) => {
       const id = `gw:${process.pid}:${++seq}`;
       const chunks: Buffer[] = [];
@@ -54,5 +56,5 @@ export function herdrSocket(socketPath: string): HerdrCall {
         },
       }).catch((err: Error) => finish(() => reject(new GatewayError("herdr_unavailable", err.message))));
     });
+  return Object.assign(call, { subscribe: herdrSubscribe(socketPath) });
 }
-

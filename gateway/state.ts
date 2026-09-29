@@ -1,7 +1,8 @@
 // Small JSON files in the gateway's state directory: which panes, tabs and workspaces
 // the bridge created, and which agents to report on when they finish or need the owner.
+// Also the audit log, and the lock that keeps two processes from answering one menu.
 
-import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 export type CreatedKind = "panes" | "tabs" | "workspaces";
@@ -195,5 +196,50 @@ export class StateStore {
     this.updateWatched((w) => {
       delete w[paneId];
     });
+  }
+
+  // One process at a time answers a pane's menu: the notifier's poll and a tool call
+  // can find the same menu, and keys pressed twice land in whatever the agent shows
+  // next. null when another process still holds the pane after waitMs. A lock older
+  // than 60 s was left by a process that died holding it.
+  async withPane<T>(paneId: string, waitMs: number, fn: () => Promise<T>): Promise<T | null> {
+    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+    const lock = resolve(this.dir, `answer-${paneId.replace(/[^A-Za-z0-9_.-]/g, "_")}.lock`);
+    let held = false;
+    for (const deadline = Date.now() + waitMs; !held; ) {
+      try {
+        mkdirSync(lock);
+        held = true;
+      } catch (err: any) {
+        if (err?.code !== "EEXIST") break;
+        let gone = false;
+        try {
+          if (Date.now() - statSync(lock).mtimeMs > 60_000) {
+            rmdirSync(lock);
+            gone = true;
+          }
+        } catch {
+          gone = true;
+        }
+        if (gone) continue;
+        if (Date.now() >= deadline) return null;
+        await Bun.sleep(100);
+      }
+    }
+    try {
+      return await fn();
+    } finally {
+      if (held) rmdirSync(lock);
+    }
+  }
+
+  audit(entry: Record<string, unknown>) {
+    try {
+      mkdirSync(this.dir, { recursive: true, mode: 0o700 });
+      const line = { ts: new Date().toISOString(), client: process.env.SSH_CLIENT?.split(" ")[0] ?? "local", ...entry };
+      appendFileSync(resolve(this.dir, "audit.jsonl"), JSON.stringify(line) + "\n", { mode: 0o600 });
+    } catch {
+      // Auditing must never break a request.
+    }
   }
 }

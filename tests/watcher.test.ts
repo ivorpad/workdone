@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { timing } from "../gateway/answer-ops.ts";
 import { loadConfig } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
 import type { Watched } from "../gateway/state.ts";
 import { decide, decideBackground, message } from "../gateway/watcher.ts";
 
+const screen = (name: string) => readFileSync(join(import.meta.dir, "fixtures/screens", `${name}.txt`), "utf8");
 const now = Date.parse("2026-09-25T12:00:00Z");
 const since = (msAgo: number) => new Date(now - msAgo).toISOString();
 
@@ -153,9 +155,11 @@ describe("watch_poll and notify ops", () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-watch-"));
     const agents: any[] = [{ pane_id: "w1:p1", agent: "claude", agent_status: "idle", cwd: "/srv/allowed/app" }];
     const reads: string[] = [];
+    const reports: any[] = [];
     let onList = () => {};
     let screen: string | Error = "";
     const herdr = async (method: string, params: any) => {
+      if (method === "pane.report_metadata") reports.push(params);
       if (method === "agent.list") {
         onList();
         return { agents };
@@ -171,7 +175,7 @@ describe("watch_poll and notify ops", () => {
     const watch = (entries: Record<string, Partial<Watched>>) => writeFileSync(join(state, "watch.json"), JSON.stringify(entries));
     const saved = () => JSON.parse(readFileSync(join(state, "watch.json"), "utf8"));
     return {
-      gw, state, agents, reads, watch, saved,
+      gw, state, agents, reads, reports, watch, saved,
       setScreen: (s: string | Error) => void (screen = s),
       setOnList: (f: () => void) => void (onList = f),
     };
@@ -213,7 +217,7 @@ describe("watch_poll and notify ops", () => {
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
   });
   test("a dialog is quoted from the detection screen", async () => {
-    const { gw, agents, reads, watch, setScreen } = setup();
+    const { gw, agents, reads, watch, setScreen } = setup({ autoApprove: false });
     agents[0].agent_status = "blocked";
     setScreen("  Run this command?\n  $ pnpm db:reset\n  → Run (once) (y)\n  Skip (esc or n)");
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working" } });
@@ -222,6 +226,65 @@ describe("watch_poll and notify ops", () => {
       remaining: 1,
     });
     expect(reads).toEqual(["detection"]);
+  });
+  test("a menu that only wants a go-ahead is answered, not reported, and the turn goes on", async () => {
+    timing.key = timing.text = timing.settle = 0;
+    const { gw, agents, watch, saved, setScreen, state } = setup();
+    agents[0].agent_status = "blocked";
+    setScreen(screen("claude-ask-rule"));
+    const pressed: string[] = [];
+    const herdr = gw.herdr;
+    (gw as any).herdr = async (method: string, params: any) => {
+      if (method === "agent.get") return { agent: agents[0] };
+      if (method === "agent.send_keys") {
+        pressed.push(...params.keys);
+        agents[0].agent_status = "working";
+        setScreen(screen("claude-steer"));
+        return {};
+      }
+      return herdr(method, params);
+    };
+    watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
+    expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
+    expect(pressed).toEqual(["1"]);
+    expect(saved()["w1:p1"]).toMatchObject({ busy: true, last_event: { type: "approved" } });
+    expect(saved()["w1:p1"].last_event.excerpt).toBe(
+      "Bash command / echo approve-capture / Print approve-capture / Ask rule Bash(echo:*) overrides auto mode for this command. / /permissions to let auto mode decide / Do you want to proceed? → Yes",
+    );
+    expect(readFileSync(join(state, "audit.jsonl"), "utf8")).toContain('"op":"auto_approve","ok":true,"via":"watch_poll"');
+    // The turn it was on still ends in a finish.
+    agents[0].agent_status = "idle";
+    const next: any = await gw.handle("watch_poll", {});
+    expect(next.messages).toHaveLength(1);
+    expect(next.messages[0]).toStartWith("fixer finished in app: ");
+  });
+  test("a menu someone else is answering is left alone; one that will not close is reported", async () => {
+    timing.key = timing.text = timing.settle = 0;
+    const { gw, agents, watch, setScreen, state } = setup();
+    agents[0].agent_status = "blocked";
+    setScreen(screen("cursor-write"));
+    const entry = { name: "fixer", cwd: null, since: new Date().toISOString(), last_status: "working", managed: true, busy: true };
+    watch({ "w1:p1": entry });
+    mkdirSync(join(state, "answer-w1_p1.lock"));
+    expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
+    rmdirSync(join(state, "answer-w1_p1.lock"));
+    // The keys go in but the fake screen never changes: not an approval.
+    watch({ "w1:p1": entry });
+    const res: any = await gw.handle("watch_poll", {});
+    expect(res.messages).toHaveLength(1);
+    expect(res.messages[0]).toStartWith("fixer is waiting for an answer: ");
+  });
+  test("a question is still the owner's, and reported once", async () => {
+    timing.key = timing.text = timing.settle = 0;
+    const { gw, agents, watch, setScreen } = setup();
+    agents[0].agent_status = "blocked";
+    setScreen(screen("claude-ask"));
+    watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
+    const first: any = await gw.handle("watch_poll", {});
+    expect(first.messages).toHaveLength(1);
+    expect(first.messages[0]).toStartWith("fixer is waiting for an answer: ");
+    expect(first.messages[0]).toContain("Which color do you prefer?");
+    expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
   });
   test("an excerpt that cannot be read does not stop the report", async () => {
     const { gw, agents, watch, setScreen } = setup();
@@ -235,6 +298,16 @@ describe("watch_poll and notify ops", () => {
     agents[0].cwd = "/srv/secret";
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["fixer in app is gone (pane closed or agent exited)"], remaining: 0 });
+  });
+  test("a managed agent that is gone loses its sidebar token; a finished turn watch never had one", async () => {
+    const { gw, agents, reports, watch } = setup();
+    watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date(Date.now() - 60_000).toISOString(), last_status: "working" } });
+    await gw.handle("watch_poll", {});
+    expect(reports).toEqual([]);
+    agents.length = 0;
+    watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), last_status: "idle", managed: true } });
+    await gw.handle("watch_poll", {});
+    expect(reports).toMatchObject([{ pane_id: "w1:p1", source: "workdone", tokens: { workdone: null, workdone_note: null } }]);
   });
   // Writes that land while a poll runs, between its read of the watch list and its write.
   const info = { name: "fixer", cwd: null, kind: "claude" };

@@ -8,11 +8,12 @@
 // Every operation is a named, typed Herdr socket API call. Nothing here builds a
 // shell command line; raw pane execution is a separate capability, off by default.
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { GatewayError, loadConfig, type GatewayConfig } from "./config.ts";
 import { Gateway } from "./gateway.ts";
 import { herdrSocket } from "./herdr-socket.ts";
+import { StateStore } from "./state.ts";
 
 // Fields worth keeping in the audit log. Commands are kept in full-ish: with exec
 // on, the log is the record of what ran.
@@ -23,21 +24,13 @@ function auditDetail(params: Record<string, any>) {
   for (const k of AUDIT_FIELDS) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
   if (typeof params.command === "string") d.command = params.command.slice(0, 2000);
   for (const k of ["text", "prompt"]) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
+  // The menu option answer_agent picked.
+  for (const k of ["option", "options"]) if (params[k] !== undefined) d[k] = params[k];
   return d;
 }
 
 function audit(cfg: GatewayConfig | undefined, entry: Record<string, unknown>) {
-  if (!cfg) return;
-  try {
-    mkdirSync(cfg.stateDir, { recursive: true, mode: 0o700 });
-    appendFileSync(
-      resolve(cfg.stateDir, "audit.jsonl"),
-      JSON.stringify({ ts: new Date().toISOString(), client: process.env.SSH_CLIENT?.split(" ")[0] ?? "local", ...entry }) + "\n",
-      { mode: 0o600 },
-    );
-  } catch {
-    // Auditing must never break a request.
-  }
+  if (cfg) new StateStore(cfg.stateDir).audit(entry);
 }
 
 function respond(obj: unknown) {

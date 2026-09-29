@@ -3,6 +3,8 @@
 // that stopped is asking something comes from the end of its last answer. A wrong
 // guess only changes the wording of a notification, never whether one is sent.
 
+import type { Dialog } from "./dialog.ts";
+
 export type Attention = "dialog" | "question" | null;
 
 const SETTLED = new Set(["idle", "done"]);
@@ -109,6 +111,22 @@ export function screenReply(screen: string): string {
     .filter((l) => l.trim() && !HINT_RE.test(l))
     .slice(-8)
     .join("\n");
+}
+
+// Lines of a menu that are not what it is about: key hints, and the agent's own
+// output above it ("• Running touch …"), and the dashed box around a diff.
+const MENU_NOISE_RE = /^[•⏺✻⎿]|^[╌─━]+$|esc to |enter to |enter continue|enter\/esc|press enter|tab to amend|arrow keys|↑\/↓|ctrl\+|shift\+tab|esc (?:back|quit|skip)/i;
+
+// What a menu asks about, for the record of what WorkDone answered: its header, the
+// command or file, and the question, without the options.
+export function menuExcerpt(d: Dialog): string {
+  const labels = new Set(d.options.map((o) => o.label.replace(/\s+/g, " ")));
+  const option = (line: string) => {
+    const bare = line.replace(/^[❯›>▶→]\s*/, "").replace(/^\d{1,2}\.\s+(?:\[[ ✔✓xX]\]\s+)?|^\[[a-z]\]\s+/, "");
+    return labels.has(bare) || labels.has(bare.replace(/\s+\([a-z+ ]+\)$/, ""));
+  };
+  const lines = d.text.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter((l) => l && !MENU_NOISE_RE.test(l) && !option(l));
+  return clip(lines.map((l) => clip(redact(l), 120, "start")).join(" / "), EXCERPT_CHARS + 40, "start");
 }
 
 // A dialog's question with two lines either side: the command or file, the first options.
