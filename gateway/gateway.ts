@@ -17,6 +17,7 @@ import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
 import { layoutOps } from "./layout-ops.ts";
+import { leaseOps } from "./leases.ts";
 import { Mask, aliasArgs } from "./mask.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { StateStore } from "./state.ts";
@@ -56,11 +57,13 @@ export class Gateway {
   readonly state: StateStore;
   readonly mask: Mask;
   private extra: Record<string, Op>;
+  readonly leases: ReturnType<typeof leaseOps>;
 
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
-    this.extra = { ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.leases = leaseOps(this);
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -133,6 +136,31 @@ export class Gateway {
       );
     }
     return { agent, approved };
+  }
+
+  // A call from outside (ChatGPT through the MCP server): the thread's lease is checked
+  // first, and what the op made joins the lease. Calls between ops use handle.
+  async request(op: string, params: Params): Promise<unknown> {
+    let lease = await this.leases.check(op, params);
+    let created: string | null = null;
+    // A thread that spawns without a lease gets one, so it can drive what it started.
+    if (this.cfg.leases && op === "spawn_agent" && !lease) {
+      created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] })) as any).lease;
+      lease = created;
+    }
+    const result: any = await this.handle(op, params);
+    this.leases.after(op, lease, params, result);
+    if (created && result && typeof result === "object") result.lease = created;
+    // Views say which thread holds each agent.
+    if (this.cfg.leases && (op === "overview" || op === "get_agent" || op === "wait_agent")) {
+      const held = this.leases.labels();
+      const mark = (a: any) => {
+        if (a && typeof a.pane_id === "string" && held.has(a.pane_id)) a.held_by = held.get(a.pane_id);
+      };
+      if (op === "get_agent") mark(result);
+      else for (const a of result?.agents ?? []) mark(a);
+    }
+    return result;
   }
 
   async handle(op: string, params: Params): Promise<unknown> {

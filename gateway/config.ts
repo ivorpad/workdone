@@ -41,6 +41,8 @@ export interface GatewayConfig {
   // Answer menus that only ask for a go-ahead (a permission, folder trust, an update
   // notice) for watched agents and while a tool call waits. On unless set to false.
   autoApprove: boolean;
+  // Each ChatGPT thread acts only on the panes it claimed (leases.ts).
+  leases: boolean;
   allowRawPaneRun: boolean;
   allowWorktreeRemove: boolean;
   allowExec: boolean;
@@ -179,6 +181,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     execInPane: c.execInPane === true,
     privatePaths: typeof c.agentAliases === "string" ? [expandHome(c.agentAliases)] : [],
     autoApprove: c.autoApprove !== false,
+    leases: c.leases !== false,
     allowRawPaneRun: c.allowRawPaneRun === true,
     allowWorktreeRemove: c.allowWorktreeRemove === true,
     allowExec: c.allowExec === true,

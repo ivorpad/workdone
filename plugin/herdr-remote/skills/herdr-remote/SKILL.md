@@ -15,6 +15,15 @@ Each gateway only exposes panes whose working directory is inside the roots the 
 2. `list_workspaces` shows the layout (workspaces, tabs, panes). `list_panes` includes plain shells, where `agent` is null.
 3. `bridge_status` shows each machine's roots, repos, agent kinds and which capabilities are on.
 
+## This conversation's agents
+
+The user runs several conversations at once, each driving its own workers. Act only on the agents assigned to this one.
+
+- When the user names the agents for this conversation, call `claim_agents` with them (names or pane IDs) and a short `label` ("relay automations #651"). Keep the `lease` it returns and pass it on every call that acts on an agent: `prompt_agent`, `steer_agent`, `answer_agent`, `send_agent_keys`, `watch_agent`, `start_agent`, `spawn_agent`, `rename`, `move_pane`, `close`, `send_pane_input`, `run_command_in_pane`. Agents you spawn or start join your lease on their own; `spawn_agent` without a lease creates one and returns it.
+- Everything is readable without a lease. `overview`, `get_agent` and `wait_agent` show `held_by` for agents another conversation holds: report on them if asked, never prompt, steer, answer or close them.
+- `needs_lease` or `not_your_agent`: stop and ask the user which agents this conversation may drive. Claim only those. `take_over: true` only when the user says to move an agent from another conversation.
+- When the work here is done, `release_agents` so another conversation can take them.
+
 ## Talk to an agent
 
 - Agent states: `idle` and `done` mean the agent is ready for input. `working` means it is busy. `blocked` means it is showing a menu: a permission, folder trust or a question. `unknown` means Herdr can't tell.

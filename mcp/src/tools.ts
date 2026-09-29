@@ -26,6 +26,12 @@ const watch = z.boolean().optional().describe("Notify the owner's phone whenever
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
 const DESTRUCTIVE = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+const lease = z
+  .string()
+  .optional()
+  .describe("This conversation's lease from claim_agents. Required to act on an agent or on a pane that holds one.");
+// Tools that act on an agent or pane: they take the thread's lease.
+const LEASED = ["prompt_agent", "steer_agent", "send_agent_keys", "answer_agent", "watch_agent", "start_agent", "spawn_agent", "send_pane_input", "run_command_in_pane", "move_pane", "rename", "close"];
 const confirm = z
   .boolean()
   .optional()
@@ -43,6 +49,24 @@ interface ToolDef {
 export const FANOUT = new Set(["bridge_status", "overview", "prunable_agents", "list_panes", "list_workspaces", "list_repos"]);
 
 export const TOOLS: Record<string, ToolDef> = {
+  claim_agents: {
+    title: "Claim agents for this conversation",
+    description:
+      "Get or extend this conversation's lease: the list of agents it may act on. Several ChatGPT conversations drive agents at once, so each one acts only on its own: prompting, steering, answering, watching, renaming, moving or closing an agent needs the lease that holds it. Claim only the agents the user assigned to this conversation (by name or pane ID), with a short label for what this conversation is doing. Returns lease (keep it for the whole conversation and pass it on every call that acts on an agent), the panes it holds, and refused ones another conversation holds (held_by). take_over moves an agent from another conversation: only when the user says so. Agents you spawn or start join your lease on their own. Reading (overview, get_agent, read_agent, wait_agent) needs no lease, and overview shows held_by for agents other conversations hold.",
+    input: {
+      label: z.string().max(80).optional().describe("What this conversation is doing, e.g. 'relay automations #651'."),
+      targets: z.array(z.string()).max(20).optional().describe("Agent names or pane IDs the user assigned to this conversation."),
+      lease: z.string().optional().describe("Your existing lease, to add agents to it. Omit on the first claim."),
+      take_over: z.boolean().optional().describe("Take agents another conversation holds. Only when the user says so."),
+    },
+    annotations: WRITE,
+  },
+  release_agents: {
+    title: "Release agents",
+    description: "Give agents back when this conversation is done with them, so another conversation can claim them. Without targets, releases the whole lease.",
+    input: { lease: z.string(), targets: z.array(z.string()).max(20).optional() },
+    annotations: WRITE,
+  },
   bridge_status: {
     title: "Bridge status",
     description: "Check each machine's gateway: Herdr version, allowed roots, repos, agent kinds and which capabilities (exec, file reads and writes, raw pane input, closing anything) are on. Tools behind a capability that is off return capability_disabled.",
@@ -390,6 +414,8 @@ function render(res: GatewayResponse): { content: Content[]; isError: boolean } 
   return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], isError: false };
 }
 
+for (const name of LEASED) TOOLS[name]!.input = { ...TOOLS[name]!.input, lease };
+
 // Tools that can put an agent or a browser run on its machine's watch list.
 const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_agent", "browse"]);
 
@@ -401,7 +427,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
-        "Run agents in parallel: start or prompt every agent first without waiting (spawn_agent; prompt_agent without wait), then wait_agent with all of them in targets and a timeout of 30-60 s. After each return, tell the user in one line per agent what changed (finished, asks, why blocked), act on the ones that need something, and wait again only if the user wants you to follow along; otherwise stop, since they get phone notifications. Never block on one agent while others may need you, and treat timed_out as progress, not failure. prompt_agent with wait=true is for one quick answer from one agent. " +
+        "Several conversations drive agents at once, so each acts only on its own: when the user assigns agents to this conversation, call claim_agents with them and a short label, keep the lease it returns and pass it on every call that acts on an agent; spawn_agent without a lease creates one and returns it. Never act on an agent held_by another conversation, and never claim agents the user didn't assign here; needs_lease or not_your_agent means ask the user which agents this conversation may drive. Run agents in parallel: start or prompt every agent first without waiting (spawn_agent; prompt_agent without wait), then wait_agent with all of them in targets and a timeout of 30-60 s. After each return, tell the user in one line per agent what changed (finished, asks, why blocked), act on the ones that need something, and wait again only if the user wants you to follow along; otherwise stop, since they get phone notifications. Never block on one agent while others may need you, and treat timed_out as progress, not failure. prompt_agent with wait=true is for one quick answer from one agent. " +
         "Agents started another way get phone notifications after watch_agent. " +
         "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. Pushes, commits, merges, deletions, GitHub writes and deploys are the user's call: WorkDone never approves them (choices.kind gated), and exec and answer_agent refuse them with needs_confirmation until you pass confirm: true after the user's yes. Agents own their commits; don't commit, push or write status and ledger files yourself. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +

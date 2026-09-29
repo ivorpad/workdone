@@ -33,6 +33,15 @@ export interface Watched {
 
 export type WatchInfo = Pick<Watched, "name" | "cwd" | "kind">;
 
+// A ChatGPT thread's authorized panes. The thread keeps the ID and passes it on every
+// call that acts on an agent or pane; used is when it last did.
+export interface Lease {
+  label: string;
+  panes: string[];
+  created: string;
+  used: string;
+}
+
 // What a Herdr agent object says about the fields the watcher compares.
 export function seenState(a: any): Pick<Watched, "last_status" | "seq" | "session"> {
   const out: Pick<Watched, "last_status" | "seq" | "session"> = { last_status: a?.agent_status ?? "unknown" };
@@ -98,6 +107,23 @@ export class StateStore {
 
   setExecWorkspace(id: string) {
     this.write("exec-workspace.json", { id });
+  }
+
+  // Which ChatGPT thread may act on which panes: lease ID to its label and panes.
+  leases(): Record<string, Lease> {
+    const v = this.read("leases.json");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Lease>) : {};
+  }
+
+  // Read, change and write leases.json under the same lock as watch.json.
+  updateLeases<T>(fn: (l: Record<string, Lease>) => T): T {
+    return this.locked(() => {
+      const l = this.leases();
+      const before = JSON.stringify(l);
+      const out = fn(l);
+      if (JSON.stringify(l) !== before) this.write("leases.json", l);
+      return out;
+    });
   }
 
   watched(): Record<string, Watched> {

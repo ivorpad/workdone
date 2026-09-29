@@ -96,7 +96,7 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
   const started = Date.now();
   try {
     if (typeof op !== "string") throw new GatewayError("invalid_request", "op must be a string");
-    const result: any = await gateway.handle(op, params);
+    const result: any = await gateway.request(op, params);
     // The notifier polls every few seconds; only polls that found something are worth a line.
     if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ms: Date.now() - started });
     respond({ id, ok: true, result: gateway.mask.result(op, result, params.target ?? params.pane_id) });

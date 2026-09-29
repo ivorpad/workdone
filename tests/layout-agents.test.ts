@@ -723,3 +723,49 @@ describe("sidebar tokens", () => {
     }
   });
 });
+
+describe("leases: each conversation acts only on its own agents", () => {
+  test("claim, act, and refuse another conversation's agent", async () => {
+    const { gw } = gateway();
+    screen = "ready\n";
+    // Acting without a lease is refused; reading is not.
+    await expect(gw.request("prompt_agent", { target: "w1:p1", text: "go" })).rejects.toMatchObject({ code: "needs_lease" });
+    expect(await gw.request("get_agent", { target: "w1:p1" })).toMatchObject({ pane_id: "w1:p1" });
+    const a: any = await gw.request("claim_agents", { label: "thread A", targets: ["w1:p1"] });
+    expect(a).toMatchObject({ label: "thread A", panes: ["w1:p1"], refused: [] });
+    expect(a.lease).toMatch(/^L-/);
+    expect(await gw.request("prompt_agent", { target: "w1:p1", text: "go", lease: a.lease })).toMatchObject({ submitted: true });
+    // Thread B can't claim it, can't act on it, and sees who holds it.
+    const b: any = await gw.request("claim_agents", { label: "thread B", targets: ["w1:p1", "w4:p1"] });
+    expect(b.refused).toEqual([{ pane_id: "w1:p1", held_by: "thread A" }]);
+    expect(b.panes).toEqual(["w4:p1"]);
+    await expect(gw.request("steer_agent", { target: "w1:p1", text: "stop", lease: b.lease })).rejects.toMatchObject({ code: "not_your_agent" });
+    await expect(gw.request("answer_agent", { target: "w1:p1", option: 1, lease: b.lease })).rejects.toMatchObject({ code: "not_your_agent" });
+    expect(await gw.request("get_agent", { target: "w1:p1" })).toMatchObject({ held_by: "thread A" });
+    const seen: any = await gw.request("overview", {});
+    expect(seen.agents.find((x: any) => x.pane_id === "w4:p1").held_by).toBe("thread B");
+    // Take over only when asked; then A loses it.
+    const moved: any = await gw.request("claim_agents", { lease: b.lease, targets: ["w1:p1"], take_over: true });
+    expect(moved.taken_over).toEqual(["w1:p1"]);
+    await expect(gw.request("prompt_agent", { target: "w1:p1", text: "go", lease: a.lease })).rejects.toMatchObject({ code: "not_your_agent" });
+    // Release gives it back.
+    await gw.request("release_agents", { lease: b.lease, targets: ["w1:p1"] });
+    expect(await gw.request("get_agent", { target: "w1:p1" })).not.toHaveProperty("held_by");
+  });
+  test("spawn without a lease creates one; the new agent is in it", async () => {
+    const { gw } = gateway();
+    screen = "ready\n";
+    const res: any = await gw.request("spawn_agent", { kind: "claude", name: "worker", repo: "app" });
+    expect(res.lease).toMatch(/^L-/);
+    expect(await gw.request("prompt_agent", { target: res.pane.pane_id, text: "go", lease: res.lease })).toMatchObject({ submitted: true });
+    const other: any = await gw.request("claim_agents", { label: "someone else", targets: [] });
+    await expect(gw.request("prompt_agent", { target: res.pane.pane_id, text: "go", lease: other.lease })).rejects.toMatchObject({ code: "not_your_agent" });
+  });
+  test("a free shell pane needs no lease; leases can be switched off", async () => {
+    const { gw } = gateway({ allowRawPaneRun: true });
+    expect(await gw.request("run_command_in_pane", { pane_id: "w1:p2", command: "ls" })).toMatchObject({ started: true });
+    const off = gateway({ leases: false });
+    screen = "ready\n";
+    expect(await off.gw.request("prompt_agent", { target: "w1:p1", text: "go" })).toMatchObject({ submitted: true });
+  });
+});
