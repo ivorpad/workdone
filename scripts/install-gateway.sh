@@ -23,4 +23,7 @@ if [ ! -e "$conf" ]; then
   echo "wrote $conf from the example; edit allowedRoots and repos"
 fi
 chmod 600 "$conf"
-echo "installed gateway to $dest (bun: $bun)"
+# Agents in any repo message their linked ChatGPT chat with: workdone-tell "message"
+install -d -m 755 "$HOME/.local/bin"
+install -m 755 "$repo/scripts/tell.sh" "$HOME/.local/bin/workdone-tell"
+echo "installed gateway to $dest (bun: $bun), and workdone-tell to ~/.local/bin"
