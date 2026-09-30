@@ -4,7 +4,7 @@ import { sshArgs, type OvhConfig } from "./config.ts";
 
 export type GatewayResponse =
   | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string } };
+  | { ok: false; error: { code: string; message: string; pending?: string } };
 
 export type CallGateway = (machine: string, op: string, params: Record<string, unknown>) => Promise<GatewayResponse>;
 

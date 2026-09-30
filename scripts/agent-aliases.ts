@@ -58,6 +58,16 @@ const CURSOR_FIRST = [
 
 const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
+// Every agent starts with full access: no permission or approval prompts, no sandbox.
+// The owner wants agents that never wait on a go-ahead (30-09). What stays the owner's
+// call is enforced where the agents can't turn it off: GitHub branch protection, and the
+// gateway's gated list for what ChatGPT runs itself.
+const FULL_ACCESS = {
+  claude: ["--dangerously-skip-permissions"],
+  codex: ["--dangerously-bypass-approvals-and-sandbox"],
+  cursor: ["--force", "--trust"],
+};
+
 function run(cmd: string[]): string | null {
   try {
     const p = Bun.spawnSync(cmd, { stdout: "pipe", stderr: "ignore" });
@@ -78,7 +88,7 @@ const CLAUDE_CODE: Array<[name: string, model: string]> = [
 function claudeModels(): Array<Alias & { name: string }> {
   if (!Bun.which("claude")) return [];
   return CLAUDE_CODE.map(([name, model]) => ({
-    name, kind: "claude", model, args: ["--model", model, "--effort", "{effort}"],
+    name, kind: "claude", model, args: ["--model", model, "--effort", "{effort}", ...FULL_ACCESS.claude],
     efforts: Object.fromEntries(CLAUDE_EFFORTS.map((e) => [e, e])), effort: "high",
   }));
 }
@@ -92,9 +102,9 @@ function codexModels(): Alias[] {
     .filter((m) => typeof m.slug === "string" && m.slug !== "codex-auto-review")
     .map((m) => {
       const levels: string[] = (m.supported_reasoning_levels ?? []).map((l: any) => l.effort ?? l).filter((l: unknown) => typeof l === "string");
-      if (levels.length === 0) return { kind: "codex", model: m.slug, args: ["-m", m.slug] };
+      if (levels.length === 0) return { kind: "codex", model: m.slug, args: ["-m", m.slug, ...FULL_ACCESS.codex] };
       return {
-        kind: "codex", model: m.slug, args: ["-m", m.slug, "-c", "model_reasoning_effort={effort}"],
+        kind: "codex", model: m.slug, args: ["-m", m.slug, "-c", "model_reasoning_effort={effort}", ...FULL_ACCESS.codex],
         efforts: Object.fromEntries(levels.map((l) => [l, l])),
         effort: levels.includes(m.default_reasoning_level) ? m.default_reasoning_level : levels[0],
       };
@@ -144,7 +154,7 @@ function cursorModels(): Alias[] {
   return [...byModel].sort(([a], [b]) => first(a) - first(b)).map(([model, all]) => {
     const efforts = Object.fromEntries(Object.keys(all).sort((a, b) => rank(a) - rank(b)).map((e) => [e, all[e]!]));
     const effort = ["high", "medium", "default"].find((e) => e in efforts) ?? Object.keys(efforts).find((e) => !e.endsWith("fast"))!;
-    return { kind: "cursor", model, args: ["--model", "{effort}", "--force", "--trust"], efforts, effort };
+    return { kind: "cursor", model, args: ["--model", "{effort}", ...FULL_ACCESS.cursor], efforts, effort };
   });
 }
 

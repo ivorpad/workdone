@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Approve</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --line: #e3e3e3; --code: #f5f5f4;
+    --go: #1a7f37; --go-fg: #ffffff; --stop: #b42318; --warn: #9a6700;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1f1f1f; --fg: #ececec; --muted: #a0a0a0; --line: #3a3a3a; --code: #2a2a2a;
+      --go: #2ea043; --go-fg: #ffffff; --stop: #f97066; --warn: #e3b341;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1f1f1f; --fg: #ececec; --muted: #a0a0a0; --line: #3a3a3a; --code: #2a2a2a;
+    --go: #2ea043; --go-fg: #ffffff; --stop: #f97066; --warn: #e3b341;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { padding: 14px 16px; }
+  .head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .what { font-weight: 600; }
+  .where { color: var(--muted); }
+  pre { margin: 10px 0 12px; padding: 10px 12px; background: var(--code); border: 1px solid var(--line); border-radius: 8px;
+        font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  button { font: inherit; font-weight: 600; padding: 7px 14px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
+  button.go { background: var(--go); border-color: var(--go); color: var(--go-fg); }
+  button:disabled { opacity: .55; cursor: default; }
+  .note { color: var(--muted); font-size: 12.5px; }
+  .ok { color: var(--go); font-weight: 600; }
+  .bad { color: var(--stop); font-weight: 600; }
+  .wait { color: var(--warn); }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div id="loading" class="note">Loading…</div>
+  <section id="card" hidden>
+    <div class="head"><span class="what" id="reason"></span><span class="where" id="where"></span></div>
+    <pre id="detail"></pre>
+    <div class="row" id="actions">
+      <button class="go" id="approve">Approve</button>
+      <button id="decline">Decline</button>
+      <span class="note" id="expires"></span>
+    </div>
+    <div id="outcome" hidden>
+      <div id="status"></div>
+      <pre id="output" hidden></pre>
+    </div>
+  </section>
+  <div id="error" class="bad" hidden></div>
+</main>
+<script>
+  // MCP Apps view: JSON-RPC over postMessage with the host (ChatGPT).
+  const $ = (id) => document.getElementById(id);
+  let nextId = 1;
+  const waiting = new Map();
+  let held = null;
+
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+  }
+  function notify(method, params) {
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && waiting.has(msg.id) && !msg.method) {
+      const w = waiting.get(msg.id);
+      waiting.delete(msg.id);
+      msg.error ? w.reject(new Error(msg.error.message || "request failed")) : w.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") show(msg.params);
+    if (msg.method === "ui/notifications/host-context-changed") theme(msg.params);
+  });
+
+  function theme(ctx) {
+    if (ctx && (ctx.theme === "light" || ctx.theme === "dark")) document.documentElement.dataset.theme = ctx.theme;
+  }
+
+  function show(result) {
+    const s = result && result.structuredContent;
+    $("loading").hidden = true;
+    if (!s || !s.pending) {
+      const text = result && result.content && result.content[0] && result.content[0].text;
+      $("error").textContent = text || "Nothing to approve.";
+      $("error").hidden = false;
+      return;
+    }
+    held = s;
+    $("reason").textContent = s.reason.charAt(0).toUpperCase() + s.reason.slice(1);
+    $("where").textContent = "on " + s.machine;
+    $("detail").textContent = s.detail;
+    $("expires").textContent = "Expires " + new Date(s.expires).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    $("card").hidden = false;
+  }
+
+  // What the model reads after the click: the command and, when it ran, its output.
+  function summary(s) {
+    const r = s.result || {};
+    const what = " on " + s.machine + ": " + s.detail;
+    if (s.status === "declined") return "The owner declined" + what;
+    if (s.status === "failed") return "The owner approved, but it failed" + what + "\n" + JSON.stringify(r.error);
+    const code = r.exit_code !== undefined && r.exit_code !== null ? " (exit " + r.exit_code + ")" : "";
+    return "The owner approved and it ran" + code + what;
+  }
+
+  async function decide(approve) {
+    $("approve").disabled = $("decline").disabled = true;
+    $("status").className = "wait";
+    $("status").textContent = approve ? "Running…" : "Declining…";
+    $("outcome").hidden = false;
+    try {
+      const res = await request("tools/call", { name: "confirm_pending", arguments: { pending: held.pending, approve } });
+      const s = res.structuredContent || {};
+      $("actions").hidden = true;
+      $("status").className = s.status === "ran" ? "ok" : "bad";
+      $("status").textContent = s.status === "ran" ? "Approved and ran" : s.status === "declined" ? "Declined" : res.content && res.content[0] ? res.content[0].text : "Failed";
+      const r = s.result || {};
+      const out = [r.stdout, r.stderr].filter(Boolean).join("\n").trim();
+      if (out) { $("output").textContent = out; $("output").hidden = false; }
+      const text = s.status ? summary(s) : ($("status").textContent);
+      await request("ui/update-model-context", { content: [{ type: "text", text: text + (out ? "\n\n" + out.slice(-4000) : "") }] }).catch(() => {});
+      await request("ui/message", { role: "user", content: [{ type: "text", text }] }).catch(() => {});
+    } catch (e) {
+      $("status").className = "bad";
+      $("status").textContent = "Could not reach WorkDone: " + e.message;
+      $("approve").disabled = $("decline").disabled = false;
+    }
+  }
+
+  $("approve").addEventListener("click", () => decide(true));
+  $("decline").addEventListener("click", () => decide(false));
+
+  // The content's height, not the document's: that one never drops below the frame's.
+  const main = document.querySelector("main");
+  new ResizeObserver(() => {
+    notify("ui/notifications/size-changed", { height: Math.ceil(main.getBoundingClientRect().height) });
+  }).observe(main);
+
+  request("ui/initialize", {
+    appInfo: { name: "workdone-confirm", version: "1.0.0" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).then((init) => {
+    theme(init && init.hostContext);
+    notify("ui/notifications/initialized", {});
+  }).catch((e) => {
+    $("loading").hidden = true;
+    $("error").textContent = "This card needs a host with MCP Apps: " + e.message;
+    $("error").hidden = false;
+  });
+</script>
+</body>
+</html>

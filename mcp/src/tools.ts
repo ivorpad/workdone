@@ -4,7 +4,11 @@
 
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
+import { holdIfGated, pendingCalls, registerConfirm } from "./confirm.ts";
+import { registerEvents } from "./events.ts";
+import type { CallGateway } from "./gateway-client.ts";
+import { render } from "./render.ts";
+import { registerWakeTest } from "./waketest.ts";
 
 const target = z.string().describe("Agent name or pane ID (e.g. w3T:pJR) from overview.");
 const paneId = z.string().describe("Pane ID from list_panes, list_workspaces or overview (e.g. w3T:pJR).");
@@ -35,7 +39,7 @@ const LEASED = ["prompt_agent", "steer_agent", "send_agent_keys", "answer_agent"
 const confirm = z
   .boolean()
   .optional()
-  .describe("Only after the user said yes in this chat: lets a git push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub write (gh pr/issue/release, gh api POST/PATCH/PUT/DELETE), rm -rf or deploy go ahead. Without it those return needs_confirmation.");
+  .describe("Only after the user said yes in this chat: lets a git push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub write (gh pr/issue/release, gh api POST/PATCH/PUT/DELETE), rm -rf or deploy go ahead. Without it those return needs_confirmation with a pending id; request_confirmation with that id lets the user approve with a click instead.");
 const SHELL = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
 
 interface ToolDef {
@@ -395,25 +399,6 @@ export const TOOLS: Record<string, ToolDef> = {
   },
 };
 
-type Content = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
-
-// Images from read_file travel as MCP image content; everything else as JSON text.
-function render(res: GatewayResponse): { content: Content[]; isError: boolean } {
-  if (!res.ok) return { content: [{ type: "text", text: JSON.stringify({ error: res.error }, null, 2) }], isError: true };
-  const r = res.result as any;
-  if (r && typeof r === "object" && typeof r.image?.data === "string") {
-    const { image, ...meta } = r;
-    return {
-      content: [
-        { type: "text", text: JSON.stringify({ ...meta, image: { mime: image.mime } }, null, 2) },
-        { type: "image", data: image.data, mimeType: image.mime },
-      ],
-      isError: false,
-    };
-  }
-  return { content: [{ type: "text", text: JSON.stringify(r, null, 2) }], isError: false };
-}
-
 for (const name of LEASED) TOOLS[name]!.input = { ...TOOLS[name]!.input, lease };
 
 // Tools that can put an agent or a browser run on its machine's watch list.
@@ -429,7 +414,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
         "Start with overview (every agent everywhere) or list_workspaces. IDs are per machine: pass the same machine to follow-up calls. " +
         "Several conversations drive agents at once, so each acts only on its own: when the user assigns agents to this conversation, call claim_agents with them and a short label, keep the lease it returns and pass it on every call that acts on an agent; spawn_agent without a lease creates one and returns it. Never act on an agent held_by another conversation, and never claim agents the user didn't assign here; needs_lease or not_your_agent means ask the user which agents this conversation may drive. Run agents in parallel: start or prompt every agent first without waiting (spawn_agent; prompt_agent without wait), then wait_agent with all of them in targets and a timeout of 30-60 s. After each return, tell the user in one line per agent what changed (finished, asks, why blocked), act on the ones that need something, and wait again only if the user wants you to follow along; otherwise stop, since they get phone notifications. Never block on one agent while others may need you, and treat timed_out as progress, not failure. prompt_agent with wait=true is for one quick answer from one agent. " +
         "Agents started another way get phone notifications after watch_agent. " +
-        "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. Pushes, commits, merges, deletions, GitHub writes and deploys are the user's call: WorkDone never approves them (choices.kind gated), and exec and answer_agent refuse them with needs_confirmation until you pass confirm: true after the user's yes. Agents own their commits; don't commit, push or write status and ledger files yourself. " +
+        "Agents never wait on a go-ahead: WorkDone answers the permission, folder trust and update menus of the agents it watches, and prompt_agent, wait_agent and spawn_agent answer them while they wait. When you see one anyway (choices.go_ahead set), answer it with answer_agent at once. Pushes, commits, merges, deletions, GitHub writes and deploys are the user's call: WorkDone never approves them (choices.kind gated), and exec, answer_agent, send_pane_input and run_command_in_pane refuse them with needs_confirmation and a pending id. Then call request_confirmation with that id: it shows the user the exact command with an Approve button, and their click runs it. Passing confirm: true after the user's yes in chat also works. Agents own their commits; don't commit, push or write status and ledger files yourself. " +
         "exec runs a command and returns its output; long-running processes belong in a pane (run_command_in_pane). " +
         "The Mac is often asleep: machine_offline means that machine did not answer, so carry on with the others and pass machine on every action.",
     },
@@ -463,11 +448,14 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
           };
         }
         const target = typeof chosen === "string" ? chosen : defaultMachine;
-        const res = await call(target, name, params);
+        const res = holdIfGated(pendingCalls, target, name, params, await call(target, name, params));
         if (WATCHES.has(name)) onWatch?.(target);
         return render(res);
       },
     );
   }
+  registerConfirm(server, call, render);
+  registerEvents(server);
+  registerWakeTest(server);
   return server;
 }

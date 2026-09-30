@@ -19,7 +19,10 @@ export function logRpc(msgs: unknown, protocolHeader: string | null, log: (line:
       const { protocolVersion, capabilities, clientInfo, _meta } = (m as any).params ?? {};
       log(JSON.stringify({ event: "client_hello", method, protocolHeader, protocolVersion, clientInfo, capabilities, meta: _meta }));
     } else {
-      log(JSON.stringify({ event: "rpc", method, protocolHeader }));
+      // The tool or resource named, never its arguments.
+      const p = (m as any).params ?? {};
+      const name = method === "tools/call" ? p.name : method === "resources/read" ? p.uri : undefined;
+      log(JSON.stringify({ event: "rpc", method, name, protocolHeader }));
     }
   }
 }

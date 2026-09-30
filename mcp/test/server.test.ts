@@ -5,6 +5,9 @@ import type { CallGateway } from "../src/gateway-client.ts";
 import { createHandler, logRpc } from "../src/server.ts";
 import { TOOLS } from "../src/tools.ts";
 
+// Registered next to TOOLS by registerConfirm.
+const CONFIRM_TOOLS = ["request_confirmation", "confirm_pending", "wake_test", "wake_test_log"];
+
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
 const cfg = parseConfig({
   listen: { host: "127.0.0.1", port: 8787 },
@@ -75,8 +78,8 @@ describe("http", () => {
   test("lists every tool, each with a free-form machine parameter", async () => {
     const res = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
     const body = (await res.json()) as any;
-    expect(body.result.tools.map((t: any) => t.name).sort()).toEqual(Object.keys(TOOLS).sort());
-    for (const t of body.result.tools) {
+    expect(body.result.tools.map((t: any) => t.name).sort()).toEqual([...Object.keys(TOOLS), ...CONFIRM_TOOLS].sort());
+    for (const t of body.result.tools.filter((t: any) => !CONFIRM_TOOLS.includes(t.name))) {
       expect(t.inputSchema.properties.machine.type).toBe("string");
       expect(t.inputSchema.properties.machine.enum).toBeUndefined();
     }
@@ -152,7 +155,7 @@ describe("2026-07-28", () => {
   test("tools list and call work the same as on 2025", async () => {
     const client = await modernClient();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(Object.keys(TOOLS).sort());
+    expect(tools.map((t) => t.name).sort()).toEqual([...Object.keys(TOOLS), ...CONFIRM_TOOLS].sort());
     const result = (await client.callTool({ name: "exec", arguments: { machine: "ovh", command: "uptime" } })) as any;
     expect(result.isError).toBe(false);
     expect(calls.at(-1)).toEqual(["ovh", "exec", { command: "uptime" }]);
@@ -178,7 +181,7 @@ describe("rpc log", () => {
     expect(lines.map((l) => JSON.parse(l))).toEqual([
       { event: "client_hello", method: "initialize", protocolHeader: null, protocolVersion: "2025-11-25", clientInfo: { name: "openai-mcp" }, capabilities: init.params.capabilities },
       { event: "rpc", method: "notifications/initialized", protocolHeader: null },
-      { event: "rpc", method: "tools/call", protocolHeader: "2025-11-25" },
+      { event: "rpc", method: "tools/call", name: "exec", protocolHeader: "2025-11-25" },
       { event: "client_hello", method: "server/discover", protocolHeader: "2026-07-28", meta: envelope },
     ]);
     expect(lines.join("\n")).not.toContain("secret");

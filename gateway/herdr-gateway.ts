@@ -26,6 +26,8 @@ function auditDetail(params: Record<string, any>) {
   for (const k of ["text", "prompt"]) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
   // The menu option answer_agent picked.
   for (const k of ["option", "options"]) if (params[k] !== undefined) d[k] = params[k];
+  // A gated call that went ahead: the owner's yes, in chat or by the approval card.
+  if (params.confirm === true) d.confirm = true;
   return d;
 }
 
