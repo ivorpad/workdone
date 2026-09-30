@@ -60,8 +60,13 @@ export interface WatchState {
 
 const MAX_WATCHES = 50;
 
+// A message an agent sent while its thread had no open link waits this long for one.
+const HOLD_MS = 3600_000;
+
 export class Inbox {
   private watches = new Map<string, Watch>();
+  // Messages (tell) for a machine and lease with no open watch, by `${machine}|${lease}`.
+  private held = new Map<string, WakeEvent[]>();
   private seq = 0;
   constructor(private now: () => number = Date.now) {}
 
@@ -89,6 +94,12 @@ export class Inbox {
       stopped: null,
       endedAt: null,
     });
+    // Messages the agent sent before this link opened.
+    const key = `${machine}|${lease}`;
+    const waiting = (this.held.get(key) ?? []).filter((e) => Date.parse(e.at) + HOLD_MS > this.now());
+    this.held.delete(key);
+    const w = this.watches.get(id)!;
+    if (w.wake.has("message")) w.queue.push(...waiting);
     return this.state(id)!;
   }
 
@@ -98,6 +109,7 @@ export class Inbox {
     let n = 0;
     for (const r of reports) {
       if (!r.lease || !isWakeType(r.type)) continue;
+      let taken = false;
       for (const w of this.watches.values()) {
         if (w.stopped || w.machine !== machine || w.lease !== r.lease) continue;
         // A turn this thread asked for is its reply, whatever the turn's end looked like.
@@ -107,6 +119,14 @@ export class Inbox {
         w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message });
         for (const wake of w.waiters.splice(0)) wake();
         n++;
+        taken = true;
+      }
+      // Nobody linked yet: keep an agent's message for the thread's next link.
+      if (!taken && r.type === "message") {
+        const key = `${machine}|${r.lease}`;
+        const list = this.held.get(key) ?? [];
+        list.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type: "message", excerpt: r.excerpt, message: r.message });
+        this.held.set(key, list.slice(-20));
       }
     }
     return n;

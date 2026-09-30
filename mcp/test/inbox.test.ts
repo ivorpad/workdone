@@ -40,6 +40,18 @@ describe("inbox", () => {
     expect((await box.next(w.watch_id, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["message", "the whole question"]]);
   });
 
+  test("a message sent before the thread links waits an hour for its link", async () => {
+    let now = 0;
+    const box = new Inbox(() => now);
+    box.add("mac", [report({ type: "message", excerpt: "early" }), report({ type: "finished", excerpt: "not held" })]);
+    const w = box.open("mac", "L-abc123");
+    expect((await box.next(w.watch_id, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["message", "early"]]);
+    box.add("mac", [report({ type: "message", lease: "L-late0001", excerpt: "too old" })]);
+    now += 3600_000;
+    const late = box.open("mac", "L-late0001");
+    expect((await box.next(late.watch_id, 0)).events).toEqual([]);
+  });
+
   test("questions: an agent asking on its own wakes only a watch that asked for that", async () => {
     const box = new Inbox();
     const w = box.open("mac", "L-abc123", { wake: ["reply", "blocked", "question"] });
