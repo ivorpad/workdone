@@ -75,6 +75,12 @@ describe("http", () => {
     const res = await handler(new Request("http://127.0.0.1:8787/.well-known/oauth-protected-resource"));
     expect(res.status).toBe(404);
   });
+  test("no-auth fallback does not offer native subscriptions", async () => {
+    const listed = await rpc({ jsonrpc: "2.0", id: 1, method: "events/list", params: {} });
+    expect((await listed.json() as any).result.events).toEqual([]);
+    const subscribed = await rpc({ jsonrpc: "2.0", id: 2, method: "events/subscribe", params: { name: "agent.finished", arguments: { machine: "mac" }, delivery: { mode: "webhook", url: "https://callbacks.openai.com/thread", secret: `whsec_${Buffer.alloc(32).toString("base64")}` } } });
+    expect((await subscribed.json() as any).error.code).toBe(-32001);
+  });
   test("lists every tool, each with a free-form machine parameter", async () => {
     const res = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
     const body = (await res.json()) as any;
@@ -150,6 +156,7 @@ describe("2026-07-28", () => {
     expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
     expect(client.getServerVersion()?.name).toBe("herdr-remote");
     expect(client.getInstructions()).toContain("claim_agents");
+    expect((client.getServerCapabilities() as any)?.events).toBeUndefined();
     await client.close();
   });
   test("tools list and call work the same as on 2025", async () => {

@@ -1,10 +1,12 @@
-# ChatGPT ↔ agents: the link, cards and what ChatGPT supports
+# ChatGPT ↔ agents: native Events and the fallback card
 
-What was built on 30-09 so a ChatGPT chat and the Herdr agents can talk without the owner relaying: an agent's answer goes back to the chat that asked, an agent can write to that chat itself, and the owner approves irreversible steps with a click. Most of it runs through MCP Apps cards, because that is what ChatGPT supports today. It also records what was tried and didn't work (MCP Events), and what ChatGPT does and doesn't do, as seen in the logs.
+Prefer native MCP Events for completion and question notifications. WorkDone now implements `agent.finished` and `agent.asks` using authenticated subscriptions and signed callbacks. [MCP Events setup](mcp-events.md) explains the required OAuth connection, callback allowlist and real ChatGPT checks. Events has not been verified end to end on the deployed No Auth app, so the existing card remains available during migration.
 
-## Using it
+The rest of this page describes that fallback card, agent-written `tell` messages and the Approve card. `tell` still uses the card. Phone notifications keep their separate path.
 
-**Link a chat with an agent.** In ChatGPT:
+## Using the fallback card
+
+Use this when native Events is unavailable or when the chat needs `tell` messages. Once completion and question subscriptions are proven, stop the old watch card for those events to avoid duplicate wakes. **Link a chat with an agent.** In ChatGPT:
 
 ```
 @WorkDone link this chat with the agent in w5M:pA (take it over)
@@ -17,7 +19,7 @@ ChatGPT claims the agent (`claim_agents`), watches it (`watch_agent`) and calls 
 - **Agent → chat, on its own.** From its pane, an agent runs:
 
   ```sh
-  ~/src/tries/2026-09-25-tailscale-chatgpt-mcp/scripts/tell.sh "message, up to 4000 characters"
+  ~/src/tries/2026-09-25-tailscale-chatgpt-mcp/scripts/tell.sh "message"
   ```
 
   It prints `{"ok":true,"result":{"queued":true,"lease":"L-…"}}`, and within about 20 s the chat gets "[WorkDone watch] … sent you a message". ChatGPT answers with `prompt_agent`, and that answer lands in the pane. A message sent while no link is open waits up to an hour for one. `no_thread` means no chat holds the pane: link one first.
@@ -31,7 +33,7 @@ To test it in a new agent session in a linked pane, tell the agent: "run `script
 **Things that have to be true.**
 
 - The link card only runs while its chat is open somewhere that keeps running: a chatgpt.com tab (it keeps working in a background tab, 8 to 30 s late), the desktop app, or the iOS app while it is open on that chat. For a link that lasts while the Mac sleeps, keep the chat open in OVH's always-on Chromium.
-- After a deploy that changes tools or cards: ChatGPT settings → Plugins → WorkDone Tunnel → **Refresh tools**. Without it ChatGPT keeps the old tool list and cards.
+- After a deploy that changes tools, events or cards: rescan WorkDone in ChatGPT's plugin settings (the existing app calls this **Refresh tools**). Check that the plugin page lists both event names. Without a rescan ChatGPT can retain the old discovery result.
 - Only watched agents report. `spawn_agent` and `start_agent` watch theirs; ChatGPT calls `watch_agent` when linking an agent it claimed.
 
 ## How the link works
@@ -68,9 +70,11 @@ ChatGPT chat ──prompt_agent (lease L)──▶ MCP server ──ssh──▶
 - **One message per wake.** After a wake, the chat may send its agents one `prompt_agent` or `steer_agent` in the next 10 minutes; a second gets `one_message_per_wake`. There is no parameter that lifts it: a back-and-forth goes on because each reply of the agent is a new wake, which allows the next message. Before a link's first wake, and 10 minutes after one, the chat is acting for the user and isn't limited.
 - **Restarts.** Watches live in memory. A card that finds its watch gone after a restart opens it again with the same lease and settings. Cards from before this change can't, and need one new link.
 
-### Why a card and not MCP Events
+### Why the card remains during migration
 
-`developers.openai.com/plugins/build/mcp-events` describes exactly this, with webhooks: ChatGPT subscribes to a server's events and WorkDone would POST to ChatGPT. The server declares `"events": {}` in `server/discover` and lists `agent.finished` and `agent.asks` (`mcp/src/events.ts`). ChatGPT reads `events/list` on every Refresh tools (10 times on 30-09), but it has never sent `events/subscribe`: not when asked in chat ("notify me in this chat whenever the agent in w5M:pA finishes"), and the plugin page shows no events. It chose `watch_agent` and `watch_here` instead. The likely reasons are that the tunnel app has no authentication (the doc speaks of an "authenticated MCP endpoint", and a subscription needs an account to belong to) or that the feature isn't open to apps in development. `events/subscribe` is handled: it logs what ChatGPT asked for (callback host, never the secret) and refuses. `journalctl -u herdr-mcp | grep events_` shows the day that changes. Delivery would also need outbound HTTPS from the MCP unit, which `IPAddressAllow` blocks.
+The [current OpenAI guide](https://developers.openai.com/plugins/build/mcp-events) documents released ChatGPT webhook support on MCP 2.0 / 2026-07-28. The earlier probe was incomplete: it advertised two events but intentionally refused `events/subscribe`; the app used No Auth and systemd denied callback egress. Logs from that setup cannot determine whether a correctly configured plugin can subscribe today.
+
+The native implementation is ready for local verification, but production cutover still needs the authenticated plugin connection, exact callback-host egress and a successful subscribe → callback verification → report → ChatGPT wake → unsubscribe test. Keep `watch_here` / `watch_next` until those checks pass. Do not open a polling card just to receive completion or question updates after Events works. [The migration runbook](mcp-events.md) records the remaining operational work.
 
 ## Approve card
 
@@ -111,6 +115,6 @@ Asked of ChatGPT itself and written up in `docs/loop-risks.md`. The short versio
 
 - ChatGPT's approval of the credentials-and-limits change (d744c56), then deploy, and a check that `_meta` reaches the card on real ChatGPT.
 - A card closed without Stop keeps its link open until it expires, and the chat can't replace it without the cap. That stays so: ChatGPT's review rejected treating a quiet card as abandoned, since that would let the lease alone take over a link again, and a sleeping laptop or a network pause looks the same. A chat that takes the agent over gets a new lease and can open a fresh link.
-- The always-on hub: the linked chat open in OVH's Chromium.
+- The always-on hub is needed only for the fallback card. Native callbacks do not depend on keeping that card alive.
 - Remove `wake_test`; close the `confirm: true` route so the Approve card is the only way through.
 - The syno gateway has neither `reports` nor `tell` yet.

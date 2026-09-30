@@ -10,6 +10,7 @@
 // alternative for a single machine: poll every 5 s and run notifyCommand itself.
 
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
 import { approveMenus, type Approval } from "./answer-ops.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
@@ -86,6 +87,10 @@ export interface Note {
 // The same event as a message, for code: the MCP server wakes the ChatGPT thread whose
 // lease holds the agent, so it can answer a question without the owner relaying it.
 export interface Report {
+  // Stable within this occurrence, including duplicates and webhook retries.
+  // Optional for gateways from before native MCP Events.
+  event_id?: string;
+  occurred_at?: string;
   pane_id: string;
   // "message": an agent wrote to its thread with tell.
   type: Note["type"] | "message";
@@ -244,7 +249,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
     const text = message(w, agent, paneId, note);
     messages.push(text);
-    reports.push({ pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text });
+    reports.push({ event_id: randomUUID(), occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {

@@ -5,8 +5,30 @@ import { join } from "node:path";
 import { parseConfig } from "../src/config.ts";
 import { OFFLINE_MS, sshGateway, type CallGateway } from "../src/gateway-client.ts";
 import { startNotifier } from "../src/notifier.ts";
+import { createReportSink } from "../src/server.ts";
+import type { Report } from "../../gateway/watcher.ts";
 
 describe("notifier", () => {
+  test("failed native intake retries before another poll, with stable IDs and one card/phone notification", async () => {
+    let polls = 0;
+    let attempts = 0;
+    let cards = 0;
+    const phones: unknown[] = [];
+    const ids: Array<string | undefined> = [];
+    const report: Report = { pane_id: "w1:p1", type: "finished", agent: "worker", kind: "codex", cwd: "/work", excerpt: "done", lease: null, reply_to: null, message: "worker finished" };
+    const sink = createReportSink({ addReports: async (_m, reports) => {
+      ids.push(reports[0]!.event_id);
+      if (++attempts <= 2) { expect(polls).toBe(1); throw new Error("SQLite unavailable"); }
+      return 1;
+    } }, () => { cards++; });
+    const n = startNotifier(async (_m, op, params) => {
+      if (op === "notify") { phones.push(params.message); return { ok: true, result: {} }; }
+      return { ok: true, result: { remaining: 0, reports: ++polls === 1 ? [report] : [], messages: polls === 1 ? ["phone"] : [] } };
+    }, ["mac"], "mac", 10, 0, sink);
+    await n.idle();
+    expect(polls).toBe(2); expect(attempts).toBe(3); expect(cards).toBe(1); expect(phones).toEqual(["phone"]);
+    expect(ids[0]).toBeDefined(); expect(new Set(ids).size).toBe(1); expect(report.occurred_at).toMatch(/^\d{4}-.*Z$/);
+  });
   test("polls pending machines, sends through the notify machine, keeps offline ones", async () => {
     const calls: Array<[string, string, any]> = [];
     const call: CallGateway = async (machine, op, params) => {

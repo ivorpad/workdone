@@ -251,7 +251,7 @@ describe("watch_poll and notify ops", () => {
     expect(await gw.handle("watch_poll", {})).toEqual({
       messages: [message],
       remaining: 1,
-      reports: [{ pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", reply_to: null, message }],
+      reports: [{ event_id: expect.stringMatching(/^[0-9a-f-]{36}$/), occurred_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", reply_to: null, message }],
     });
     expect(reads).toEqual(["detection"]);
   });

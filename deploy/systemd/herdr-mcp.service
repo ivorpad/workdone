@@ -31,7 +31,10 @@ LockPersonality=yes
 CapabilityBoundingSet=
 AmbientCapabilities=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# Only loopback (MCP listener, resolver) and the tailnet (Mac sshd, MagicDNS).
+# Base policy: loopback (MCP listener, resolver) and tailnet (Mac sshd, MagicDNS).
+# Native Events additionally need reviewed exact public callback IPs in a drop-in,
+# generated with scripts/events-egress-policy.ts. Keep IPAddressDeny=any.
+# The webhook transport permits only configured callback hosts on HTTPS port 443.
 IPAddressDeny=any
 IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48
 

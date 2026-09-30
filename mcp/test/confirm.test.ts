@@ -3,7 +3,6 @@ import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/cli
 import { z } from "zod";
 import { parseConfig } from "../src/config.ts";
 import { CONFIRM_URI, PENDING_TTL_MS, PendingCalls } from "../src/confirm.ts";
-import { describeSubscribe } from "../src/events.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
 import { createHandler } from "../src/server.ts";
 
@@ -124,23 +123,19 @@ describe("confirm by click", () => {
   });
 });
 
-describe("events probe", () => {
-  test("server/discover declares events and events/list names them", async () => {
+describe("Events without OAuth", () => {
+  test("does not advertise native Events on the no-auth fallback", async () => {
     const c = await client();
-    expect(discovered.result.capabilities.events).toEqual({});
+    expect(discovered.result.capabilities.events).toBeUndefined();
     const r = await c.request({ method: "events/list", params: {} }, z.looseObject({ events: z.array(z.looseObject({ name: z.string() })) }));
-    expect(r.events.map((e) => e.name)).toEqual(["agent.finished", "agent.asks"]);
+    expect(r.events).toEqual([]);
     await c.close();
   });
 
-  test("events/subscribe is refused and its log keeps no secret or callback path", async () => {
+  test("events/subscribe requires the OAuth endpoint", async () => {
     const c = await client();
     const params = { name: "agent.finished", arguments: { machine: "mac" }, delivery: { mode: "webhook", url: "https://hooks.openai.example/cb/abc123", secret: "whsec_c2VjcmV0c2VjcmV0c2VjcmV0c2VjcmV0" }, cursor: null };
-    await expect(c.request({ method: "events/subscribe", params }, z.looseObject({}))).rejects.toThrow(/does not deliver them yet/);
-    const line = JSON.stringify(describeSubscribe(params));
-    expect(line).toContain("hooks.openai.example");
-    expect(line).not.toContain("abc123");
-    expect(line).not.toContain("whsec_");
+    await expect(c.request({ method: "events/subscribe", params }, z.looseObject({}))).rejects.toThrow(/requires the configured OAuth endpoint/);
     await c.close();
   });
 });
