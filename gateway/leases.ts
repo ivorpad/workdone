@@ -177,6 +177,17 @@ export function leaseOps(g: Gateway) {
     });
   }
 
+  // Internal, for the MCP server's watch_here: does this lease exist, is it live, and
+  // which panes does it hold. Never touches the lease, so checking doesn't extend it.
+  async function lease_check(params: Params) {
+    const id = optStr(params, "lease");
+    if (!id || !LEASE_RE.test(id)) return { valid: false, reason: "malformed", panes: [] };
+    const l = g.state.leases()[id];
+    if (!l) return { valid: false, reason: "unknown", panes: [] };
+    if (!live(l, now())) return { valid: false, reason: "lapsed", panes: [] };
+    return { valid: true, label: l.label, panes: [...l.panes] };
+  }
+
   // For views: which thread holds each pane.
   function labels(): Map<string, string> {
     const t = now();
@@ -185,5 +196,5 @@ export function leaseOps(g: Gateway) {
     return m;
   }
 
-  return { check, after, claim_agents, release_agents, labels };
+  return { check, after, claim_agents, release_agents, lease_check, labels };
 }

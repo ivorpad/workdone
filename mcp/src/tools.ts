@@ -9,6 +9,7 @@ import { registerEvents } from "./events.ts";
 import type { CallGateway } from "./gateway-client.ts";
 import { render } from "./render.ts";
 import { registerWakeTest } from "./waketest.ts";
+import { inbox } from "./inbox.ts";
 import { registerWatch } from "./watch.ts";
 
 const target = z.string().describe("Agent name or pane ID (e.g. w3T:pJR) from overview.");
@@ -42,6 +43,8 @@ const confirm = z
   .optional()
   .describe("Only after the user said yes in this chat: lets a git push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub write (gh pr/issue/release, gh api POST/PATCH/PUT/DELETE), rm -rf or deploy go ahead. Without it those return needs_confirmation with a pending id; request_confirmation with that id lets the user approve with a click instead.");
 const SHELL = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
+// Messages to an agent: in a linked chat, one per delivered wake (inbox.allowMessage).
+const TO_AGENT = new Set(["prompt_agent", "steer_agent"]);
 
 interface ToolDef {
   title: string;
@@ -449,7 +452,13 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
           };
         }
         const target = typeof chosen === "string" ? chosen : defaultMachine;
+        const lease = typeof params.lease === "string" ? params.lease : null;
+        if (TO_AGENT.has(name) && lease) {
+          const allowed = inbox.allowMessage(target, lease);
+          if (!allowed.ok) return render({ ok: false, error: { code: "one_message_per_wake", message: allowed.message } });
+        }
         const res = holdIfGated(pendingCalls, target, name, params, await call(target, name, params));
+        if (TO_AGENT.has(name) && lease && res.ok) inbox.noteMessage(target, lease);
         if (WATCHES.has(name)) onWatch?.(target);
         return render(res);
       },
@@ -458,6 +467,6 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
   registerConfirm(server, call, render);
   registerEvents(server);
   registerWakeTest(server);
-  registerWatch(server, machines, defaultMachine, onWatch);
+  registerWatch(server, machines, defaultMachine, call, onWatch);
   return server;
 }
