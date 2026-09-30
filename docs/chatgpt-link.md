@@ -51,7 +51,7 @@ ChatGPT chat ──prompt_agent (lease L)──▶ MCP server ──ssh──▶
 
 ### Credentials and limits
 
-(Designed with ChatGPT through the link itself on 30-09: it asked for the lease check, the hidden cap and the ceilings, then, reviewing the diff, rejected the "abandoned card" replacement and a model-settable override of the one-message rule. At the time of writing this version is not committed or deployed: it is waiting for ChatGPT's approval.)
+(Designed with ChatGPT through the link itself on 30-09: it asked for the lease check, the hidden cap and the ceilings, then, reviewing the diff, rejected the "abandoned card" replacement and a model-settable override of the one-message rule. Committed as d744c56 on 30-09; not deployed yet, waiting for ChatGPT's approval.)
 
 - **Lease check.** `watch_here` asks the machine's gateway (`lease_check`) whether the lease exists and is live (used in the last 24 h, the gateway's own lapse rule), and refuses `invalid_lease` otherwise.
 - **Hidden cap.** Each watch has a random `cap` (`wc_` + 40 hex). The watch id, cap and lease come back only in the tool result's `_meta["workdone/watch"]`, which the card reads. The model sees none of them. `watch_next` and `watch_stop` need the cap, and a wrong cap gets nothing. Replacing an open link needs the cap too (`already_linked` otherwise), and a replacement keeps the rounds used. The lease isn't in the wake text any more.
@@ -109,7 +109,7 @@ Asked of ChatGPT itself and written up in `docs/loop-risks.md`. The short versio
 
 ## Open
 
-- ChatGPT's approval of the credentials-and-limits diff, then commit, deploy, and a check that `_meta` reaches the card on real ChatGPT.
+- ChatGPT's approval of the credentials-and-limits change (d744c56), then deploy, and a check that `_meta` reaches the card on real ChatGPT.
 - A card closed without Stop keeps its link open until it expires, and the chat can't replace it without the cap. That stays so: ChatGPT's review rejected treating a quiet card as abandoned, since that would let the lease alone take over a link again, and a sleeping laptop or a network pause looks the same. A chat that takes the agent over gets a new lease and can open a fresh link.
 - The always-on hub: the linked chat open in OVH's Chromium.
 - Remove `wake_test`; close the `confirm: true` route so the Approve card is the only way through.
