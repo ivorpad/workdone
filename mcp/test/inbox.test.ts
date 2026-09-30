@@ -3,19 +3,41 @@ import type { Report } from "../../gateway/watcher.ts";
 import { Inbox } from "../src/inbox.ts";
 
 const report = (over: Partial<Report> = {}): Report => ({
-  pane_id: "w1:p1", type: "question", agent: "robin", kind: "claude", cwd: "/src/relay", excerpt: "Which branch?", lease: "L-abc123", message: "robin asks", ...over,
+  pane_id: "w1:p1", type: "question", agent: "robin", kind: "claude", cwd: "/src/relay", excerpt: "Which branch?", lease: "L-abc123", reply_to: null, message: "robin asks", ...over,
 });
 
 describe("inbox", () => {
   test("an event goes only to the watch whose machine and lease hold the agent", async () => {
     const box = new Inbox();
-    const mine = box.open("mac", "L-abc123");
-    const other = box.open("mac", "L-zzz999");
-    const ovh = box.open("ovh", "L-abc123");
+    // Questions on, so a plain question event is one this watch takes.
+    const wake = { wake: ["reply", "blocked", "question"] as const };
+    const mine = box.open("mac", "L-abc123", { wake: [...wake.wake] });
+    const other = box.open("mac", "L-zzz999", { wake: [...wake.wake] });
+    const ovh = box.open("ovh", "L-abc123", { wake: [...wake.wake] });
     expect(box.add("mac", [report(), report({ lease: null }), report({ lease: "L-nobody1" })])).toBe(1);
     expect((await box.next(mine.watch_id, 0)).events.map((e) => [e.agent, e.type, e.excerpt])).toEqual([["robin", "question", "Which branch?"]]);
     expect((await box.next(other.watch_id, 0)).events).toEqual([]);
     expect((await box.next(ovh.watch_id, 0)).events).toEqual([]);
+  });
+
+  test("a turn the thread asked for wakes it as its reply; the owner's own turns don't", async () => {
+    const box = new Inbox();
+    const w = box.open("mac", "L-abc123");
+    box.add("mac", [
+      report({ type: "finished", reply_to: "L-abc123", excerpt: "Reviewed: 3 issues" }),
+      report({ type: "question", reply_to: "L-abc123", excerpt: "Fix all three?" }),
+      report({ type: "finished", excerpt: "owner's own turn" }),
+      report({ type: "question", excerpt: "owner's own question" }),
+      report({ type: "finished", reply_to: "L-other99", excerpt: "owed to another thread" }),
+    ]);
+    expect((await box.next(w.watch_id, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "Reviewed: 3 issues"], ["reply", "Fix all three?"]]);
+  });
+
+  test("questions: an agent asking on its own wakes only a watch that asked for that", async () => {
+    const box = new Inbox();
+    const w = box.open("mac", "L-abc123", { wake: ["reply", "blocked", "question"] });
+    box.add("mac", [report({ type: "question" })]);
+    expect((await box.next(w.watch_id, 0)).events.map((e) => e.type)).toEqual(["question"]);
   });
 
   test("finished turns wake only a watch that asked for them", async () => {
@@ -23,7 +45,7 @@ describe("inbox", () => {
     const answers = box.open("mac", "L-abc123");
     box.add("mac", [report({ type: "finished" }), report({ type: "blocked" })]);
     expect((await box.next(answers.watch_id, 0)).events.map((e) => e.type)).toEqual(["blocked"]);
-    const reviews = box.open("mac", "L-abc123", { wake: ["question", "blocked", "finished"] });
+    const reviews = box.open("mac", "L-abc123", { wake: ["reply", "blocked", "finished"] });
     box.add("mac", [report({ type: "finished" })]);
     expect((await box.next(reviews.watch_id, 0)).events.map((e) => e.type)).toEqual(["finished"]);
   });
@@ -32,7 +54,7 @@ describe("inbox", () => {
     const box = new Inbox();
     const w = box.open("mac", "L-abc123");
     const waiting = box.next(w.watch_id, 5000);
-    box.add("mac", [report()]);
+    box.add("mac", [report({ reply_to: "L-abc123" })]);
     expect((await waiting).events).toHaveLength(1);
     expect((await box.next(w.watch_id, 0)).events).toEqual([]);
   });
@@ -40,7 +62,7 @@ describe("inbox", () => {
   test("the watch ends at its round cap and drops what is left", async () => {
     const box = new Inbox();
     const w = box.open("mac", "L-abc123", { maxRounds: 2 });
-    box.add("mac", [report(), report({ excerpt: "second" }), report({ excerpt: "third" })]);
+    box.add("mac", [report({ reply_to: "L-abc123" }), report({ reply_to: "L-abc123", excerpt: "second" }), report({ reply_to: "L-abc123", excerpt: "third" })]);
     const got = await box.next(w.watch_id, 0);
     expect(got.events.map((e) => e.excerpt)).toEqual(["Which branch?", "second"]);
     expect(got.state).toMatchObject({ active: false, rounds: 2, ended: "reached its 2 rounds" });

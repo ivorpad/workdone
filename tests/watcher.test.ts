@@ -187,6 +187,14 @@ describe("watch_poll and notify ops", () => {
     expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer finished in app"], remaining: 0 });
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 0 });
   });
+  test("a turn a thread asked for is reported with reply_to, once", async () => {
+    const { gw, watch, saved } = setup();
+    watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date(Date.now() - 60_000).toISOString(), last_status: "working", managed: true, busy: true, reply_to: "L-abc123" } });
+    const first: any = await gw.handle("watch_poll", {});
+    expect(first.reports.map((r: any) => [r.type, r.reply_to])).toEqual([["finished", "L-abc123"]]);
+    // The answer was delivered: the agent's next turn is nobody's reply.
+    expect(saved()["w1:p1"]?.reply_to).toBeUndefined();
+  });
   test("a working agent stays on the list with its status recorded", async () => {
     const { gw, agents, watch, saved } = setup();
     agents[0].agent_status = "working";
@@ -228,7 +236,7 @@ describe("watch_poll and notify ops", () => {
     expect(await gw.handle("watch_poll", {})).toEqual({
       messages: [message],
       remaining: 1,
-      reports: [{ pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", message }],
+      reports: [{ pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", reply_to: null, message }],
     });
     expect(reads).toEqual(["detection"]);
   });

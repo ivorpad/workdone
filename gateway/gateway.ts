@@ -150,6 +150,12 @@ export class Gateway {
     }
     const result: any = await this.handle(op, params);
     this.leases.after(op, lease, params, result);
+    // The thread asked something and didn't wait: the agent's answer is owed to it.
+    const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
+    if (lease && (op === "prompt_agent" || op === "steer_agent") && result && !answered) {
+      const agent = await this.scopedAgent(String(params.target)).catch(() => null);
+      if (agent) this.state.owe(agent.pane_id, lease, watchInfo(agent), agent);
+    }
     if (created && result && typeof result === "object") result.lease = created;
     // Views say which thread holds each agent.
     if (this.cfg.leases && (op === "overview" || op === "get_agent" || op === "wait_agent")) {

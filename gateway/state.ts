@@ -29,6 +29,9 @@ export interface Watched {
   // tell that its decision about it is out of date.
   rev?: string;
   last_event?: { type: string; at: string; excerpt: string | null };
+  // A ChatGPT thread (its lease) prompted or steered this agent and did not wait: the
+  // turn's end is that thread's reply, reported once with reply_to so it can be woken.
+  reply_to?: string;
 }
 
 export type WatchInfo = Pick<Watched, "name" | "cwd" | "kind">;
@@ -215,6 +218,15 @@ export class StateStore {
       };
       w[paneId] = entry;
       return entry;
+    });
+  }
+
+  // prompt_agent or steer_agent from a thread that didn't wait for the answer: the end of
+  // this turn is owed to that thread. An agent nobody watched is watched for this turn.
+  owe(paneId: string, lease: string, info: WatchInfo, agent: any) {
+    this.updateWatched((w) => {
+      const cur = w[paneId] ?? { ...info, since: new Date().toISOString(), ...seenState(agent) };
+      w[paneId] = { ...cur, reply_to: lease, rev: newRev() };
     });
   }
 

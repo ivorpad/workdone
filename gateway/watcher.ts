@@ -93,6 +93,8 @@ export interface Report {
   cwd: string | null;
   excerpt: string | null;
   lease: string | null;
+  // The thread this turn answers (see Watched.reply_to), when a thread asked for it.
+  reply_to: string | null;
   message: string;
 }
 
@@ -234,12 +236,17 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
     const text = message(w, agent, paneId, note);
     messages.push(text);
-    reports.push({ pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), message: text });
+    reports.push({ pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {
     store.updateWatched((fresh) => {
-      for (const [id, e] of events) if (fresh[id]) fresh[id] = { ...fresh[id], last_event: e };
+      for (const [id, e] of events) {
+        if (!fresh[id]) continue;
+        fresh[id] = { ...fresh[id], last_event: e };
+        // The owed answer was reported; a menu mid-turn doesn't settle it.
+        if (e.type !== "blocked" && e.type !== "approved") delete fresh[id]!.reply_to;
+      }
     });
   }
   return { messages, remaining, reports };
