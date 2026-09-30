@@ -79,7 +79,7 @@ describe("watch_poll with wait_ms", () => {
       events.push(status("w1:p1", "idle"));
     }, 50);
     const t0 = Date.now();
-    expect(await gw.handle("watch_poll", { wait_ms: 20_000 })).toEqual({ messages: ["fixer finished"], remaining: 1 });
+    expect(await gw.handle("watch_poll", { wait_ms: 20_000 })).toMatchObject({ messages: ["fixer finished"], remaining: 1 });
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(events.opened).toEqual([
       [{ type: "pane.agent_status_changed", pane_id: "w1:p1" }, { type: "pane.exited" }, { type: "pane.closed" }, { type: "pane.agent_detected" }],
@@ -165,7 +165,7 @@ describe("watch_poll with wait_ms", () => {
       agents[1].state_change_seq = 2;
       events.push(status("w2:p1", "idle"));
     }, 2500);
-    expect(await gw.handle("watch_poll", { wait_ms: 10_000 })).toEqual({ messages: ["second finished"], remaining: 2 });
+    expect(await gw.handle("watch_poll", { wait_ms: 10_000 })).toMatchObject({ messages: ["second finished"], remaining: 2 });
     expect(events.opened).toHaveLength(2);
     expect(events.opened[1][1]).toEqual({ type: "pane.agent_status_changed", pane_id: "w2:p1" });
   });

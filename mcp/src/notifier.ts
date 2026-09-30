@@ -9,6 +9,7 @@
 // comes back early with nothing (a gateway from before wait_ms, a Herdr without
 // events, only browser runs to watch), is followed by intervalMs of rest instead.
 
+import type { Report } from "../../gateway/watcher.ts";
 import type { CallGateway } from "./gateway-client.ts";
 
 // A machine asleep or its Herdr restarting: expected, retried without a log line.
@@ -23,7 +24,8 @@ export interface Notifier {
   stop(): void;
 }
 
-export function startNotifier(call: CallGateway, machines: string[], via: string, intervalMs: number, waitMs = WAIT_MS): Notifier {
+// onReports gets each pass's events with the lease holding the agent, for the watch cards (inbox.ts).
+export function startNotifier(call: CallGateway, machines: string[], via: string, intervalMs: number, waitMs = WAIT_MS, onReports?: (machine: string, reports: Report[]) => void): Notifier {
   const pending = new Set<string>();
   const failing = new Map<string, string>();
   const loops = new Map<string, Promise<void>>();
@@ -63,7 +65,8 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
       return "rest";
     }
     failing.delete(machine);
-    const { messages = [], remaining = 0 } = (res.result ?? {}) as { messages?: string[]; remaining?: number };
+    const { messages = [], remaining = 0, reports = [] } = (res.result ?? {}) as { messages?: string[]; remaining?: number; reports?: Report[] };
+    if (reports.length) onReports?.(machine, reports);
     for (const message of messages) {
       const sent = await call(via, "notify", { message: machines.length > 1 ? `${machine}: ${message}` : message });
       if (!sent.ok) console.error(JSON.stringify({ event: "notify_failed", machine, message, error: sent.error }));

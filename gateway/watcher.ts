@@ -83,6 +83,25 @@ export interface Note {
   pid?: number;
 }
 
+// The same event as a message, for code: the MCP server wakes the ChatGPT thread whose
+// lease holds the agent, so it can answer a question without the owner relaying it.
+export interface Report {
+  pane_id: string;
+  type: Note["type"];
+  agent: string | null;
+  kind: string | null;
+  cwd: string | null;
+  excerpt: string | null;
+  lease: string | null;
+  message: string;
+}
+
+// The live lease holding a pane (leases lapse a day after their last use, as in leases.ts).
+function leaseOf(leases: Record<string, { panes: string[]; used: string }>, paneId: string, now: number): string | null {
+  for (const [id, l] of Object.entries(leases)) if (now - Date.parse(l.used) < 24 * 3600_000 && l.panes.includes(paneId)) return id;
+  return null;
+}
+
 // A watched agent Herdr stopped seeing may still be alive. A job that is stopped and
 // then continued from outside (SIGSTOP and SIGCONT from a memory guard, or ctrl+z then
 // bg) runs on in the background while its shell holds the terminal, and Herdr only
@@ -168,10 +187,10 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
 
 // One pass over the watch list: returns the messages to send and how many agents are
 // still watched, and records drops, state changes and the last event of each agent.
-export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number): Promise<{ messages: string[]; remaining: number }> {
+export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number): Promise<Found> {
   const store = new StateStore(cfg.stateDir);
   const watched = store.watched();
-  if (Object.keys(watched).length === 0) return { messages: [], remaining: 0 };
+  if (Object.keys(watched).length === 0) return { messages: [], remaining: 0, reports: [] };
   const agents: any[] = (await herdr("agent.list", {})).agents ?? [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
@@ -196,6 +215,8 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   });
   // Excerpts can take a couple of seconds (a transcript trails the status), so they come after.
   const messages: string[] = [];
+  const reports: Report[] = [];
+  const leases = store.leases();
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
   for (const { paneId, w, agent, d, bg } of decided) {
     // A menu that only wants a go-ahead is answered rather than reported, on every poll
@@ -211,7 +232,9 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     }
     if (!d.event) continue;
     const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
-    messages.push(message(w, agent, paneId, note));
+    const text = message(w, agent, paneId, note);
+    messages.push(text);
+    reports.push({ pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), message: text });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {
@@ -219,12 +242,18 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       for (const [id, e] of events) if (fresh[id]) fresh[id] = { ...fresh[id], last_event: e };
     });
   }
-  return { messages, remaining };
+  return { messages, remaining, reports };
 }
 
 export interface Found {
   messages: string[];
   remaining: number;
+  reports?: Report[];
+}
+
+// watch_poll's result carries reports only when there are some.
+export function withReports(found: { messages: string[]; remaining: number }, reports: Report[] | undefined): Found {
+  return reports?.length ? { ...found, reports } : found;
 }
 
 // While waiting, how often browser runs (files, no events) and the watch list are looked at.
@@ -268,7 +297,7 @@ export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: 
       }
       const a = await agents();
       const j = jobs();
-      const found = { messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining };
+      const found = withReports({ messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining }, a.reports);
       if (!sub || found.messages.length || found.remaining === 0 || Date.now() >= deadline) return found;
       const panes = new Set(subscribed.split("\n"));
       for (;;) {

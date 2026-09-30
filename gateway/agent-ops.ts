@@ -14,7 +14,7 @@ import { showDone, showWatched } from "./sidebar.ts";
 import type { Watched } from "./state.ts";
 import { agentReply, type Reply } from "./transcript.ts";
 import { pollJobs } from "./jobs.ts";
-import { pollWaiting, pollWatched, sendNotification } from "./watcher.ts";
+import { pollWaiting, pollWatched, sendNotification, withReports } from "./watcher.ts";
 import { agentView, lastLines, paneView, textOf, watchInfo, watchView } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done"]);
@@ -170,7 +170,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
       if (waitMs > 0) return await pollWaiting(g.cfg, g.herdr, waitMs, agents, jobs);
       const found = await agents();
       const runs = jobs();
-      return { messages: [...found.messages, ...runs.messages], remaining: found.remaining + runs.remaining };
+      return withReports({ messages: [...found.messages, ...runs.messages], remaining: found.remaining + runs.remaining }, found.reports);
     },
 
     async wait_agent(params) {

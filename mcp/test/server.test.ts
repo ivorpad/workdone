@@ -6,7 +6,7 @@ import { createHandler, logRpc } from "../src/server.ts";
 import { TOOLS } from "../src/tools.ts";
 
 // Registered next to TOOLS by registerConfirm.
-const CONFIRM_TOOLS = ["request_confirmation", "confirm_pending", "wake_test", "wake_test_log"];
+const CONFIRM_TOOLS = ["request_confirmation", "confirm_pending", "wake_test", "wake_test_log", "watch_here", "watch_next", "watch_stop"];
 
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
 const cfg = parseConfig({

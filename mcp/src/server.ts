@@ -4,7 +4,8 @@
 import { createMcpHandler, hostHeaderValidationResponse, isLegacyRequest, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { parseConfig, type OvhConfig } from "./config.ts";
 import { sshGateway, type CallGateway } from "./gateway-client.ts";
-import { startNotifier } from "./notifier.ts";
+import { inbox } from "./inbox.ts";
+import { startNotifier, WAIT_MS } from "./notifier.ts";
 import { buildServer } from "./tools.ts";
 
 // Records what the client says about itself on initialize or server/discover: its protocol
@@ -76,7 +77,7 @@ if (import.meta.main) {
   const path = process.env.HERDR_MCP_CONFIG ?? "/etc/herdr-mcp/ovh.json";
   const cfg = parseConfig(await Bun.file(path).json());
   const call = sshGateway(cfg);
-  const notifier = cfg.notify ? startNotifier(call, Object.keys(cfg.machines), cfg.notify.machine, cfg.notify.intervalMs) : null;
+  const notifier = cfg.notify ? startNotifier(call, Object.keys(cfg.machines), cfg.notify.machine, cfg.notify.intervalMs, WAIT_MS, (m, r) => inbox.add(m, r)) : null;
   const handler = createHandler(cfg, call, notifier?.markPending);
   const srv = Bun.serve({ hostname: cfg.listen.host, port: cfg.listen.port, fetch: handler, idleTimeout: 255 });
   const machines = Object.fromEntries(Object.entries(cfg.machines).map(([name, t]) => [name, `${t.user}@${t.host}`]));

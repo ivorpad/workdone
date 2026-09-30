@@ -9,6 +9,7 @@ import { registerEvents } from "./events.ts";
 import type { CallGateway } from "./gateway-client.ts";
 import { render } from "./render.ts";
 import { registerWakeTest } from "./waketest.ts";
+import { registerWatch } from "./watch.ts";
 
 const target = z.string().describe("Agent name or pane ID (e.g. w3T:pJR) from overview.");
 const paneId = z.string().describe("Pane ID from list_panes, list_workspaces or overview (e.g. w3T:pJR).");
@@ -457,5 +458,6 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
   registerConfirm(server, call, render);
   registerEvents(server);
   registerWakeTest(server);
+  registerWatch(server, machines, defaultMachine, onWatch);
   return server;
 }

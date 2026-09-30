@@ -184,7 +184,7 @@ describe("watch_poll and notify ops", () => {
   test("reports a finished agent once and says nothing is left", async () => {
     const { gw, watch } = setup();
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date(Date.now() - 60_000).toISOString(), last_status: "working" } });
-    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["fixer finished in app"], remaining: 0 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer finished in app"], remaining: 0 });
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 0 });
   });
   test("a working agent stays on the list with its status recorded", async () => {
@@ -209,7 +209,7 @@ describe("watch_poll and notify ops", () => {
     ];
     writeFileSync(join(dir, `${CURSOR_ID}.jsonl`), lines.map((l) => JSON.stringify(l)).join("\n"));
     watch({ "w3:p1": { name: null, cwd: "/srv/allowed/relay", since: new Date().toISOString(), last_status: "working", managed: true, busy: true, kind: "cursor" } });
-    expect(await gw.handle("watch_poll", {})).toEqual({
+    expect(await gw.handle("watch_poll", {})).toMatchObject({
       messages: ['cursor "Automations MVP" (w3:p1) asks in relay: Editor done, tests pass. Should I start the pack assignment next?'],
       remaining: 1,
     });
@@ -217,13 +217,18 @@ describe("watch_poll and notify ops", () => {
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
   });
   test("a dialog is quoted from the detection screen", async () => {
-    const { gw, agents, reads, watch, setScreen } = setup({ autoApprove: false });
+    const { gw, agents, reads, watch, setScreen, state } = setup({ autoApprove: false });
     agents[0].agent_status = "blocked";
     setScreen("  Run this command?\n  $ pnpm db:reset\n  → Run (once) (y)\n  Skip (esc or n)");
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working" } });
+    // The thread holding the agent is named in the report, so the MCP server can wake it.
+    const used = new Date().toISOString();
+    writeFileSync(join(state, "leases.json"), JSON.stringify({ "L-abc123": { label: "t", panes: ["w1:p1"], created: used, used }, "L-stale01": { label: "old", panes: ["w1:p1"], created: "2026-01-01T00:00:00Z", used: "2026-01-01T00:00:00Z" } }));
+    const message = "fixer in app is waiting for an answer: Run this command? / $ pnpm db:reset / → Run (once) (y)";
     expect(await gw.handle("watch_poll", {})).toEqual({
-      messages: ["fixer in app is waiting for an answer: Run this command? / $ pnpm db:reset / → Run (once) (y)"],
+      messages: [message],
       remaining: 1,
+      reports: [{ pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", message }],
     });
     expect(reads).toEqual(["detection"]);
   });
@@ -297,7 +302,7 @@ describe("watch_poll and notify ops", () => {
     const { gw, agents, watch } = setup();
     agents[0].cwd = "/srv/secret";
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
-    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["fixer in app is gone (pane closed or agent exited)"], remaining: 0 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer in app is gone (pane closed or agent exited)"], remaining: 0 });
   });
   test("a managed agent that is gone loses its sidebar token; a finished turn watch never had one", async () => {
     const { gw, agents, reports, watch } = setup();
@@ -323,7 +328,7 @@ describe("watch_poll and notify ops", () => {
     const { gw, watch, saved, setOnList } = setup();
     watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date(Date.now() - 60_000).toISOString(), last_status: "working" } });
     setOnList(() => gw.state.prompted("w1:p1", info, { agent_status: "working" }, false));
-    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["fixer finished"], remaining: 1 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer finished"], remaining: 1 });
     expect(saved()["w1:p1"]).toMatchObject({ name: "fixer", last_event: { type: "finished" } });
   });
   test("an answer prompt_agent already returned is not reported by a poll that overlapped it", async () => {
@@ -342,7 +347,7 @@ describe("watch_poll and notify ops", () => {
     agents.length = 0;
     watch({ "w1:p1": { name: "old", cwd: null, since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
     setOnList(() => gw.state.manage("w1:p1", { name: "new", cwd: null, kind: "cursor" }, { agent_status: "idle" }, true));
-    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["old is gone (pane closed or agent exited)"], remaining: 1 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["old is gone (pane closed or agent exited)"], remaining: 1 });
     expect(saved()["w1:p1"]).toMatchObject({ name: "new", managed: true, busy: false });
   });
   test("parallel watch_agent calls keep both entries", async () => {
@@ -371,7 +376,7 @@ for (let i = 0; i < 20; i++) new StateStore(${JSON.stringify(state)}).manage(pro
       : herdr(method, params);
     watch({ "w1:p1": { name: "worker", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true, kind: "cursor" } });
     try {
-      expect(await gw.handle("watch_poll", {})).toEqual({
+      expect(await gw.handle("watch_poll", {})).toMatchObject({
         messages: [`worker in app is running in the background of its pane (pid ${job.pid}), out of Herdr's sight and unable to take input; fg in that shell brings it back`],
         remaining: 1,
       });
@@ -391,7 +396,7 @@ for (let i = 0; i < 20; i++) new StateStore(${JSON.stringify(state)}).manage(pro
       job.kill();
       await job.exited;
     }
-    expect(await gw.handle("watch_poll", {})).toEqual({ messages: ["worker in app is gone (pane closed or agent exited)"], remaining: 0 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["worker in app is gone (pane closed or agent exited)"], remaining: 0 });
   });
   test("notify runs notifyCommand with the message as the last argument", async () => {
     const out = join(mkdtempSync(join(tmpdir(), "herdr-notify-")), "sent.txt");
