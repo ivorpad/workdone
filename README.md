@@ -231,6 +231,7 @@ A token nobody reported disappears with its separator. A `rows_by_agent` overrid
 
 - Bun replaces Node. The gateway is `gateway/*.ts`, run by `bun --no-env-file --no-install`, and OVH uses `/usr/local/bin/bun` (the installer writes it to `bun-path` next to the launcher).
 - The gateway calls the Herdr socket API instead of the `herdr` binary, so its config has `herdrSocketPath` and no `herdrPath`.
+- The MCP server is on the v2 SDK (`@modelcontextprotocol/server`) and speaks both protocol revisions. The tunnel client probes `server/discover` with 2026-07-28 and gets it; requests without the 2026 envelope (ChatGPT's own `tools/call`, as of 30-09) go to a stateless 2025 transport with JSON responses, as before. Forms (`openai/elicitation`) and MCP Events need ChatGPT itself on 2026-07-28. Each handshake is logged in full as `client_hello` (with the `_meta` envelope on 2026), and every other request by method name only: `journalctl -u herdr-mcp | grep client_hello`.
 - The tunnel profile uses `--sample sample_mcp_remote_no_auth`. Per the tunnel-client docs, that is the sample for a local HTTP MCP server without OAuth. `sample_mcp_stdio_local` is for stdio servers.
 
 ## Development

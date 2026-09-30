@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { parseConfig, sshArgs } from "../src/config.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
-import { createHandler } from "../src/server.ts";
+import { createHandler, logRpc } from "../src/server.ts";
 import { TOOLS } from "../src/tools.ts";
 
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
@@ -121,5 +122,65 @@ describe("http", () => {
   test("rejects a foreign Host header", async () => {
     const res = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }, "evil.example:8787");
     expect(res.status).toBe(403);
+  });
+});
+
+describe("2026-07-28", () => {
+  // The SDK's own client, pinned to the modern revision: it answers server/discover and
+  // sends the per-request _meta envelope, as the tunnel client tries first.
+  async function modernClient() {
+    const client = new Client({ name: "test", version: "1" }, { versionNegotiation: { mode: { pin: "2026-07-28" } } });
+    const transport = new StreamableHTTPClientTransport(new URL("http://127.0.0.1:8787/mcp"), {
+      // A real socket adds Host; an in-process Request does not.
+      fetch: (input, init) => {
+        const req = new Request(String(input), init);
+        req.headers.set("host", "127.0.0.1:8787");
+        return handler(req);
+      },
+    });
+    await client.connect(transport);
+    return client;
+  }
+  test("server/discover negotiates the modern era", async () => {
+    const client = await modernClient();
+    expect(client.getProtocolEra()).toBe("modern");
+    expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+    expect(client.getServerVersion()?.name).toBe("herdr-remote");
+    expect(client.getInstructions()).toContain("claim_agents");
+    await client.close();
+  });
+  test("tools list and call work the same as on 2025", async () => {
+    const client = await modernClient();
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(Object.keys(TOOLS).sort());
+    const result = (await client.callTool({ name: "exec", arguments: { machine: "ovh", command: "uptime" } })) as any;
+    expect(result.isError).toBe(false);
+    expect(calls.at(-1)).toEqual(["ovh", "exec", { command: "uptime" }]);
+    await client.close();
+  });
+});
+
+describe("rpc log", () => {
+  test("records the client's hello in full and other methods by name only, in a batch too", () => {
+    const lines: string[] = [];
+    const push = (l: string) => lines.push(l);
+    const init = {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: { protocolVersion: "2025-11-25", clientInfo: { name: "openai-mcp" }, capabilities: { extensions: { "openai/elicitation": { form: {} } } } },
+    };
+    logRpc([init, { jsonrpc: "2.0", method: "notifications/initialized" }], null, push);
+    logRpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "exec", arguments: { command: "secret" } } }, "2025-11-25", push);
+    const envelope = { "io.modelcontextprotocol/clientCapabilities": { extensions: { "openai/elicitation": { form: {} } } } };
+    logRpc({ jsonrpc: "2.0", id: 3, method: "server/discover", params: { _meta: envelope } }, "2026-07-28", push);
+    logRpc(undefined, null, push);
+    expect(lines.map((l) => JSON.parse(l))).toEqual([
+      { event: "client_hello", method: "initialize", protocolHeader: null, protocolVersion: "2025-11-25", clientInfo: { name: "openai-mcp" }, capabilities: init.params.capabilities },
+      { event: "rpc", method: "notifications/initialized", protocolHeader: null },
+      { event: "rpc", method: "tools/call", protocolHeader: "2025-11-25" },
+      { event: "client_hello", method: "server/discover", protocolHeader: "2026-07-28", meta: envelope },
+    ]);
+    expect(lines.join("\n")).not.toContain("secret");
   });
 });

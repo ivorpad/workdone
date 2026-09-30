@@ -2,7 +2,7 @@
 // machine; the gateway on that machine is the authority for scope and capability
 // checks. Listing tools called without a machine ask every machine at once.
 
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
 
@@ -448,7 +448,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
       );
     server.registerTool(
       name,
-      { title: def.title, description: def.description, inputSchema: { ...def.input, machine }, annotations: def.annotations },
+      { title: def.title, description: def.description, inputSchema: z.object({ ...def.input, machine }), annotations: def.annotations },
       async (args: Record<string, unknown>) => {
         const { machine: chosen, ...params } = args ?? {};
         if (typeof chosen === "string" && !machines.includes(chosen)) {

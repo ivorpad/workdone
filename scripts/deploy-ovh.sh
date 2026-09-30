@@ -70,7 +70,7 @@ echo "== MCP server"
 sudo rm -rf /opt/herdr-chatgpt-bridge.new
 sudo cp -r "$stage" /opt/herdr-chatgpt-bridge.new
 sudo chown -R root:root /opt/herdr-chatgpt-bridge.new
-(cd /opt/herdr-chatgpt-bridge.new/mcp && sudo /usr/local/bin/bun install --production --frozen-lockfile >/dev/null && sudo /usr/local/bin/bun test 2>&1 | tail -3)
+(cd /opt/herdr-chatgpt-bridge.new/mcp && sudo /usr/local/bin/bun install --frozen-lockfile >/dev/null && sudo /usr/local/bin/bun test 2>&1 | tail -3)
 sudo mv /opt/herdr-chatgpt-bridge /opt/herdr-chatgpt-bridge.old-"$ts"
 sudo mv /opt/herdr-chatgpt-bridge.new /opt/herdr-chatgpt-bridge
 
