@@ -55,7 +55,7 @@ With `allowExec` on, the allowed roots stop being a boundary for anything but th
 
 ## Agents
 
-The same 37 names on the Mac, OVH and syno. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
+The same 38 names on the Mac, OVH and syno. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
 
 Every agent starts with full access, since 30-09: no permission or approval prompts and no sandbox (`FULL_ACCESS` in `scripts/agent-aliases.ts`). Claude Code gets `--dangerously-skip-permissions` and shows "bypass permissions on"; Codex gets `--dangerously-bypass-approvals-and-sandbox` and still asks folder trust once, which WorkDone answers. So agents run pushes, commits, merges and deletions without a menu, and the gated list only covers what ChatGPT runs itself (`exec`, `run_command_in_pane`, `send_pane_input`) and menus agents still show. Protect what must stay the owner's call on the server side, e.g. GitHub branch protection on `main`. Agents already running keep the mode they started with.
 
@@ -71,8 +71,9 @@ Every agent starts with full access, since 30-09: no permission or approval prom
 
 | Name | Model | Default | Efforts |
 |---|---|---|---|
-| maple | GPT-6 Astra | medium | low … max, ultra |
-| willow | GPT-6 Sol | low | low … max, ultra |
+| maple | GPT-6.1 Sol | ultra | low … max, ultra |
+| walnut | GPT-6 Astra | medium | low … max, ultra |
+| willow | GPT-6 Sol | medium | low … max, ultra |
 | cedar | GPT-6 Luna | medium | low … max |
 | cherry | GPT Reserve | medium | low … max |
 | olive | GPT-5.6 Sol | low | low … max, ultra |
@@ -111,7 +112,7 @@ Every agent starts with full access, since 30-09: no permission or approval prom
 | kangaroo | Muse Spark 1.3 | high | minimal, low, medium, high, xhigh, max |
 | gorilla | Cursor "auto" (Cursor picks) | default | default |
 
-**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 28-09; the file is the source of truth.
+**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`, maple: `ultra`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 28-09; the file is the source of truth.
 
 An alias can also be written inline in a gateway config: `"wren": {"kind": "claude", "args": ["--model", "claude-opus-5-5", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID.
 

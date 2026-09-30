@@ -47,6 +47,7 @@ const RETIRED = new Set([
 const DEFAULT_EFFORT: Record<string, string> = {
   panda: "xhigh-fast",
   falcon: "max",
+  maple: "ultra",
 };
 
 // Cursor models that get the first names in the pool, the ones said most often. The rest

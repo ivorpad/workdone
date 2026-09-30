@@ -1,6 +1,6 @@
 {
   "name": "herdr-remote",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Drive Herdr coding agents, terminal panes, files and shell commands on your Mac, your OVH server and your Synology from ChatGPT or Codex, through a private MCP server reached over the OpenAI Secure MCP Tunnel.",
   "author": {
     "name": "Ivor"
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "WorkDone",
     "shortDescription": "Check on and prompt your Herdr agents, and work with files and commands on your Mac and OVH.",
-    "longDescription": "WorkDone shows what the coding agents in Herdr are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Watched agents never wait on a permission or folder trust prompt: WorkDone answers those, and your phone gets a notification when one finishes or asks you something. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
+    "longDescription": "WorkDone shows what the coding agents in Herdr are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Agents start with full access, so they don't stop for permission prompts; your phone gets a notification when one finishes or asks you something. When something is your call, WorkDone shows an Approve card with the exact command. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
     "developerName": "Ivor",
     "category": "Coding",
     "capabilities": [
