@@ -195,6 +195,21 @@ describe("watch_poll and notify ops", () => {
     // The answer was delivered: the agent's next turn is nobody's reply.
     expect(saved()["w1:p1"]?.reply_to).toBeUndefined();
   });
+  test("tell: an agent's message goes to the thread holding it, whole, and once", async () => {
+    const { gw, watch, state } = setup();
+    watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
+    await expect(gw.handle("tell", { pane_id: "w1:p1", text: "hi" })).rejects.toThrow(/no ChatGPT thread holds this agent/);
+    const used = new Date().toISOString();
+    writeFileSync(join(state, "leases.json"), JSON.stringify({ "L-abc123": { label: "t", panes: ["w1:p1"], created: used, used } }));
+    const text = "How should watch_here check a lease? " + "x".repeat(600);
+    expect(await gw.handle("tell", { pane_id: "w1:p1", text })).toMatchObject({ queued: true, lease: "L-abc123" });
+    const first: any = await gw.handle("watch_poll", {});
+    expect(first.reports.filter((r: any) => r.type === "message").map((r: any) => [r.lease, r.excerpt])).toEqual([["L-abc123", text]]);
+    // Not a phone notification, and not delivered twice.
+    expect(first.messages.some((m: string) => m.includes("How should"))).toBe(false);
+    const second: any = await gw.handle("watch_poll", {});
+    expect((second.reports ?? []).filter((r: any) => r.type === "message")).toEqual([]);
+  });
   test("a working agent stays on the list with its status recorded", async () => {
     const { gw, agents, watch, saved } = setup();
     agents[0].agent_status = "working";

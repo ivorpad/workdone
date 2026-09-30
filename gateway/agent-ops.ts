@@ -160,6 +160,23 @@ async function waitAgents(g: Gateway, params: Params) {
 
 export function agentOps(g: Gateway): Record<string, Op> {
   return {
+    // Internal, run by an agent on its own machine: a message to the ChatGPT thread whose
+    // lease holds its pane, delivered by that thread's watch card. pane_id is the
+    // agent's own pane ($HERDR_PANE_ID).
+    async tell(params) {
+      const paneId = str(params, "pane_id", TARGET_RE);
+      const text = str(params, "text").trim();
+      if (!text) throw new GatewayError("invalid_params", "text is empty");
+      if (text.length > 4000) throw new GatewayError("invalid_params", "text exceeds 4000 characters");
+      // The agent must be one Herdr sees, inside the allowed roots, as for every other op.
+      const agents: any[] = (await g.herdr("agent.list", {})).agents ?? [];
+      if (!agents.some((x) => x.pane_id === paneId && paneInScope(x, g.cfg.allowedRoots))) throw new GatewayError("not_found", `agent ${paneId} not found`);
+      const lease = Object.entries(g.state.leases()).find(([, l]) => l.panes.includes(paneId))?.[0];
+      if (!lease) throw new GatewayError("no_thread", "no ChatGPT thread holds this agent: ask the owner to link a chat with it first");
+      g.state.addTold({ pane_id: paneId, text, at: new Date().toISOString() });
+      return { queued: true, lease, note: "delivered to the linked chat within about 20 s, if its link card is open" };
+    },
+
     // Internal, used by the MCP server's notifier rather than by ChatGPT.
     // wait_ms: while nothing is found, wait up to that long for a watched agent to change
     // (Herdr events) or a browser run to end, so the notifier hears within a second or so.

@@ -10,6 +10,12 @@ export type CreatedKind = "panes" | "tabs" | "workspaces";
 // A watched agent, keyed by pane ID. prompt_agent watches one turn: the entry goes
 // once that turn is reported. A managed entry (watch_agent, or an agent started
 // through the bridge) reports every turn and stays until the agent exits.
+export interface Told {
+  pane_id: string;
+  text: string;
+  at: string;
+}
+
 export interface Watched {
   name: string | null;
   cwd: string | null;
@@ -110,6 +116,29 @@ export class StateStore {
 
   setExecWorkspace(id: string) {
     this.write("exec-workspace.json", { id });
+  }
+
+  // Messages agents sent their ChatGPT thread with tell, waiting for the next watch pass.
+  addTold(m: Told) {
+    this.locked(() => {
+      const v = this.read("told.json");
+      const cur = Array.isArray(v) ? (v as Told[]) : [];
+      this.write("told.json", [...cur, m].slice(-50));
+    });
+  }
+
+  takeTold(): Told[] {
+    return this.locked(() => {
+      const v = this.read("told.json");
+      const cur = Array.isArray(v) ? (v as Told[]) : [];
+      if (cur.length) this.write("told.json", []);
+      return cur;
+    });
+  }
+
+  hasTold(): boolean {
+    const v = this.read("told.json");
+    return Array.isArray(v) && v.length > 0;
   }
 
   // Which ChatGPT thread may act on which panes: lease ID to its label and panes.

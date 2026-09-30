@@ -15,9 +15,10 @@ import type { Report } from "../../gateway/watcher.ts";
 // The event types a watch can wake on. "reply" is a finished or question turn owed to the
 // watching thread. A gateway also reports "gone", "background" and "stopped"; those go to
 // the phone only.
-const WAKE_TYPES = ["reply", "question", "blocked", "finished"] as const;
+// "message" is one an agent sent this thread on purpose, with the gateway's tell.
+const WAKE_TYPES = ["message", "reply", "question", "blocked", "finished"] as const;
 export type WakeType = (typeof WAKE_TYPES)[number];
-export const DEFAULT_WAKE: WakeType[] = ["reply", "blocked"];
+export const DEFAULT_WAKE: WakeType[] = ["message", "reply", "blocked"];
 
 const isWakeType = (t: string): t is WakeType => (WAKE_TYPES as readonly string[]).includes(t);
 

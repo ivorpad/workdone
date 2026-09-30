@@ -87,7 +87,8 @@ export interface Note {
 // lease holds the agent, so it can answer a question without the owner relaying it.
 export interface Report {
   pane_id: string;
-  type: Note["type"];
+  // "message": an agent wrote to its thread with tell.
+  type: Note["type"] | "message";
   agent: string | null;
   kind: string | null;
   cwd: string | null;
@@ -219,6 +220,13 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   const messages: string[] = [];
   const reports: Report[] = [];
   const leases = store.leases();
+  // Messages agents sent with tell: to the thread holding them, not to the phone.
+  for (const t of store.takeTold()) {
+    const w = watched[t.pane_id];
+    const agent = byPane.get(t.pane_id);
+    const name = agent?.name ?? w?.name ?? null;
+    reports.push({ pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
+  }
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
   for (const { paneId, w, agent, d, bg } of decided) {
     // A menu that only wants a go-ahead is answered rather than reported, on every poll
@@ -305,7 +313,7 @@ export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: 
       const a = await agents();
       const j = jobs();
       const found = withReports({ messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining }, a.reports);
-      if (!sub || found.messages.length || found.remaining === 0 || Date.now() >= deadline) return found;
+      if (!sub || found.messages.length || found.reports?.length || found.remaining === 0 || Date.now() >= deadline) return found;
       const panes = new Set(subscribed.split("\n"));
       for (;;) {
         const left = deadline - Date.now();
@@ -326,6 +334,8 @@ export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: 
         }
         const runs = jobs();
         if (runs.messages.length) return { messages: runs.messages, remaining: a.remaining + runs.remaining };
+        // A tell waiting: pass again now rather than at the deadline.
+        if (new StateStore(cfg.stateDir).hasTold()) break;
         if (watchedIds() !== subscribed) break;
       }
     }

@@ -33,6 +33,13 @@ describe("inbox", () => {
     expect((await box.next(w.watch_id, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "Reviewed: 3 issues"], ["reply", "Fix all three?"]]);
   });
 
+  test("a message an agent sends on purpose wakes its thread by default", async () => {
+    const box = new Inbox();
+    const w = box.open("mac", "L-abc123");
+    box.add("mac", [report({ type: "message", excerpt: "the whole question" })]);
+    expect((await box.next(w.watch_id, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["message", "the whole question"]]);
+  });
+
   test("questions: an agent asking on its own wakes only a watch that asked for that", async () => {
     const box = new Inbox();
     const w = box.open("mac", "L-abc123", { wake: ["reply", "blocked", "question"] });
