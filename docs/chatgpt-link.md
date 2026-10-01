@@ -2,7 +2,36 @@
 
 Prefer native MCP Events for completion and question notifications. WorkDone now implements `agent.finished` and `agent.asks` using authenticated subscriptions and signed callbacks. [MCP Events setup](mcp-events.md) explains the required OAuth connection, callback allowlist and real ChatGPT checks. Events has not been verified end to end on the deployed No Auth app, so the existing card remains available during migration.
 
-The rest of this page describes that fallback card, agent-written `tell` messages and the Approve card. `tell` still uses the card. Phone notifications keep their separate path.
+Permission policy applies to both notification paths. The rest of this page describes that policy, the fallback card, agent-written `tell` messages and the Approve card. `tell` still uses the card. Phone notifications keep their separate path.
+
+## Choose how an agent handles permissions
+
+ChatGPT can call `set_agent_approval` for an agent this conversation holds. The choice belongs to that lease and pane, not every agent on the machine.
+
+| `mode` | What WorkDone answers automatically |
+| --- | --- |
+| `ask` | Nothing. Permission, trust and notice menus remain for the owner. |
+| `permissions` | Recognized permission menus using allow once, folder trust and routine notices. Gated operations still need approval. |
+| `all_permissions` | The same menus, including recognized permission requests for gated agent operations such as commit, push or deploy. |
+| `default` | Removes the override and restores the machine's `autoApprove` setting, which excludes gated operations. |
+
+Use `all_permissions` only when the owner explicitly authorizes all permission prompts for that agent, including gated operations. It does not authorize arbitrary `exec` calls, raw pane commands or answers to ordinary questions. WorkDone does not choose persistent “always allow” options. Machine-level `autoApprove: false` prevents either automatic mode.
+
+For manual approvals in this thread, claim the agent and subscribe to `agent.asks` and `agent.finished` for its machine and pane. Then set its policy before giving it work:
+
+```json
+{"machine":"mac","target":"w5M:pA","lease":"LEASE_FROM_CLAIM_AGENTS","mode":"ask","ttl_seconds":3600}
+```
+
+`set_agent_approval` establishes the watch if needed. Registering subscriptions first also covers a menu already on screen; use `get_agent` to reconcile its current state. An automatic policy can approve that current menu immediately and returns those choices in `auto_approved`. In ChatGPT, a request such as “Ask me before granting maple on mac any permission, and show its completion here” supplies the policy and notification task. [The Events runbook](mcp-events.md) covers the authenticated connection. Use `watch_here` for the notification task while Events is unavailable.
+
+The default policy lifetime is 24 hours; `ttl_seconds` accepts 60 through 86400 and is capped by the current lease expiry. `get_agent.watch.approval_policy` shows the effective override, or null. Policies are stored durably with the lease and bound to the agent kind, session and watch generation. Release, takeover, expiry, a detected session change or stopping its watch removes that override's authority. The machine default then applies. `all_permissions` requires a stable Herdr agent session ID and returns `session_required` without one. Older Herdr versions without session identity cannot detect a silent restart into the same agent kind for `ask` or `permissions`; renew the policy deliberately when restarting.
+
+A manual permission menu arrives as `agent.asks` with `data.choices`, including its text, numbered options, classification and `dialog_id`. An oversized or incomplete menu has `choices_truncated: true` instead. Read `get_agent` before presenting it and again after the owner's decision. If the ID differs from the menu they approved, show the replacement for a new decision. Otherwise send that `choices.dialog_id` as `answer_agent.expected_dialog_id` with the chosen option. `stale_dialog` means it changed before the keys were pressed: reread and decide on the current menu, rather than replaying an old choice. If the menu has gone, nothing is pressed.
+
+The parser recognizes known Codex, Claude, Pi permission-extension and OpenCode menus. OpenCode's horizontal permission buttons require a readable ANSI selection marker; ambiguous selection or custom key bindings can return `unsupported_menu_keys` instead of pressing an assumed option. Read the current screen and let the owner decide; a generic Yes/No question is not blanket permission. Ordinary questions remain questions in every policy mode.
+
+This policy and structured manual-approval path need the updated gateway, MCP service and plugin instructions deployed, followed by **Refresh tools** in ChatGPT. Local tests do not prove receipt in a live thread.
 
 ## Using the fallback card
 
@@ -28,7 +57,7 @@ What does not cross: turns the owner starts at the agent's terminal, status upda
 
 To test it in a new agent session in a linked pane, tell the agent: "run `scripts/tell.sh "Test from <name>: reply 'got it' with prompt_agent"` and wait for the answer". A new session in the same pane keeps `$HERDR_PANE_ID`, so the lease still holds.
 
-**Approve an irreversible step.** When `exec`, `answer_agent`, `send_pane_input` or `run_command_in_pane` hits the gated list (push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub writes, rm -rf, deploys), WorkDone holds the call and ChatGPT shows an Approve / Decline card with the exact command. Only the click runs it. See "Approve card" below.
+**Approve an irreversible step.** When `exec`, `answer_agent`, `send_pane_input` or `run_command_in_pane` hits the gated list (push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub writes, rm -rf, deploys), WorkDone holds the call and ChatGPT shows an Approve / Decline card. A recognized agent permission already covered by its explicit `all_permissions` policy can proceed; direct MCP commands retain their gate. See "Approve card" below.
 
 **Things that have to be true.**
 
@@ -81,16 +110,16 @@ The native implementation is ready for local verification, but production cutove
 `mcp/src/confirm.ts`, `mcp/src/confirm.html`.
 
 - A gated call the gateway refuses with `needs_confirmation` is held for 15 minutes under a `pending` id, without the model's `confirm`.
-- `request_confirmation({pending})` shows the card: what the server holds (machine, reason, the exact command), not the model's description.
+- `request_confirmation({pending})` shows what the server holds: machine, reason, command or captured menu and selected option. A held `answer_agent` captures the refused menu's dialog ID; a later click cannot answer a replacement menu. Older gateways that cannot supply that binding do not create an answer card.
 - Approve and Decline call `confirm_pending`, app-only (`_meta.ui.visibility: ["app"]`), so the model can't call it. It runs the held call once with `confirm: true` and the card tells the chat the result.
 - Tested on chatgpt.com: Approve ran `mkdir … && rm -rf /tmp/workdone-confirm-test`, audited with `"confirm": true`; Decline dropped a `git commit`, audited only as refused.
 - `confirm: true` from the model still works. On 30-09 ChatGPT passed it unasked for an `rm -rf` because the user's message named the command, so the card is only a real gate once that route is closed (not done).
 
-## Agents now start with full access
+## Launch permissions and WorkDone policy
 
-The alias generator (`scripts/agent-aliases.ts`, `FULL_ACCESS`) and the live alias files on the Mac, OVH and syno add `--dangerously-skip-permissions` to Claude Code and `--dangerously-bypass-approvals-and-sandbox` to Codex; Cursor keeps `--force --trust`. Tested on OVH: robin and maple ran shell commands with no prompt; Codex still asks folder trust once, which WorkDone answers. Agents already running keep the mode they started with.
+The alias generator (`scripts/agent-aliases.ts`, `FULL_ACCESS`) adds `--dangerously-skip-permissions` to Claude Code and `--dangerously-bypass-approvals-and-sandbox` to Codex; Cursor keeps `--force --trust`. The recorded 30-09 OVH test ran robin and maple shell commands without prompts. Agents already running keep the mode they started with.
 
-Consequence: agents push, commit, merge and delete without any menu. The gated list and the Approve card only cover what ChatGPT runs itself. What must stay the owner's call has to be enforced outside the agents, for example with GitHub branch protection on `main`.
+WorkDone's policy only handles menus that the harness actually shows. Setting `ask` cannot restore permissions bypassed by a launch flag or create Pi permission checks where no extension provides them. To receive manual permission notifications, start the agent in a harness mode that asks, then set `ask` before its task. Removing bypass flags changes launch configuration and is a separate operator choice. What must always stay the owner's call also needs enforcement outside the agent, for example GitHub branch protection on `main`.
 
 Before this, the slowness with Codex agents was measured, not guessed: with approvals on, maple showed 19 permission menus in 25 minutes and WorkDone answered each about 2.5 s after it appeared (Herdr's `blocked` event to the audit's `auto_approve`).
 

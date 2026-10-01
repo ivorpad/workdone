@@ -169,6 +169,7 @@ describe("watch_poll and notify ops", () => {
         if (screen instanceof Error) throw screen;
         return { read: { text: screen } };
       }
+      if (method === "agent.get") return { agent: agents.find((a) => a.pane_id === params.target || a.name === params.target) };
       return {};
     };
     const gw = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, cursorTranscriptRoots: [state], ...extra }), herdr);
@@ -239,7 +240,7 @@ describe("watch_poll and notify ops", () => {
     expect(saved()["w3:p1"]).toMatchObject({ managed: true, busy: false, last_status: "done", last_event: { type: "question" } });
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
   });
-  test("a dialog is quoted from the detection screen", async () => {
+  test("a dialog includes complete live choices and its identity", async () => {
     const { gw, agents, reads, watch, setScreen, state } = setup({ autoApprove: false });
     agents[0].agent_status = "blocked";
     setScreen("  Run this command?\n  $ pnpm db:reset\n  → Run (once) (y)\n  Skip (esc or n)");
@@ -248,12 +249,14 @@ describe("watch_poll and notify ops", () => {
     const used = new Date().toISOString();
     writeFileSync(join(state, "leases.json"), JSON.stringify({ "L-abc123": { label: "t", panes: ["w1:p1"], created: used, used }, "L-stale01": { label: "old", panes: ["w1:p1"], created: "2026-01-01T00:00:00Z", used: "2026-01-01T00:00:00Z" } }));
     const message = "fixer in app is waiting for an answer: Run this command? / $ pnpm db:reset / → Run (once) (y)";
-    expect(await gw.handle("watch_poll", {})).toEqual({
+    const result: any = await gw.handle("watch_poll", {});
+    expect(result).toMatchObject({
       messages: [message],
       remaining: 1,
       reports: [{ event_id: expect.stringMatching(/^[0-9a-f-]{36}$/), occurred_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T.*Z$/), pane_id: "w1:p1", type: "blocked", agent: "fixer", kind: "claude", cwd: "/srv/allowed/app", excerpt: "Run this command? / $ pnpm db:reset / → Run (once) (y)", lease: "L-abc123", reply_to: null, message }],
     });
-    expect(reads).toEqual(["detection"]);
+    expect(result.reports[0].choices).toMatchObject({ kind: "permission", go_ahead: 1, dialog_id: expect.stringMatching(/^[a-f0-9]{64}$/), options: [{ n: 1, label: "Run (once)" }, { n: 2, label: "Skip" }] });
+    expect(reads).toEqual(["visible"]);
   });
   test("a menu that only wants a go-ahead is answered, not reported, and the turn goes on", async () => {
     timing.key = timing.text = timing.settle = 0;
@@ -314,6 +317,37 @@ describe("watch_poll and notify ops", () => {
     expect(first.messages[0]).toContain("Which color do you prefer?");
     expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
   });
+  test("permission menus wake from idle or working and changes wake without a status edge", async () => {
+    for (const status of ["idle", "working"]) {
+      const { gw, agents, watch, setScreen, saved } = setup({ autoApprove: false });
+      agents[0].agent_status = status;
+      watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), managed: true, busy: false, last_status: status } });
+      setScreen(screen("claude-edit"));
+      const first: any = await gw.handle("watch_poll", {});
+      expect(first.reports[0]).toMatchObject({ type: "blocked", choices: { kind: "permission", go_ahead: 1 } });
+      const firstId = first.reports[0].choices.dialog_id;
+      expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
+      setScreen(screen("claude-edit").replaceAll("note.txt", "another.txt"));
+      const next: any = await gw.handle("watch_poll", {});
+      expect(next.reports[0].choices.dialog_id).not.toBe(firstId);
+      if (status === "working") {
+        expect(saved()["w1:p1"].busy).toBe(true);
+        setScreen("Done.");
+        agents[0].agent_status = "idle";
+        expect(((await gw.handle("watch_poll", {})) as any).reports[0].type).toBe("finished");
+      }
+    }
+  });
+  test("an answer lock never consumes the pending permission notification", async () => {
+    const { gw, agents, watch, setScreen, state } = setup();
+    agents[0].agent_status = "blocked";
+    setScreen(screen("claude-ask"));
+    watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), managed: true, last_status: "working" } });
+    mkdirSync(join(state, "answer-w1_p1.lock"));
+    expect(await gw.handle("watch_poll", {})).toEqual({ messages: [], remaining: 1 });
+    rmdirSync(join(state, "answer-w1_p1.lock"));
+    expect(((await gw.handle("watch_poll", {})) as any).reports[0].type).toBe("blocked");
+  });
   test("an excerpt that cannot be read does not stop the report", async () => {
     const { gw, agents, watch, setScreen } = setup();
     agents[0].agent_status = "blocked";
@@ -343,16 +377,18 @@ describe("watch_poll and notify ops", () => {
     const { gw, watch, saved, setOnList } = setup();
     watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
     setOnList(() => gw.state.prompted("w1:p1", info, { agent_status: "idle" }, false));
-    expect(((await gw.handle("watch_poll", {})) as any).messages).toEqual(["fixer finished"]);
-    expect(saved()["w1:p1"]).toMatchObject({ busy: true, last_event: { type: "finished" } });
+    expect(((await gw.handle("watch_poll", {})) as any).messages).toEqual([]);
+    expect(saved()["w1:p1"]).toMatchObject({ busy: true });
+    expect(saved()["w1:p1"].last_event).toBeUndefined();
     expect(saved()["w1:p1"].prompted_at).toBeString();
   });
   test("a finished turn watch does not delete the next turn's watch", async () => {
     const { gw, watch, saved, setOnList } = setup();
     watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date(Date.now() - 60_000).toISOString(), last_status: "working" } });
     setOnList(() => gw.state.prompted("w1:p1", info, { agent_status: "working" }, false));
-    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer finished"], remaining: 1 });
-    expect(saved()["w1:p1"]).toMatchObject({ name: "fixer", last_event: { type: "finished" } });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: [], remaining: 1 });
+    expect(saved()["w1:p1"]).toMatchObject({ name: "fixer" });
+    expect(saved()["w1:p1"].last_event).toBeUndefined();
   });
   test("an answer prompt_agent already returned is not reported by a poll that overlapped it", async () => {
     const { gw, agents, watch, saved, setOnList } = setup();
@@ -370,7 +406,7 @@ describe("watch_poll and notify ops", () => {
     agents.length = 0;
     watch({ "w1:p1": { name: "old", cwd: null, since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
     setOnList(() => gw.state.manage("w1:p1", { name: "new", cwd: null, kind: "cursor" }, { agent_status: "idle" }, true));
-    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["old is gone (pane closed or agent exited)"], remaining: 1 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: [], remaining: 1 });
     expect(saved()["w1:p1"]).toMatchObject({ name: "new", managed: true, busy: false });
   });
   test("parallel watch_agent calls keep both entries", async () => {

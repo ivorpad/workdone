@@ -9,10 +9,12 @@
 // them in one burst drops some, or takes enter before it has drawn the text.
 
 import { menuExcerpt } from "./attention.ts";
-import { GatewayError, TARGET_RE, type GatewayConfig, type HerdrCall } from "./config.ts";
+import { createHash } from "node:crypto";
+import { approvalPolicy, setApprovalPolicy, validateApprovalRequest } from "./approval-policy.ts";
+import { GatewayError, TARGET_RE, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { gatedBy } from "./gated.ts";
-import { APPROVE_RE, parseDialog, answerKeys, goAhead, type Dialog, type GoAheadKind } from "./dialog.ts";
-import { showApproved } from "./sidebar.ts";
+import { APPROVE_RE, parseDialog, answerKeys, goAhead, isPermissionDialog, type Dialog, type GoAheadKind } from "./dialog.ts";
+import { showApproved, showWatched } from "./sidebar.ts";
 import type { Gateway } from "./gateway.ts";
 import { str, type Op } from "./params.ts";
 import { StateStore } from "./state.ts";
@@ -37,16 +39,19 @@ export function dialogView(d: Dialog) {
   const go = goAhead(d);
   const gated = go ? null : gatedBy(d.text);
   return {
+    dialog_id: dialogId(d),
     text: d.text, options: d.options, multi: d.multi, free_text: d.free_text,
-    kind: go?.kind ?? (gated ? "gated" : "question"), go_ahead: go?.option ?? null, ...(gated ? { gated } : {}),
+    kind: go?.kind ?? (gated ? "gated" : isPermissionDialog(d) ? "permission" : "question"), go_ahead: go?.option ?? null, ...(gated ? { gated } : {}),
   };
 }
+
+export const dialogId = (d: Dialog): string => createHash("sha256").update(JSON.stringify([d.text, d.options.map((o) => [o.n, o.label, o.free_text]), d.multi])).digest("hex");
 
 // One line: a newline would submit whatever came before it.
 const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
 
 export async function menuScreen(herdr: HerdrCall, paneId: string): Promise<string> {
-  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 60, format: "text", strip_ansi: true }));
+  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 60, format: "text", strip_ansi: false }));
 }
 
 // Letters go as Herdr keys too: Cursor's approval menus ignore a letter typed as text.
@@ -85,7 +90,10 @@ async function after(herdr: HerdrCall, paneId: string) {
 // field, and reads the result. The caller checked the choice against d.
 async function answerMenu(herdr: HerdrCall, paneId: string, d: Dialog, chosen: number[], text?: string) {
   const first = d.options[chosen[0]! - 1]!;
-  await press(herdr, paneId, answerKeys(d, chosen));
+  if (!d.multi && !d.keys[chosen[0]! - 1]?.length) throw new GatewayError("unsupported_menu_keys", "WorkDone cannot determine this menu's selected option safely; read the live menu or answer it in the terminal");
+  const keys = answerKeys(d, chosen);
+  if (!keys?.length) throw new GatewayError("unsupported_menu_keys", "WorkDone cannot determine this menu's selected option safely; read the live menu or answer it in the terminal");
+  await press(herdr, paneId, keys);
   // A digit picks the option in most menus, but only moves the cursor in some (Codex's
   // folder trust). Still the same menu, with the cursor on the choice: confirm it.
   // Another menu, like Claude's next question, never gets this enter.
@@ -125,12 +133,18 @@ export async function approveMenus(
     let screen = await menuScreen(herdr, paneId);
     for (let i = 0; i < 5; i++) {
       const d = parseDialog(screen);
-      const go = d && !busy(d) ? goAhead(d) : null;
-      if (!d || !go || (opts.kinds && !opts.kinds.includes(go.kind))) break;
+      if (!d || busy(d)) break;
+      const agent = (await herdr("agent.get", { target: paneId }).catch(() => null))?.agent;
+      if (!agent || !paneInScope(agent, cfg.allowedRoots)) break;
+      // A saved policy cannot authorize a restarted or transferred agent.
+      const policy = approvalPolicy(store, paneId, agent);
+      if (policy?.mode === "ask") break;
+      const go = goAhead(d, { includeGated: policy?.mode === "all_permissions" });
+      if (!go || (opts.kinds && !opts.kinds.includes(go.kind))) break;
       const a: Approval = { kind: go.kind, option: d.options[go.option - 1]!.label, menu: menuExcerpt(d) };
       const res = await answerMenu(herdr, paneId, d, [go.option]);
       const took = !res.dialog || res.dialog.text !== d.text;
-      store.audit({ op: "auto_approve", ok: took, via, args: { target: paneId, kind: a.kind, option: a.option, menu: d.text.slice(0, 1000) } });
+      store.audit({ op: "auto_approve", ok: took, via, policy: policy?.mode ?? "default", args: { target: paneId, kind: a.kind, option: a.option, menu: d.text.slice(0, 1000) } });
       if (!took) break;
       approved.push(a);
       status = res.status;
@@ -159,6 +173,22 @@ export function answerOps(g: Gateway): Record<string, Op> {
   }
 
   return {
+    async set_agent_approval(params) {
+      const agent = await g.scopedAgent(str(params, "target", TARGET_RE));
+      validateApprovalRequest(g.cfg, agent, params.mode, params.ttl_seconds);
+      if (params.mode !== "default") {
+        // Check ownership before creating a managed watch, even for internal calls.
+        const lease = typeof params.lease === "string" ? g.state.leases()[params.lease] : null;
+        if (!lease?.panes.includes(agent.pane_id) || !(Date.now() - Date.parse(lease.used) < 24 * 3600_000)) throw new GatewayError("not_your_agent", "approval policy requires a live lease holding this agent");
+        g.state.manage(agent.pane_id, { name: agent.name ?? null, cwd: agent.cwd ?? null, kind: agent.agent ?? null }, agent);
+      }
+      const policy = setApprovalPolicy(g.cfg, g.state, agent, params.lease, params.mode, params.ttl_seconds);
+      if (policy) showWatched(g.herdr, agent.pane_id, true);
+      if (policy?.mode === "ask") g.state.updateWatched((watched) => { if (watched[agent.pane_id]) watched[agent.pane_id] = { ...watched[agent.pane_id]!, dialog_id: undefined, last_status: "unknown" }; });
+      g.state.audit({ op: "set_agent_approval", ok: true, args: { target: agent.pane_id, lease: params.lease, policy } });
+      const got = await approveMenus(g.cfg, g.herdr, agent.pane_id, "set_agent_approval", { waitMs: 20_000 });
+      return { pane_id: agent.pane_id, policy, auto_approved: got.approved };
+    },
     // params: target, option (1-based, from the menu's options) or options (multi-select), text.
     async answer_agent(params) {
       const agent = await g.scopedAgent(str(params, "target", TARGET_RE));
@@ -173,11 +203,17 @@ export function answerOps(g: Gateway): Record<string, Op> {
           if (now.agent_status === "blocked") throw new GatewayError("no_dialog", "the agent is blocked but WorkDone can't read its menu; read_agent with source detection to see it");
           return { answered: null, status: now.agent_status, note: "no menu is up any more (WorkDone may have answered it already); nothing was pressed" };
         }
+        if (params.expected_dialog_id !== undefined && params.expected_dialog_id !== dialogId(d)) throw new GatewayError("stale_dialog", "this menu changed since the approval was requested; get_agent and decide on the current menu");
         const chosen = picks(params, d, text);
         const first = d.options[chosen[0]! - 1]!;
         const gated = gatedBy(d.text);
-        if (gated && APPROVE_RE.test(first.label) && params.confirm !== true) {
-          throw new GatewayError("needs_confirmation", `this menu asks to run a ${gated}, which is the owner's call: ask them, then call again with confirm: true`);
+        // The screen/lock wait may outlive a session or ownership change.
+        const currentAgent = await g.scopedAgent(agent.pane_id);
+        if (params.lease !== undefined && g.cfg.leases) await g.leases.check("answer_agent", params);
+        const policy = approvalPolicy(g.state, agent.pane_id, currentAgent);
+        const allowed = policy?.mode === "all_permissions" && goAhead(d, { includeGated: true })?.option === first.n;
+        if (gated && APPROVE_RE.test(first.label) && params.confirm !== true && !allowed) {
+          throw new GatewayError("needs_confirmation", `this menu asks to run a ${gated}, which is the owner's call: use their existing authorization or ask them, then call again with confirm: true`, { dialog_id: dialogId(d), menu: d.text });
         }
         if (!d.multi) {
           // "No, and tell Codex what to do differently" and "Skip & tell the agent what to do

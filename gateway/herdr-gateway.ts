@@ -105,7 +105,8 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
   } catch (err) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));
     audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ms: Date.now() - started });
-    respond({ id, ok: false, error: { code: e.code, message: gateway.mask.text(e.message) } });
+    const details = e.details as { dialog_id?: unknown; menu?: unknown } | undefined;
+    respond({ id, ok: false, error: { code: e.code, message: gateway.mask.text(e.message), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { details: { dialog_id: details.dialog_id, ...(typeof details.menu === "string" ? { menu: gateway.mask.text(details.menu) } : {}) } } : {}) } });
   }
 }
 

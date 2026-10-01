@@ -3,6 +3,7 @@
 // and what each agent needs from its owner.
 
 import { approveMenus, dialogView } from "./answer-ops.ts";
+import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
 import { AGENT_NAME_RE, AGENT_STATUSES, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
@@ -51,11 +52,13 @@ function closeFor(g: Gateway, pane: any, all: any[]): { kind: "pane" | "tab" | "
 // read into options for answer_agent; watch says whether the bridge reports on it.
 // Pass what the caller already read to skip reading it again.
 export async function lifecycle(g: Gateway, agent: any, watched: Record<string, Watched>, known: { reply?: Reply | null; screen?: string } = {}) {
-  const watch = watchView(watched[agent.pane_id]);
+  const originalWatch = watchView(watched[agent.pane_id]);
+  const watch = originalWatch ? { ...originalWatch, approval_policy: approvalPolicy(g.state, agent.pane_id, agent) } : null;
   const read = async (source: string) =>
-    known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: true }).catch(() => null));
-  if (agent.agent_status === "blocked") {
-    const menu = parseDialog(await read("visible"));
+    known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: source !== "visible" }).catch(() => null));
+  const visibleMenu = parseDialog(await read("visible"));
+  if (agent.agent_status === "blocked" || visibleMenu) {
+    const menu = visibleMenu;
     return { attention: "dialog" as const, ...(menu ? { choices: dialogView(menu) } : {}), watch };
   }
   let text: string | null = null;

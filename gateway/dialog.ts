@@ -8,12 +8,15 @@
 //   Codex        › 1. Trust ...      digit picks it
 //   Cursor       → Run (once) (y)    the key in parentheses
 //                ▶ [a] Trust ...     the letter in brackets
+//   Pi           → Yes               arrows, then enter (extension UI selector)
+//   OpenCode     Allow once ...       horizontal arrows, then enter; selection is ANSI color
 //
 // Herdr flags most of these as blocked, but not all: Codex's folder trust, update and
 // model notices, and Cursor's folder trust, read as idle. goAhead says which menus
 // only ask for a go-ahead, and which option gives it.
 
 import { gatedBy } from "./gated.ts";
+import { stripVTControlCharacters } from "node:util";
 
 export interface Choice {
   n: number;
@@ -32,7 +35,7 @@ export interface Dialog {
   options: Choice[];
   multi: boolean;
   free_text: boolean;
-  style: "numbered" | "lettered" | "hinted" | "plain";
+  style: "numbered" | "lettered" | "hinted" | "plain" | "horizontal";
   // Per option: letters go in as typed text, anything else as a Herdr key.
   keys: string[][];
 }
@@ -44,7 +47,7 @@ const LET_RE = new RegExp(`^(${MARK}\\s*)?\\[([a-z])\\]\\s+(\\S.*)$`);
 const HINT_RE = new RegExp(`^(${MARK}\\s*)?(\\S.*?)\\s+\\(([a-z+ ]+)\\)$`);
 const MARKED_RE = new RegExp(`^${MARK}\\s+(\\S.*)$`);
 // Hint lines under a menu. Idle input boxes and status lines never say these.
-const FOOTER_RE = /enter to (?:select|confirm)|press enter to confirm|enter continue|enter\/esc confirm|arrow keys to navigate|↑\/↓ to navigate|esc to cancel/i;
+const FOOTER_RE = /enter to (?:select|confirm)|press enter to confirm|enter continue|enter\/esc confirm|arrow keys to navigate|↑\/↓ to navigate|↑↓ navigate|\benter (?:select|confirm)\b|esc to cancel/i;
 const RULE_RE = /^[─━═▄▀]{10,}$/;
 const FREE_TEXT_RE = /^type something\.?$|tell (?:the agent|codex|claude)? ?what to (?:do|change)|what to do (?:instead|differently)/i;
 
@@ -65,6 +68,50 @@ function region(lines: string[], first: number, last: number): string {
 }
 
 type Found = { d: Dialog; last: number } | null;
+
+// OpenCode's Prompt colors exactly one button with theme.warning and the other
+// two with theme.backgroundMenu. Both left and right wrap; no fixed key selects
+// "once". Keep the raw ANSI until the selected background can be distinguished.
+// Source: anomalyco/opencode, packages/tui/src/routes/session/permission.tsx.
+function backgroundBefore(raw: string, label: string): string | undefined {
+  const at = raw.indexOf(label);
+  if (at < 0) return undefined;
+  let background: string | undefined;
+  for (const m of raw.slice(0, at).matchAll(/\x1b\[([\d;:]*)m/g)) {
+    const p = m[1] ? m[1].split(/[;:]/).filter((s) => s !== "").map(Number) : [0];
+    for (let i = 0; i < p.length; i++) {
+      const code = p[i];
+      if (code === 0 || code === 49) background = undefined;
+      else if ((code! >= 40 && code! <= 47) || (code! >= 100 && code! <= 107)) background = `ansi:${code}`;
+      else if (code === 38 || code === 48) {
+        const size = p[i + 1] === 5 ? 2 : p[i + 1] === 2 ? 4 : 0;
+        if (code === 48 && size && p.slice(i + 1, i + size + 1).length === size) background = p.slice(i + 1, i + size + 1).join(":");
+        i += size;
+      }
+    }
+  }
+  return background;
+}
+
+function horizontal(lines: string[], raw: string[]): Found {
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 12); i--) {
+    if (!/^Allow once\s+Allow always\s+Reject$/.test(lines[i]!)) continue;
+    const end = lines.slice(i + 1, i + 5).findIndex((l) => /⇆\s+select/.test(l) && /\benter\s+confirm\b/.test(l));
+    if (end < 0) continue;
+    const header = lines.slice(0, i).findLastIndex((l) => /^(?:△\s+)?Permission required$/.test(l));
+    if (header < 0 || i - header > 35) continue;
+    const labels = ["Allow once", "Allow always", "Reject"];
+    const backgrounds = labels.map((label) => backgroundBefore(raw[i]!, label));
+    const current = backgrounds.findIndex((bg, idx) => bg !== undefined && backgrounds.every((other) => other !== undefined) && backgrounds.filter((_, n) => n !== idx).every((other) => other !== bg) && backgrounds[(idx + 1) % 3] === backgrounds[(idx + 2) % 3]);
+    const options = labels.map((label, idx) => ({ n: idx + 1, label, ...(idx === current ? { current: true } : {}) }));
+    // Escape rejects directly, regardless of selection. Missing color evidence
+    // must never turn Enter into an accidental session-wide permission grant.
+    const keys = options.map((_, idx) => idx === 2 ? ["esc"] : current < 0 ? [] : [...Array(Math.abs(idx - current)).fill(idx > current ? "right" : "left"), "enter"]);
+    const last = i + end + 1;
+    return { last, d: { text: lines.slice(header, last + 1).filter(Boolean).join("\n"), options, multi: false, free_text: false, style: "horizontal", keys } };
+  }
+  return null;
+}
 
 function numbered(lines: string[]): Found {
   // The last "1." with a cursor on one of its options, then 2, 3, ... below it.
@@ -165,8 +212,11 @@ const INPUT_RE = /^[❯›→]\s*$|^[❯›→] (?:Try "|Ask Codex|Add a follow-
 // The menu at the bottom of the screen, or null. An input box below the last option
 // means the menu was answered and is only scrollback.
 export function parseDialog(screen: string): Dialog | null {
-  const lines = screen.replace(/\s+$/, "").split("\n").slice(-45).map(unbox);
-  const found = numbered(lines) ?? hinted(lines) ?? lettered(lines) ?? plain(lines);
+  const raw = screen.replace(/\s+$/, "").split("\n").slice(-45);
+  // node:util's stripper does not understand colon-delimited SGR in every
+  // runtime. Remove that complete control sequence before the general pass.
+  const lines = raw.map((line) => unbox(stripVTControlCharacters(line.replace(/\x1b\[[\d;:]*m/g, ""))));
+  const found = horizontal(lines, raw) ?? numbered(lines) ?? hinted(lines) ?? lettered(lines) ?? plain(lines);
   if (!found) return null;
   if (lines.slice(found.last + 1).some((l) => INPUT_RE.test(l))) return null;
   return found.d;
@@ -175,7 +225,11 @@ export function parseDialog(screen: string): Dialog | null {
 // Keys for one answer: the option's own keys, or for a multi-select the digits that
 // flip each option whose box is not already as wanted, then tab to the next step.
 export function answerKeys(d: Dialog, pick: number[]): string[] {
-  if (!d.multi) return d.keys[pick[0]! - 1]!;
+  if (!d.multi) {
+    const keys = d.keys[pick[0]! - 1];
+    if (!keys?.length) throw new Error("This menu's selected option is unavailable; no safe approval keys can be determined.");
+    return keys;
+  }
   const want = new Set(pick);
   const flips = d.options.filter((o) => o.checked !== undefined && o.checked !== want.has(o.n)).map((o) => String(o.n));
   return [...flips, "tab"];
@@ -202,17 +256,38 @@ const QUESTION_TEXT_RE = /submit (?:answer|all)|review your answers/i;
 const TRUST_TEXT_RE = /\btrust this (?:folder|workspace)\b|do you trust the (?:contents|files)|one you trust\?/i;
 const TRUST_OPTION_RE = /^(?:yes, i trust|(?:\[[a-z]\] )?trust)\b/i;
 const PERMISSION_TEXT_RE =
-  /\b(?:do you want|would you like) to (?:proceed|make|create|allow|run|write|delete|overwrite|apply|edit)\b|\b(?:run this command|write to this file|allow command|run a dynamic workflow)\?/i;
+  /\b(?:do you want|would you like) to (?:proceed|make|create|allow|run|write|delete|overwrite|apply|edit)\b|\b(?:run this command|write to this file|allow command|run a dynamic workflow)\?|\bPermission required\b|\bDangerous command:\s.*\bAllow\?/i;
 export const APPROVE_RE = /^(?:yes\b|proceed\b|run \(once\)|allow\b|approve\b)/i;
 const DECLINE_RE = /^(?:no\b|skip\b|reject\b|deny\b|decline\b|cancel\b)/i;
 // Answers that outlast this one request.
-const PERSIST_RE = /don['’]t ask again|allowlist|always allow|run everything/i;
+const PERSIST_RE = /don['’]t ask again|allowlist|always allow|allow always|run everything|\b(?:use|switch to) auto mode\b|\bbypass permissions\b|\b(?:auto[ -]accept|accept all) edits\b/i;
 
-export function goAhead(d: Dialog): GoAhead | null {
+function questionDialog(d: Dialog): boolean {
+  return d.multi || d.options.some((o) => QUESTION_OPTION_RE.test(o.label)) || QUESTION_TEXT_RE.test(d.text.replace(/\s+/g, " "));
+}
+
+// Wording alone is not permission evidence: "Do you want to create another
+// example?" is an ordinary decision. Require a known operational UI context.
+// This also distinguishes an unreadable OpenCode selection from a question.
+export function isPermissionDialog(d: Dialog): boolean {
+  if (questionDialog(d)) return false;
+  const text = d.text.replace(/\s+/g, " ");
+  const context = /^(?:Bash command|Create file|Edit file|Delete file|Overwrite file)\s*$/im.test(d.text)
+    || /\b(?:run this command|write to this file|allow command|run a dynamic workflow)\?/i.test(text)
+    || /\bWould you like to (?:run the following command|make the following edits)\?/i.test(text)
+    || /\bClaude has written up a plan and is ready to execute\b/i.test(text)
+    || /\bEsc to cancel\s*·\s*Tab to amend\b/i.test(text)
+    || /\bPermission required\b|\bDangerous command:\s.*\bAllow\?/i.test(text);
+  return context && PERMISSION_TEXT_RE.test(text)
+    && d.options.some((o) => DECLINE_RE.test(o.label) || o.free_text)
+    && d.options.some((o) => APPROVE_RE.test(o.label));
+}
+
+export function goAhead(d: Dialog, options: { includeGated?: boolean } = {}): GoAhead | null {
   const text = d.text.replace(/\s+/g, " ");
   const labels = d.options.map((o) => o.label);
   const find = (re: RegExp) => d.options.find((o) => re.test(o.label))?.n ?? null;
-  if (d.multi || labels.some((l) => QUESTION_OPTION_RE.test(l)) || QUESTION_TEXT_RE.test(text)) return null;
+  if (questionDialog(d)) return null;
   if (TRUST_TEXT_RE.test(text)) {
     const n = find(TRUST_OPTION_RE);
     return n ? { kind: "trust", option: n } : null;
@@ -226,9 +301,9 @@ export function goAhead(d: Dialog): GoAhead | null {
     const n = find(/^use existing model\b/i);
     return n ? { kind: "notice", option: n } : null;
   }
-  if (!PERMISSION_TEXT_RE.test(text) || !d.options.some((o) => DECLINE_RE.test(o.label) || o.free_text)) return null;
+  if (!isPermissionDialog(d)) return null;
   // A push, merge, deletion or deploy is the owner's call, whatever the menu looks like.
-  if (gatedBy(d.text)) return null;
-  const n = d.options.find((o) => APPROVE_RE.test(o.label) && !PERSIST_RE.test(o.label))?.n;
+  if (!options.includeGated && gatedBy(d.text)) return null;
+  const n = d.options.find((o) => APPROVE_RE.test(o.label) && !PERSIST_RE.test(o.label) && d.keys[o.n - 1]?.length)?.n;
   return n ? { kind: "permission", option: n } : null;
 }

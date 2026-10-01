@@ -125,8 +125,9 @@ describe("http", () => {
     await callTool("watch_agent", { target: "w3T:pKV" });
     await callTool("start_agent", { machine: "ovh", pane_id: "w1:p2", kind: "cursor", name: "stays" });
     await callTool("spawn_agent", { kind: "cursor", name: "worker", repo: "relay" });
-    expect(prompted).toEqual(["ovh", "mac", "ovh", "mac"]);
-    expect(calls.at(-1)).toEqual(["mac", "spawn_agent", { kind: "cursor", name: "worker", repo: "relay" }]);
+    await callTool("set_agent_approval", { machine: "ovh", target: "w1:p1", lease: "L-abc123", mode: "ask", ttl_seconds: 300 });
+    expect(prompted).toEqual(["ovh", "mac", "ovh", "mac", "ovh"]);
+    expect(calls.at(-1)).toEqual(["ovh", "set_agent_approval", { target: "w1:p1", lease: "L-abc123", mode: "ask", ttl_seconds: 300 }]);
   });
   test("rejects a foreign Host header", async () => {
     const res = await rpc({ jsonrpc: "2.0", id: 3, method: "tools/list", params: {} }, "evil.example:8787");

@@ -35,6 +35,8 @@ export interface Watched {
   // tell that its decision about it is out of date.
   rev?: string;
   last_event?: { type: string; at: string; excerpt: string | null };
+  // Menu identity, independent of Herdr's status (some permission UIs read idle).
+  dialog_id?: string;
   // A ChatGPT thread (its lease) prompted or steered this agent and did not wait: the
   // turn's end is that thread's reply, reported once with reply_to so it can be woken.
   reply_to?: string;
@@ -49,6 +51,15 @@ export interface Lease {
   panes: string[];
   created: string;
   used: string;
+  approvals?: Record<string, ApprovalPolicy>;
+}
+
+export interface ApprovalPolicy {
+  mode: "ask" | "permissions" | "all_permissions";
+  expires_at: string;
+  kind: string | null;
+  session: string | null;
+  watch_since: string;
 }
 
 // What a Herdr agent object says about the fields the watcher compares.
@@ -244,6 +255,8 @@ export class StateStore {
         prompted_at: cur ? (cur.managed ? cur.prompted_at : cur.since) : undefined,
         rev: newRev(),
         last_event: cur?.last_event,
+        dialog_id: cur?.dialog_id,
+        reply_to: cur?.reply_to,
       };
       w[paneId] = entry;
       return entry;
@@ -260,8 +273,16 @@ export class StateStore {
   }
 
   unwatch(paneId: string) {
-    this.updateWatched((w) => {
-      delete w[paneId];
+    this.locked(() => {
+      // Rewatching within the same clock tick must not revive an old policy.
+      const leases = this.leases();
+      let changed = false;
+      for (const lease of Object.values(leases)) {
+        if (lease.approvals?.[paneId]) { delete lease.approvals[paneId]; changed = true; }
+      }
+      if (changed) this.write("leases.json", leases);
+      const watched = this.watched();
+      if (watched[paneId]) { delete watched[paneId]; this.write("watch.json", watched); }
     });
   }
 

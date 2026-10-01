@@ -40,6 +40,7 @@ interface Pending {
   params: Record<string, unknown>;
   reason: string;
   expires: number;
+  menu?: string;
 }
 
 // Shows what the call does, for the card: the command, the input, or the menu answer.
@@ -55,11 +56,11 @@ export class PendingCalls {
   private calls = new Map<string, Pending>();
   constructor(private now: () => number = Date.now) {}
 
-  hold(machine: string, op: string, params: Record<string, unknown>, reason: string): string {
+  hold(machine: string, op: string, params: Record<string, unknown>, reason: string, menu?: string): string {
     this.sweep();
     while (this.calls.size >= MAX_PENDING) this.calls.delete(this.calls.keys().next().value!);
     const id = `pc_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
-    this.calls.set(id, { machine, op, params, reason, expires: this.now() + PENDING_TTL_MS });
+    this.calls.set(id, { machine, op, params, reason, expires: this.now() + PENDING_TTL_MS, menu });
     return id;
   }
 
@@ -91,7 +92,12 @@ export function holdIfGated(pending: PendingCalls, machine: string, op: string, 
     .replace(/, which is the owner's call.*$/, "")
     .replace(/^this (?:command|input) runs a /, "runs ")
     .replace(/^this menu asks to run a /, "answers a menu that runs ");
-  const id = pending.hold(machine, op, rest, reason);
+  const dialogId = res.error.details?.dialog_id;
+  if (op === "answer_agent" && dialogId) rest.expected_dialog_id = dialogId;
+  // Older gateways cannot bind a held answer to a menu. Do not create a card that
+  // could approve a different command after the agent advances.
+  if (op === "answer_agent" && !rest.expected_dialog_id) return res;
+  const id = pending.hold(machine, op, rest, reason, res.error.details?.menu);
   return {
     ok: false,
     error: {
@@ -103,7 +109,7 @@ export function holdIfGated(pending: PendingCalls, machine: string, op: string, 
 }
 
 function card(id: string, p: Pending) {
-  return { pending: id, machine: p.machine, op: p.op, reason: p.reason, detail: detail(p.op, p.params as Record<string, any>), expires: new Date(p.expires).toISOString() };
+  return { pending: id, machine: p.machine, op: p.op, reason: p.reason, detail: [p.menu, detail(p.op, p.params as Record<string, any>)].filter(Boolean).join("\n"), expires: new Date(p.expires).toISOString() };
 }
 
 export function registerConfirm(server: McpServer, call: CallGateway, render: typeof renderResult, pending: PendingCalls = pendingCalls) {

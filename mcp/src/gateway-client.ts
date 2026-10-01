@@ -4,7 +4,7 @@ import { sshArgs, type OvhConfig } from "./config.ts";
 
 export type GatewayResponse =
   | { ok: true; result: unknown }
-  | { ok: false; error: { code: string; message: string; pending?: string } };
+  | { ok: false; error: { code: string; message: string; pending?: string; details?: { dialog_id?: string; menu?: string } } };
 
 export type CallGateway = (machine: string, op: string, params: Record<string, unknown>) => Promise<GatewayResponse>;
 
@@ -62,7 +62,7 @@ export function sshGateway(cfg: OvhConfig, now: () => number = Date.now): CallGa
     try {
       const msg = JSON.parse(line);
       if (msg.ok === true) return { ok: true, result: msg.result };
-      return { ok: false, error: { code: msg.error?.code ?? "gateway_error", message: msg.error?.message ?? "gateway error" } };
+      return { ok: false, error: { code: msg.error?.code ?? "gateway_error", message: msg.error?.message ?? "gateway error", ...(msg.error?.details ? { details: msg.error.details } : {}) } };
     } catch {
       return { ok: false, error: { code: "gateway_bad_response", message: "gateway returned invalid JSON" } };
     }

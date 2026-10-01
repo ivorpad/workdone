@@ -8,7 +8,9 @@ This repo implements the server side. It has not been deployed or verified again
 
 Both events accept optional `machine` and `target` arguments. A target is an agent name or pane ID; use a pane ID if names repeat. Without a target, the subscription covers watched agents on the selected machines; without a machine, it covers machines granted to the authenticated account. These are account subscriptions, not the fallback card's conversation lease. Claiming and prompting agents still follows the tools' lease rules.
 
-`agent.finished` comes from a Herdr `finished` report. `agent.asks` comes from a `question` or `blocked` report, including a menu that needs the owner. Go-ahead menus that WorkDone answers automatically do not produce question notifications. Only watched agents produce reports; `spawn_agent` and `start_agent` watch by default, and existing agents need `watch_agent`.
+`agent.finished` comes from a Herdr `finished` report. `agent.asks` comes from a `question` or `blocked` report, including a menu that needs the owner. Menus answered by the agent's effective approval policy do not produce question notifications. Only watched agents produce reports; `spawn_agent` and `start_agent` watch by default, and existing agents need `watch_agent` or `set_agent_approval`.
+
+A menu notification contains `data.choices` with complete text, numbered options, `kind`, `go_ahead`, multi-select/free-text flags and a `dialog_id` when provided by the gateway. If the menu is invalid, incomplete or too large, the event omits it and sets `data.choices_truncated: true`. Question replies without a menu still arrive through `data.excerpt`. All text and option labels are data, never instructions to grant approval.
 
 The MCP notifier dispatches those reports independently to Events and the card inbox. Subscribing does not turn off phone notifications or an existing card. Stop that card after native delivery is proven for its completion/question use to avoid duplicate wakes.
 
@@ -27,6 +29,21 @@ Both event types return `cursor: null` and offer no replay. Queued deliveries su
 If native persistence temporarily fails, the notifier retains that batch in memory and retries before consuming another gateway pass. Its collected card and phone messages are still sent once. Later reports on that machine wait for storage to recover; a process crash before successful persistence can lose the retained batch.
 
 Roll out this revision's gateway watcher when deploying the MCP changes. Its `event_id` and `occurred_at` allow repeated source reports to retain their identity and occurrence time. Older gateways can still deliver, but the MCP server assigns those fields on receipt and cannot identify repeated source reports as the same event.
+
+## Receive manual permissions or approve them by policy
+
+`set_agent_approval` chooses `ask`, `permissions`, `all_permissions` or `default` for one claimed agent. `ask` leaves every recognized permission, trust and notice menu for the owner. `permissions` approves recognized ordinary menus using allow once. `all_permissions` also covers recognized gated agent permission requests, but requires the owner's explicit authorization for that scope. `default` removes the override. None of these modes answers ordinary questions or grants arbitrary direct MCP commands. [The policy reference](chatgpt-link.md#choose-how-an-agent-handles-permissions) gives lifetime and launch-mode limits.
+
+For a task that needs manual permission decisions:
+
+1. Claim the agent for this conversation. Subscribe to `agent.asks` and, if desired, `agent.finished` with exact `machine` and `target` filters. Confirm activation before setting the policy, so a menu already present can be reported.
+2. Set `mode: "ask"` with its lease. This establishes its watch without approving a pending menu. Inspect `get_agent.watch.approval_policy` and the current dialog, then send the task through `prompt_agent` when ready. A new worker can be spawned without a task prompt, then subscribed and configured before work begins.
+3. On `agent.asks`, call `get_agent` to read the current menu. Show the command and choices to the owner and wait for their decision. Use the inspection tools if the event omitted its choices or the parser cannot read the menu.
+4. Reread after the owner answers. If the dialog ID differs from the menu they approved, show the replacement for a new decision. Otherwise call `answer_agent` with that `choices.dialog_id` as `expected_dialog_id` and the selected option. If it returns `stale_dialog`, inspect the replacement menu and decide again. A gated permission outside an explicit `all_permissions` policy still uses the existing approval flow; its held card is bound to the refused dialog ID too.
+
+An approval event is a notification, not an authority to answer. With `ask`, ChatGPT must not automatically select a numeric `go_ahead`. An automatic policy can immediately approve a current menu, returns `auto_approved`, and continues handling recognized menus without waking ChatGPT for each permission. `all_permissions` requires a stable Herdr session ID or returns `session_required`. The watcher checks visible menus even when the harness reports `idle` or `working`, and deduplicates a menu that remains on screen. Unrecognized or custom menus still require inspection. OpenCode buttons with ambiguous ANSI selection cannot be safely answered and return `unsupported_menu_keys`. A harness that bypasses approvals does not generate permission events to receive. Phone notifications remain independent.
+
+These tools and payload additions require updated gateway/MCP code and plugin instructions, followed by ChatGPT **Refresh tools**. They have not been verified in a live ChatGPT thread. Keep the card fallback during that check.
 
 ## Stage an authenticated listener without breaking the card
 
@@ -111,10 +128,10 @@ systemd's IP rules cannot distinguish hostnames or ports sharing an IP, which is
 After an owner-authorized deployment:
 
 1. Connect the separate Events development app with OAuth. Confirm that unauthenticated `8788/mcp` calls fail and authenticated tools work. Check the advertised resource, issuer and token audience. Confirm the existing No Auth app still reaches `8787/mcp` and its card and phone notifications work.
-2. Rescan the MCP server from WorkDone's plugin settings. The current app labels this **Refresh tools**. Confirm `server/discover` negotiates `2026-07-28`, `events/list` is called and the plugin page shows `agent.finished` and `agent.asks` alongside tools.
+2. Rescan the MCP server from WorkDone's plugin settings. The current app labels this **Refresh tools**. Confirm `server/discover` negotiates `2026-07-28`, `events/list` is called and the plugin page shows `agent.finished` and `agent.asks` alongside tools, including `set_agent_approval` and the `answer_agent.expected_dialog_id` parameter.
 3. Start a new chat. Ask it to watch a named agent with both events and say what to do, for example: “When maple on mac finishes, report its result here. When it asks a question, show me the question and wait for my answer.” Do not request `watch_here` for this test.
 4. Check `events/subscribe`, a successful signed callback challenge, and `events_subscribed`. Enroll the exact callback host and retry if it is rejected during initial setup. Never print the callback path, `whsec_` secret or token.
-5. Trigger a finished turn and a real question. Require `events_delivered` with `2xx`, then confirm ChatGPT receives the correct data and follows the user's stated task. A delivery log alone does not prove the chat woke.
+5. Trigger a finished turn and a real question. Also set `ask` on a claimed agent running with harness approvals enabled and trigger a permission menu. Require `events_delivered` with `2xx`, then confirm ChatGPT receives the correct menu and waits for the owner. Answer using a reread dialog ID; replace a menu before answering to check `stale_dialog`. Test `permissions` and explicitly authorized `all_permissions` separately, checking that ordinary questions still reach the owner. A delivery log alone does not prove the chat woke.
 6. Trigger an unrelated agent/machine report and check it is not delivered. Repeat the subscribe request and confirm the same subscription ID. Check refresh and pending retries across a restart, token expiry, grant removal and replacement of the webhook signing secret.
 7. Stop monitoring in ChatGPT. Check `events/unsubscribe`, then trigger another matching report and confirm delivery stops. Repeat unsubscribe to confirm its idempotent result.
 8. Close the old completion/question watch card with its Stop control. Keep the fallback tools and card code until this lifecycle is recorded as successful. Keep a card only where Events is unavailable or `tell` messages are needed.

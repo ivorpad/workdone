@@ -25,6 +25,7 @@ const GUARDED: Record<string, Where> = {
   steer_agent: { param: "target", as: "agent" },
   send_agent_keys: { param: "target", as: "agent" },
   answer_agent: { param: "target", as: "agent" },
+  set_agent_approval: { param: "target", as: "agent" },
   watch_agent: { param: "target", as: "agent" },
   start_agent: { param: "pane_id", as: "pane" },
   send_pane_input: { param: "pane_id", as: "pane" },
@@ -147,6 +148,7 @@ export function leaseOps(g: Gateway) {
         }
         if (h) {
           h[1].panes = h[1].panes.filter((x) => x !== p.pane_id);
+          if (h[1].approvals) delete h[1].approvals[p.pane_id];
           taken.push(p.pane_id);
         }
         if (!mine.panes.includes(p.pane_id)) mine.panes.push(p.pane_id);
@@ -173,6 +175,7 @@ export function leaseOps(g: Gateway) {
       const ids = new Set(targets.filter((x): x is string => typeof x === "string"));
       const released = cur.panes.filter((p) => ids.has(p));
       cur.panes = cur.panes.filter((p) => !ids.has(p));
+      for (const paneId of released) if (cur.approvals) delete cur.approvals[paneId];
       return { released, lease: id, panes: cur.panes };
     });
   }

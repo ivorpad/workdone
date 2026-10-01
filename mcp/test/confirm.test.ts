@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { z } from "zod";
 import { parseConfig } from "../src/config.ts";
-import { CONFIRM_URI, PENDING_TTL_MS, PendingCalls } from "../src/confirm.ts";
+import { CONFIRM_URI, PENDING_TTL_MS, PendingCalls, holdIfGated } from "../src/confirm.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
 import { createHandler } from "../src/server.ts";
 
@@ -11,8 +11,14 @@ const cfg = parseConfig({ listen: { host: "127.0.0.1", port: 8787 }, machines: {
 
 // A gateway that refuses git push without confirm, like gateway/gated.ts does.
 const calls: Array<[string, string, Record<string, unknown>]> = [];
+let currentDialogId = "a".repeat(64);
 const fake: CallGateway = async (machine, op, params) => {
   calls.push([machine, op, params]);
+  if (op === "answer_agent") {
+    if (params.expected_dialog_id && params.expected_dialog_id !== currentDialogId) return { ok: false, error: { code: "stale_dialog", message: "the menu changed" } };
+    if (params.confirm !== true) return { ok: false, error: { code: "needs_confirmation", message: "this menu asks to run a git push, which is the owner's call", details: { dialog_id: currentDialogId, menu: "Run git push origin main?\n1. Yes\n2. No" } } };
+    return { ok: true, result: { answered: 1 } };
+  }
   if (op === "exec" && String(params.command).includes("git push") && params.confirm !== true) {
     return { ok: false, error: { code: "needs_confirmation", message: "this command runs a git push, which is the owner's call: ask them, then call again with confirm: true" } };
   }
@@ -120,6 +126,27 @@ describe("confirm by click", () => {
     expect(store.peek(id)).toBeDefined();
     now += 1;
     expect(store.take(id)).toBeUndefined();
+  });
+
+  test("a held menu approval shows its command and refuses a replacement menu", async () => {
+    const c = await client();
+    currentDialogId = "a".repeat(64);
+    const held: any = await c.callTool({ name: "answer_agent", arguments: { machine: "mac", target: "worker", option: 1, lease: "L-abc123" } });
+    const pending = text(held).error.pending;
+    expect(pending).toMatch(/^pc_/);
+    const card: any = await c.callTool({ name: "request_confirmation", arguments: { pending } });
+    expect(card.structuredContent.detail).toContain("git push origin main");
+    currentDialogId = "b".repeat(64);
+    const result: any = await c.callTool({ name: "confirm_pending", arguments: { pending, approve: true } });
+    expect(result.structuredContent).toMatchObject({ status: "failed", result: { error: { code: "stale_dialog" } } });
+    expect(calls.at(-1)?.[2]).toMatchObject({ expected_dialog_id: "a".repeat(64), confirm: true });
+    await c.close();
+  });
+
+  test("a legacy gateway without a menu identity cannot create an unbound approval card", () => {
+    const store = new PendingCalls();
+    const result = holdIfGated(store, "mac", "answer_agent", { target: "worker", option: 1 }, { ok: false, error: { code: "needs_confirmation", message: "git push requires approval" } });
+    expect(result).toEqual({ ok: false, error: { code: "needs_confirmation", message: "git push requires approval" } });
   });
 });
 

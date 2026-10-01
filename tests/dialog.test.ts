@@ -5,12 +5,134 @@ import { join } from "node:path";
 import { approveMenus, timing } from "../gateway/answer-ops.ts";
 import { menuExcerpt } from "../gateway/attention.ts";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
-import { answerKeys, goAhead, parseDialog } from "../gateway/dialog.ts";
+import { answerKeys, goAhead, isPermissionDialog, parseDialog } from "../gateway/dialog.ts";
 import { Gateway } from "../gateway/gateway.ts";
 
 // Screens captured from Claude Code, Codex and cursor-agent on 28-09 (tests/fixtures/screens).
 const screen = (name: string) => readFileSync(join(import.meta.dir, "fixtures/screens", `${name}.txt`), "utf8");
 const labels = (name: string) => parseDialog(screen(name))?.options.map((o) => o.label);
+
+// Source-derived renderings, not terminal captures. Pi's official permission-gate
+// example calls ui.select with this title and Yes/No. ExtensionSelectorComponent
+// renders its arrow and footer; default bindings navigate vertically and confirm.
+// https://github.com/badlogic/pi-mono/blob/8ce69e9d2b171d173fe4b6b2b6256f1f4411e69d/packages/coding-agent/examples/extensions/permission-gate.ts
+const piPermission = (command = "sudo echo inspect", current = 0) => [
+  "────────────────────────────────────────", "", "⚠️ Dangerous command:", "", `  ${command}`, "", "Allow?", "",
+  `${current === 0 ? "→ " : "  "}Yes`, `${current === 1 ? "→ " : "  "}No`, "", "↑↓ navigate  enter select  esc cancel", "", "────────────────────────────────────────",
+].join("\n");
+
+// OpenCode Prompt's button backgrounds encode selection. Left/right wrap, Enter
+// submits the selected choice, and Escape directly rejects. Test each selection
+// and missing/ambiguous colors without assuming Enter always means Allow once.
+// https://github.com/anomalyco/opencode/blob/0112a92c416f5ad833d96e7a8308441f0a875d94/packages/tui/src/routes/session/permission.tsx
+const openCodePermission = (current: number | null = 0, command = "bun test", colors = ["48;2;220;180;50", "48;2;30;30;30"]) => [
+  "│ △ Permission required", "│ # Shell command", `│ $ ${command}`, "│",
+  `│ ${["Allow once", "Allow always", "Reject"].map((label, idx) => current === null ? label : `\x1b[${colors[idx === current ? 0 : 1]}m ${label} \x1b[0m`).join("  ")}`,
+  "│ ctrl+f fullscreen  ⇆ select  enter confirm",
+].join("\n");
+
+describe("Pi and OpenCode source-derived dialogs", () => {
+  test("Pi extension permissions use arrows from the actual selection, never digits", () => {
+    for (const current of [0, 1]) {
+      const d = parseDialog(piPermission("sudo echo inspect", current))!;
+      expect(d.options.map((o) => o.label)).toEqual(["Yes", "No"]);
+      expect(d.options[current]!.current).toBe(true);
+      expect(d.style).toBe("plain");
+      expect(answerKeys(d, [1])).toEqual(current === 0 ? ["enter"] : ["up", "enter"]);
+      expect(answerKeys(d, [2])).toEqual(current === 1 ? ["enter"] : ["down", "enter"]);
+      expect(goAhead(d)).toEqual({ kind: "permission", option: 1 });
+    }
+  });
+
+  test("Pi session decisions and arbitrary Yes/No selectors remain questions", () => {
+    for (const title of ["Clear session?\nThis will delete all messages in the current session.", "Switch session?\nYou have messages in the current session. Switch anyway?", "Which result should we keep?"]) {
+      const d = parseDialog(`────────────────────────────────────────\n${title}\n\n→ Yes\n  No\n\n↑↓ navigate  enter select  esc cancel\n────────────────────────────────────────`)!;
+      expect(d.options.map((o) => o.label)).toEqual(["Yes", "No"]);
+      expect(goAhead(d, { includeGated: true })).toBeNull();
+    }
+  });
+
+  test("Pi dangerous commands need the separately chosen gated policy", () => {
+    const d = parseDialog(piPermission("rm -rf /tmp/obsolete"))!;
+    expect(goAhead(d)).toBeNull();
+    expect(goAhead(d, { includeGated: true })).toEqual({ kind: "permission", option: 1 });
+  });
+
+  test("OpenCode's selected background determines safe arrows for Allow once", () => {
+    for (const current of [0, 1, 2]) {
+      const d = parseDialog(openCodePermission(current))!;
+      expect(d.style).toBe("horizontal");
+      expect(d.options.map((o) => o.label)).toEqual(["Allow once", "Allow always", "Reject"]);
+      expect(d.options[current]!.current).toBe(true);
+      expect(answerKeys(d, [1])).toEqual([...Array(current).fill("left"), "enter"]);
+      expect(answerKeys(d, [3])).toEqual(["esc"]);
+      expect(goAhead(d)).toEqual({ kind: "permission", option: 1 });
+      expect(d.text).toContain("$ bun test");
+      expect(d.text).not.toContain("\x1b");
+    }
+  });
+
+  test("OpenCode always-allow is never the automatic approval option", () => {
+    const d = parseDialog(openCodePermission(1, "git push origin main"))!;
+    expect(goAhead(d)).toBeNull();
+    expect(goAhead(d, { includeGated: true })).toEqual({ kind: "permission", option: 1 });
+    expect(answerKeys(d, [1])).toEqual(["left", "enter"]);
+  });
+
+  test("OpenCode colorless or ambiguous menus fail closed for approval but can reject", () => {
+    for (const text of [openCodePermission(null), openCodePermission(1, "bun test", ["48;2;30;30;30", "48;2;30;30;30"])]) {
+      const d = parseDialog(text)!;
+      expect(d.options.some((o) => o.current)).toBe(false);
+      expect(isPermissionDialog(d)).toBe(true);
+      expect(d.keys).toEqual([[], [], ["esc"]]);
+      expect(goAhead(d, { includeGated: true })).toBeNull();
+      expect(() => answerKeys(d, [1])).toThrow("no safe approval keys");
+      expect(answerKeys(d, [3])).toEqual(["esc"]);
+    }
+  });
+
+  test("a permission with only a persistent grant is recognized but never auto-approved", () => {
+    const d = parseDialog("Bash command\n\necho inspect\n\nDo you want to proceed?\n❯ 1. Yes, always allow\n  2. No\nEsc to cancel · Tab to amend")!;
+    expect(isPermissionDialog(d)).toBe(true);
+    expect(goAhead(d, { includeGated: true })).toBeNull();
+  });
+
+  test("OpenCode supports indexed and colon-separated RGB ANSI without confusing foreground colors", () => {
+    for (const colors of [["48;5;11", "48;5;0"], ["48:2::220:180:50", "48:2::30:30:30"], ["43;38;2;30;48;20", "40;38;2;30;48;20"]]) {
+      const d = parseDialog(openCodePermission(2, "bun test", colors))!;
+      expect(d.options[2]!.current).toBe(true);
+      expect(answerKeys(d, [1])).toEqual(["left", "left", "enter"]);
+    }
+  });
+
+  test("OpenCode button labels in normal output and answered scrollback are not live menus", () => {
+    expect(parseDialog("Permission required\nAllow once  Allow always  Reject\nA description of these choices.")).toBeNull();
+    expect(parseDialog("Allow once  Allow always  Reject\n⇆ select  enter confirm")).toBeNull();
+    expect(parseDialog(`${openCodePermission(0)}\n❯ `)).toBeNull();
+  });
+
+  test("raw ANSI is stripped for existing Codex and Claude menus too", () => {
+    for (const name of ["codex-perm", "claude-perm", "claude-ask"]) {
+      const original = parseDialog(screen(name))!;
+      const colored = parseDialog(screen(name).split("\n").map((line) => `\x1b[32m${line}\x1b[0m`).join("\n"))!;
+      expect(colored).toEqual(original);
+    }
+  });
+
+  test("permission-like ordinary questions stay questions under every automatic policy", () => {
+    for (const question of ["Do you want to create another example for this documentation?", "Would you like to delete the alternative design from the plan?", "Do you want to proceed with another approach?"]) {
+      const d = parseDialog(`${question}\n❯ 1. Yes\n  2. No\nEnter to select · Esc to cancel`)!;
+      expect(isPermissionDialog(d)).toBe(false);
+      expect(goAhead(d)).toBeNull();
+      expect(goAhead(d, { includeGated: true })).toBeNull();
+    }
+    for (const name of ["claude-ask", "claude-multi-1", "claude-multi-2", "claude-multi-3"]) {
+      const d = parseDialog(screen(name))!;
+      expect(isPermissionDialog(d)).toBe(false);
+      expect(goAhead(d, { includeGated: true })).toBeNull();
+    }
+  });
+});
 
 describe("parseDialog", () => {
   test("numbered menus: digits", () => {
@@ -73,12 +195,24 @@ describe("goAhead", () => {
   const go = (name: string) => goAhead(parseDialog(screen(name))!);
 
   test("permissions: allow once, never an allowlist or don't-ask-again", () => {
-    // Claude in auto mode under an ask rule (Bash, Write, Edit), in default mode, and the plan approval.
-    for (const name of ["claude-ask-rule", "claude-write", "claude-edit", "claude-write-config", "claude-perm", "claude-plan"]) {
+    // Claude in auto mode under an ask rule (Bash, Write, Edit), and in default mode.
+    for (const name of ["claude-ask-rule", "claude-write", "claude-edit", "claude-write-config", "claude-perm"]) {
       expect([name, go(name)]).toEqual([name, { kind: "permission", option: 1 }]);
     }
+    // A plan may proceed while WorkDone keeps control of later permission menus.
+    expect(go("claude-plan")).toEqual({ kind: "permission", option: 2 });
     expect(parseDialog(screen("claude-plan"))!.options[2]).toMatchObject({ label: "Tell Claude what to change", free_text: true });
     for (const name of ["codex-perm", "codex-edit", "cursor-perm", "cursor-write"]) expect([name, go(name)]).toEqual([name, { kind: "permission", option: 1 }]);
+  });
+
+  test("automatic permission approval never changes the agent's permission mode", () => {
+    for (const mode of ["Yes, and use auto mode", "Yes, and switch to auto mode", "Yes, bypass permissions", "Yes, auto-accept edits", "Yes, accept all edits"]) {
+      const d = parseDialog(`Bash command\n\necho inspect\n\nDo you want to proceed?\n❯ 1. ${mode}\n  2. Yes, allow once\n  3. No\nEsc to cancel · Tab to amend`)!;
+      expect(goAhead(d)).toEqual({ kind: "permission", option: 2 });
+      expect(goAhead(d, { includeGated: true })).toEqual({ kind: "permission", option: 2 });
+    }
+    const command = parseDialog("Bash command\n\nexample --auto-mode\n\nDo you want to proceed?\n❯ 1. Yes, proceed\n  2. No\nEsc to cancel · Tab to amend")!;
+    expect(goAhead(command)).toEqual({ kind: "permission", option: 1 });
   });
 
   test("folder trust, and the update and model notices Codex opens on", () => {

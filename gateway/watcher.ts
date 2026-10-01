@@ -12,7 +12,8 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, resolve } from "node:path";
-import { approveMenus, type Approval } from "./answer-ops.ts";
+import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-ops.ts";
+import { parseDialog, type Dialog } from "./dialog.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
@@ -102,6 +103,8 @@ export interface Report {
   // The thread this turn answers (see Watched.reply_to), when a thread asked for it.
   reply_to: string | null;
   message: string;
+  // Menu data for agent.asks. The receiver must re-read before answering it.
+  choices?: ReturnType<typeof dialogView>;
 }
 
 // The live lease holding a pane (leases lapse a day after their last use, as in leases.ts).
@@ -202,18 +205,45 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   const agents: any[] = (await herdr("agent.list", {})).agents ?? [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
-  const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; bg: { pid: number; stopped: boolean } | null }> = [];
+  const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; menu: Dialog | null; approved: Approval[]; bg: { pid: number; stopped: boolean } | null }> = [];
   for (const [paneId, w] of Object.entries(watched)) {
-    const agent = byPane.get(paneId);
+    let agent = byPane.get(paneId);
+    const workingBeforeApproval = agent?.agent_status === "working";
     const bg = !agent && w.kind ? await backgroundAgent(cfg, herdr, paneId, w.kind).catch(() => null) : null;
-    decided.push({ paneId, w, agent, bg, d: bg ? decideBackground(w, bg, now) : decide(w, agent, now) });
+    // Permission UIs sometimes read idle or working. Inspect the current screen,
+    // rather than relying on a status edge to notice an unanswered menu.
+    let menu = agent ? parseDialog(await menuScreen(herdr, paneId).catch(() => "")) : null;
+    let d = bg ? decideBackground(w, bg, now) : decide(w, menu ? { ...agent, agent_status: "blocked" } : agent, now);
+    const menuId = menu ? dialogView(menu).dialog_id : undefined;
+    if (menu && !d.drop) {
+      if (menuId !== w.dialog_id) d.event = "blocked";
+      d.set = { ...d.set, dialog_id: menuId };
+      if (w.managed && agent?.agent_status === "working") d.set.busy = true;
+    } else if (w.dialog_id && !d.drop) d.set = { ...d.set, dialog_id: undefined };
+    let approved: Approval[] = [];
+    if (agent && !d.drop && (menu || agent.agent_status === "blocked")) {
+      const got = await approveMenus(cfg, herdr, paneId, "watch_poll", { waitMs: 0 }).catch(() => ({ approved: [] as Approval[], busy: false }));
+      approved = got.approved;
+      // Keep the edge pending while another process owns the answer lock.
+      if (got.busy) { decided.push({ paneId, w, agent, bg, d: {}, menu: null, approved }); continue; }
+      if (approved.length) {
+        agent = (await herdr("agent.get", { target: paneId }).catch(() => null))?.agent ?? agent;
+        menu = parseDialog(await menuScreen(herdr, paneId).catch(() => ""));
+        const busy = w.managed && (w.busy || workingBeforeApproval || agent?.agent_status === "working") ? { busy: true } : {};
+        if (menu) d = { event: "blocked", set: { last_status: "blocked", dialog_id: dialogView(menu).dialog_id, ...busy } };
+        else d = { set: { ...seenState(agent), dialog_id: undefined, ...busy } };
+      }
+    }
+    decided.push({ paneId, w, agent, bg, d, menu, approved });
   }
   // Record decisions first, and only for entries nobody rewrote since the read above:
   // a prompt or a watch that landed meanwhile knows more than this pass.
+  const applied = new Set<string>();
   const remaining = store.updateWatched((fresh) => {
     for (const { paneId, w, d } of decided) {
       const cur = fresh[paneId];
       if (!cur || cur.rev !== w.rev) continue;
+      applied.add(paneId);
       if (d.drop) {
         delete fresh[paneId];
         if (cur.managed) showWatched(herdr, paneId, false);
@@ -233,29 +263,20 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     reports.push({ pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
   }
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
-  for (const { paneId, w, agent, d, bg } of decided) {
-    // A menu that only wants a go-ahead is answered rather than reported, on every poll
-    // it is up: the agent carries on, and the owner hears when the turn ends. A pane
-    // another process is answering right now (a tool call's wait, answer_agent) is left to it.
-    if (agent?.agent_status === "blocked" && !d.drop) {
-      const got = await approveMenus(cfg, herdr, paneId, "watch_poll", { waitMs: 0 }).catch(() => ({ approved: [] as Approval[], busy: false }));
-      if (got.busy) continue;
-      if (got.approved.length) {
-        events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(got.approved) }]);
-        continue;
-      }
-    }
+  for (const { paneId, w, agent, d, bg, menu, approved } of decided) {
+    if (!applied.has(paneId)) continue;
+    if (approved.length) events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(approved) }]);
     if (!d.event) continue;
-    const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : await describe(cfg, herdr, d.event, agent);
+    const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
     const text = message(w, agent, paneId, note);
     messages.push(text);
-    reports.push({ event_id: randomUUID(), occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text });
+    reports.push({ event_id: randomUUID(), occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}) });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {
     store.updateWatched((fresh) => {
       for (const [id, e] of events) {
-        if (!fresh[id]) continue;
+        if (!fresh[id] || fresh[id]!.rev !== watched[id]?.rev) continue;
         fresh[id] = { ...fresh[id], last_event: e };
         // The owed answer was reported; a menu mid-turn doesn't settle it.
         if (e.type !== "blocked" && e.type !== "approved") delete fresh[id]!.reply_to;
