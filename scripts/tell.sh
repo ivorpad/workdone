@@ -3,7 +3,7 @@
 # the agent's own Herdr pane: the pane ID comes from $HERDR_PANE_ID. The linked chat's
 # card brings it in within about 20 s, and the thread answers with prompt_agent.
 #
-# usage: scripts/tell.sh "message"      (up to 4000 characters)
+# usage: scripts/tell.sh "message"      (any length)
 set -eu
 usage='usage: workdone-tell "message"   (sends one message to the ChatGPT chat linked with this Herdr pane)'
 # Agents probe with --help: that must print usage, not reach the chat as a message.

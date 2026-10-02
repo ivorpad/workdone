@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { approveMenus, timing } from "../gateway/answer-ops.ts";
+import { approveMenus, dialogId, timing } from "../gateway/answer-ops.ts";
 import { menuExcerpt } from "../gateway/attention.ts";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { answerKeys, goAhead, isPermissionDialog, parseDialog } from "../gateway/dialog.ts";
@@ -94,6 +94,35 @@ describe("Pi and OpenCode source-derived dialogs", () => {
   test("a permission with only a persistent grant is recognized but never auto-approved", () => {
     const d = parseDialog("Bash command\n\necho inspect\n\nDo you want to proceed?\n❯ 1. Yes, always allow\n  2. No\nEsc to cancel · Tab to amend")!;
     expect(isPermissionDialog(d)).toBe(true);
+    expect(goAhead(d, { includeGated: true })).toBeNull();
+  });
+
+  test("wrapped persistent grants are excluded from automatic choices", () => {
+    for (const continuation of ["always allow these commands", "don't ask again", "switch to\nauto mode"]) {
+      const d = parseDialog(`Bash command\n\necho inspect\n\nDo you want to proceed?\n❯ 1. Yes, and\n${continuation}\n  2. Yes, allow once\n  3. No\nEsc to cancel · Tab to amend`)!;
+      expect(goAhead(d)).toEqual({ kind: "permission", option: 2 });
+      expect(goAhead(d, { includeGated: true })).toEqual({ kind: "permission", option: 2 });
+    }
+  });
+
+  test("long captured permission menus retain commands and ignore earlier scrollback", () => {
+    const body = ["git push origin main", ...Array.from({ length: 55 }, (_, i) => `echo step-${i}`)].join("\n");
+    const d = parseDialog(`Earlier output\n────────────────────────────────────────\nBash command\n${body}\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel · Tab to amend`)!;
+    expect(d.text).toContain("git push origin main");
+    expect(d.text).toContain("echo step-54");
+    expect(d.text).not.toContain("Earlier output");
+    expect(goAhead(d)).toBeNull();
+    expect(goAhead(d, { includeGated: true })).toEqual({ kind: "permission", option: 1 });
+    const current = parseDialog("Earlier git push origin main\nBash command\nbun test\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel · Tab to amend")!;
+    expect(current.text).not.toContain("git push");
+    expect(goAhead(current)).toEqual({ kind: "permission", option: 1 });
+    const openCode = parseDialog(openCodePermission(0).replace("│ # Shell command", `│ # Shell command\n${body}`))!;
+    expect(openCode.text).toContain("git push origin main");
+    expect(goAhead(openCode)).toBeNull();
+  });
+
+  test("a clipped Claude permission without its command header is not auto-approved", () => {
+    const d = parseDialog("echo final-step\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel · Tab to amend")!;
     expect(goAhead(d, { includeGated: true })).toBeNull();
   });
 
@@ -246,7 +275,7 @@ describe("answer_agent and steer_agent", () => {
   timing.key = timing.text = timing.settle = 0;
 
   // A fake Herdr with one agent whose screen the test sets, recording what was pressed.
-  function setup(kind: string, status: string, first: string, then = "") {
+  function setup(kind: string, status: string, first: string, then = "", afterEnter?: string) {
     let shown = first;
     const pressed: string[] = [];
     const agent = { pane_id: "w1:p1", workspace_id: "w1", tab_id: "w1:t1", agent: kind, agent_status: status, cwd: "/srv/allowed/app" };
@@ -255,7 +284,7 @@ describe("answer_agent and steer_agent", () => {
       if (method === "agent.read") return { text: shown };
       if (method === "agent.send_keys") pressed.push(...params.keys);
       if (method === "pane.send_input") pressed.push(`text:${params.text}`);
-      if (method === "agent.send_keys" || method === "pane.send_input") shown = then;
+      if (method === "agent.send_keys" || method === "pane.send_input") shown = method === "agent.send_keys" && params.keys.includes("enter") && afterEnter !== undefined ? afterEnter : then;
       return {};
     };
     const cfg = loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: mkdtempSync(join(tmpdir(), "herdr-ans-")) });
@@ -271,13 +300,58 @@ describe("answer_agent and steer_agent", () => {
 
   test("a digit that only moves the cursor gets an enter; one that answered does not", async () => {
     // Codex's folder trust: "1" leaves the same menu up with the cursor on option 1.
-    const codex = setup("codex", "idle", screen("codex-trust"), screen("codex-trust"));
+    const codex = setup("codex", "idle", screen("codex-trust"), screen("codex-trust"), "");
     await codex.gw.handle("answer_agent", { target: "w1:p1", option: 1 });
     expect(codex.pressed).toEqual(["1", "enter"]);
     // Claude's first question answered, the second one up: its cursor is on 1 too, but it is another menu.
     const claude = setup("claude", "blocked", screen("claude-multi-1"), screen("claude-multi-2"));
     await claude.gw.handle("answer_agent", { target: "w1:p1", option: 1 });
     expect(claude.pressed).toEqual(["1"]);
+  });
+
+  test("a new menu with identical labels never receives the follow-up Enter", async () => {
+    const permission = (command: string) => `Bash command\n${command}\nDo you want to proceed?\n❯ 1. Yes\n2. No\nEsc to cancel · Tab to amend`;
+    const original = parseDialog(permission("bun test"))!;
+    const t = setup("claude", "blocked", permission("bun test"), permission("git push origin main"));
+    const result: any = await t.gw.handle("answer_agent", { target: "w1:p1", option: 1 });
+    expect(t.pressed).toEqual(["1"]);
+    expect(result.answered.dialog_id).toBe(dialogId(original));
+    expect(result.dialog).toMatchObject({ kind: "gated", gated: "git push" });
+    expect(result.dialog.dialog_id).not.toBe(result.answered.dialog_id);
+  });
+
+  test("numbered cursor movement keeps the dialog identity and permits required Enter", async () => {
+    const original = screen("codex-trust");
+    const moved = original.replace("› 1.", "  1.").replace("  2.", "› 2.");
+    expect(dialogId(parseDialog(original)!)).toBe(dialogId(parseDialog(moved)!));
+    const t = setup("codex", "idle", original, moved, "");
+    await t.gw.handle("answer_agent", { target: "w1:p1", option: 2 });
+    expect(t.pressed).toEqual(["2", "enter"]);
+  });
+
+  test("manual answers that leave the same menu up report failure without retrying", async () => {
+    const t = setup("cursor", "blocked", screen("cursor-write"), screen("cursor-write"));
+    await expect(t.gw.handle("answer_agent", { target: "w1:p1", option: 1 })).rejects.toMatchObject({
+      code: "answer_not_applied", details: { dialog_id: dialogId(parseDialog(screen("cursor-write"))!) },
+    });
+    expect(t.pressed).toEqual(["y"]);
+  });
+
+  test("overview and read_agent retain live ANSI selection for OpenCode choices", async () => {
+    const raw = openCodePermission(1);
+    const t = setup("opencode", "blocked", raw);
+    const original = t.gw.herdr;
+    (t.gw as any).herdr = async (method: string, params: any) => {
+      if (method === "agent.list") return { agents: [t.agent] };
+      if (method === "agent.read") return { text: params.strip_ansi ? raw.replace(/\x1b\[[\d;]*m/g, "") : raw };
+      return await original(method, params);
+    };
+    const overview: any = await t.gw.handle("overview", {});
+    expect(overview.agents[0].choices).toMatchObject({ kind: "permission", go_ahead: 1 });
+    expect(overview.agents[0].choices.options[1].current).toBe(true);
+    const read: any = await t.gw.handle("read_agent", { target: "w1:p1", source: "detection" });
+    expect(read.agent.choices).toMatchObject({ kind: "permission", go_ahead: 1 });
+    expect(read.agent.choices.options[1].current).toBe(true);
   });
 
   test("an answered menu that is still being acted on is waited out", async () => {
@@ -321,6 +395,14 @@ describe("answer_agent and steer_agent", () => {
     const m = setup("claude", "blocked", screen("claude-multi-2"), screen("claude-multi-3"));
     const res: any = await m.gw.handle("answer_agent", { target: "w1:p1", options: [2, 3] });
     expect(m.pressed).toEqual(["1", "2", "3", "tab"]);
+    expect(res.dialog.options.map((o: any) => o.label)).toEqual(["Submit answers", "Cancel"]);
+  });
+
+  test("an empty multi-select clears checked options and advances to review", async () => {
+    const t = setup("claude", "blocked", screen("claude-multi-2"), screen("claude-multi-3"));
+    const res: any = await t.gw.handle("answer_agent", { target: "w1:p1", options: [] });
+    expect(t.pressed).toEqual(["1", "tab"]);
+    expect(res.answered).toMatchObject({ options: [], labels: [] });
     expect(res.dialog.options.map((o: any) => o.label)).toEqual(["Submit answers", "Cancel"]);
   });
 

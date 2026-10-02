@@ -17,7 +17,7 @@ It is message passing between two collaborators, not a live call: nothing blocks
 
 1. Check you're in a Herdr pane: `echo "$HERDR_PANE_ID"` prints something like `w5M:pA`. If it's empty, WorkDone can't tell which agent you are; say so and stop.
 2. Find the command: `command -v workdone-tell`, or the repo copy at `~/src/tries/2026-09-25-tailscale-chatgpt-mcp/scripts/tell.sh`.
-3. Send **one** self-contained message, up to 4000 characters:
+3. Send **one** self-contained message:
 
    ```sh
    workdone-tell "Claude in <repo> here. <what you need, with the facts ChatGPT needs to answer>. Answer with <the shape you want>."

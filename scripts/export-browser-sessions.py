@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Copy the Mac's signed-in sites into OVH's persistent browser (the viewer at ovh-vps.your-tailnet.ts.net).
+"""Copy the Mac's signed-in sites into OVH's persistent browser.
 
 Lists every site Chrome's Profile 2 holds a login for (chrome-canary-cdp sites), turns
 the hosts into registrable domains, drops the ones that should never be reachable by an
@@ -20,7 +20,7 @@ import re
 import subprocess
 import sys
 
-OVH_SESSION = os.path.expanduser("~/src/tries/2026-08-19-agent-computer/deploy/ovh/ovh_session.py")
+OVH_SESSION = os.path.expanduser(os.environ.get("OVH_SESSION", "~/src/tries/2026-08-19-agent-computer/deploy/ovh/ovh_session.py"))
 
 # Never copied. The whole registrable domain goes, so amazon.com (it holds the AWS
 # console's cookies) is here and amazon.es is not.

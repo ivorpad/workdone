@@ -8,7 +8,7 @@ ChatGPT → OpenAI Secure MCP Tunnel → MCP server on OVH (127.0.0.1:8787)
 
 The runbook this implements is `docs/INSTALL_AND_SETUP.md`. Everything runs on Bun.
 
-The full record of the actual deployment (tunnel, API keys, ChatGPT app, plugin, every failure and how it was fixed) is in Spanish in `docs/DESPLIEGUE.md`.
+`docs/DESPLIEGUE.md` (Spanish) is the step-by-step deployment runbook: placeholders to fill in, which steps need a human, a check after each phase, and known failures with their fixes.
 
 ## Layout
 
@@ -27,10 +27,11 @@ Every tool takes an optional `machine` (`mac`, `ovh`, and whatever `scripts/add-
 
 - **Agents:** `overview` (every agent with status, git branch, the start of its last reply, the dialog if blocked), `prunable_agents` (which agents are finished and what to `close` for each, so ChatGPT can free their memory; it closes nothing, reads agents and panes in one Herdr `session.snapshot`, or the two lists on a Herdr without it), `get_agent` (`explain: true` adds Herdr's `agent.explain` verdict: the rule that matched and why a state was skipped, to tell a Herdr detection miss from ours), `read_agent` (`source: reply` reads the last answer from the Claude or Cursor transcript instead of the screen), `prompt_agent` (with `wait`, returns the reply), `wait_agent` (one agent or several in `targets`: returns when any stops working, with every agent's status, and a timeout is an answer, not an error), `watch_agent`, `send_agent_keys`, `spawn_agent` (place, start, wait, first prompt in one call), `start_agent`. Kinds come from `agentKinds`; `cursor` is `cursor-agent`, and without an `agentKinds` list a gateway offers it where `cursor-agent` is installed.
 - **Menus and steering:** `answer_agent` answers the menu an agent shows (approval, question, folder trust, update notice) by option number, plus `text` for an option that opens a field, and `options` for a multi-select. `gateway/dialog.ts` reads the menu off the screen and knows each CLI's keys: Claude Code and Codex take the digit (Claude's folder trust has no numbers, so arrows and enter), Cursor the key in parentheses or the letter in brackets, and a multi-select flips boxes with digits then tabs to its review step. `steer_agent` types a message into a working agent: Claude Code and Codex queue it until the current tool call ends, and Cursor gets a second enter so it goes in at once. It refuses while a menu is up, since its enter would answer the menu, and prompts an idle agent instead. `get_agent`, `read_agent` and `overview` return the parsed menu as `choices`. Codex's folder trust, update and model notices, which Herdr reads as idle, count as `attention: dialog` too, and `prompt_agent` refuses to type into any of them. Keys go one at a time with a pause, and text apart from its enter: in one burst the CLIs dropped keys or took the enter before the text. Letters go as Herdr key presses, not typed text: Cursor's approval menus ignore a pasted `y`. The screens this was built from are in `tests/fixtures/screens`.
-- **Go-ahead menus:** agents never wait on a menu that only asks for a go-ahead. `goAhead` in `gateway/dialog.ts` tells those from questions: permissions (Claude Code's "Do you want to proceed / create … / make this edit", its auto mode `ask` rules and plan approval; Codex's "Would you like to run the following command / make the following edits"; Cursor's "Run this command?" and "Write to this file?"), folder trust, and Codex's update and model notices. It takes the option that allows once, never "don't ask again", an allowlist or "Run Everything"; it skips an update and keeps the model an alias pins. The notifier's `watch_poll` does this for every watched agent, about 2.5 s after the menu comes up (measured on 30-09), and records it as `watch.last_event` of type `approved` instead of sending a notification. `prompt_agent` and `wait_agent` do it while they wait and keep waiting, `spawn_agent`, `start_agent` and `watch_agent` for a menu already up, and `prompt_agent` answers folder trust and notices on an idle agent before it types. Results list what was answered in `auto_approved`, and each answer is an `auto_approve` line in the audit log with the menu's text. Questions (Claude's multiple-choice questions, Codex's questions, any menu `goAhead` does not know) are left for the owner or ChatGPT; `choices` says which is which with `kind` (`permission`, `trust`, `notice`, `question`) and `go_ahead`, the option WorkDone would take. One process answers a pane at a time (a lock in the state directory), so a poll and a tool call never press keys into the same menu. An `ask` rule in an agent's settings (Claude Code's `permissions.ask`, e.g. relay's `git push` and `gh pr merge`) no longer stops a watched agent; `deny` rules still do, since they refuse without a menu. `"autoApprove": false` in a gateway config turns it all off.
+- **Permission policies:** `set_agent_approval` saves `ask`, `permissions`, `all_permissions` or `default` for one claimed agent. `ask` leaves permission, trust and notice menus for the owner's decision. `permissions` approves recognized ordinary menus using allow once; `all_permissions` also covers recognized gated agent permissions when the owner explicitly authorizes that scope. `default` removes the override. Policies expire within 24 hours and stop on lease release, takeover, unwatch or a detected session change. They govern visible menus, not an agent's launch flags, ordinary questions or direct shell commands. [Policy details](docs/chatgpt-link.md#choose-how-an-agent-handles-permissions) include session and launch-mode limits.
+- **Go-ahead menus:** `goAhead` in `gateway/dialog.ts` recognizes command and file permissions, folder trust, and routine update and model notices. The notifier and agent operations answer these only when the effective policy allows them. They use allow once, skip updates and keep the pinned model; persistent always-allow rules are not selected. Results list successful answers in `auto_approved`, and the audit log records `auto_approve` with the menu text. `choices` includes `kind` (`permission`, `trust`, `notice`, `gated`, `question`), `go_ahead` and `dialog_id`. `blocked` can mean a permission or a question. Once the owner answers or delegates a choice, ChatGPT rereads the menu and calls `answer_agent` with the current `expected_dialog_id`; `ask` does not prevent that manual answer. A new prompt or steering message cannot answer a menu. One process answers a pane at a time. Harness deny rules refuse without a menu and cannot be approved here. `"autoApprove": false` disables automatic approval.
 - **Agent aliases:** ChatGPT starts agents by names, never by CLI or model; the list is in [Agents](#agents). With `agentAliases` in a gateway config, each name fixes the Herdr kind, the model and the efforts on offer. `bridge_status` lists the names as `agent_kinds` and their efforts under `agents`, and `spawn_agent`/`start_agent` take `kind` and `effort`. Replies show the name an agent was started as (agents started another way get the first name of their kind, or `agent`), and vendor and model names in agent text, titles and errors are replaced with it. The words come from `redact` (default list in `gateway/mask.ts`, matched case-sensitively, so a plain "cursor" in prose is kept). File and shell ops (`read_file`, `exec` and the rest) return content unchanged, and so do ID and path fields. The scrub works on words, so an agent that describes itself in some other way can still give itself away. The file tools refuse the gateway's config directory, its state directory and the alias file even inside an allowed root. `exec` is a shell, though: with it on, ChatGPT can `cat` the alias file or read `ps`, so the names keep model names out of what the agent tools return but are not a secret from a caller with exec.
-- **Owner's calls:** `gateway/gated.ts` lists what stays the owner's decision: git push, commit, merge, rebase, reset --hard, branch delete and clean, GitHub writes (`gh pr/issue/release` edits, `gh api` POST/PATCH/PUT/DELETE), `rm -rf` and deploys. Auto-approve never answers a menu about one (it shows as `choices.kind: gated`), and `exec`, `run_command_in_pane`, `send_pane_input` and `answer_agent` return `needs_confirmation` for one unless called with `confirm: true`. Every call is in the audit log, and a call that went ahead that way has `"confirm": true` there.
-- **Approve by click:** the MCP server keeps each refused gated call for 15 minutes under a `pending` id (`mcp/src/confirm.ts`). `request_confirmation` shows it in ChatGPT as a card (`mcp/src/confirm.html`, an MCP App) with the exact command the server holds and Approve / Decline. The buttons call `confirm_pending`, which is app-only (`_meta.ui.visibility: ["app"]`): ChatGPT keeps it from the model, so only the click runs the held call, once, with `confirm: true`. The card then tells the chat what happened. `confirm: true` from the model still works too, and on 30-09 ChatGPT passed it unasked for an `rm -rf` because the user's message named the command; the card is the way to keep that call with the owner. Pending calls live in the MCP server's memory, so a restart drops them.
+- **Owner's calls:** `gateway/gated.ts` gates git push, commit, merge, rebase, reset --hard, branch delete and clean, GitHub writes (`gh pr/issue/release` edits, `gh api` POST/PATCH/PUT/DELETE), `rm -rf` and deploys. `answer_agent` accepts `confirm: true` when the owner's existing instruction or current decision authorizes the operation; ChatGPT should not request the same authorization again. A saved `all_permissions` policy can also approve a recognized gated agent permission. Direct `exec`, `run_command_in_pane` and `send_pane_input` still require `confirm: true` for covered authorization. Without it, these tools return `needs_confirmation`. Audit records identify confirmed calls and automatic policy answers.
+- **Approve by click or chat:** the MCP server keeps each refused gated call for 15 minutes under a `pending` id (`mcp/src/confirm.ts`). `request_confirmation` shows a card with the exact held command or menu and Approve / Decline. Its app-only `confirm_pending` runs the held call once with `confirm: true` and reports the result. An approval in chat also works: ChatGPT applies it through the original tool with `confirm: true`, rereading a menu and passing its `expected_dialog_id` before answering. Use a card when the owner's decision is still needed, not after they already authorized the operation. A held menu answer is bound to that dialog; a changed menu requires a new decision. Pending calls live in the MCP server's memory, so a restart drops them.
 - **Talking with ChatGPT:** prefer native MCP Events for `agent.finished` and `agent.asks`. A verified webhook wakes the subscribed chat when a watched agent completes a turn or asks a question. [Setup and migration](docs/mcp-events.md) covers OAuth, durable subscriptions and the callback network policy. `watch_here` / `watch_next` remain available until Events passes the real ChatGPT lifecycle test, and for `scripts/tell.sh` messages, which have no native event yet. The [card link](docs/chatgpt-link.md) is the fallback.
 - **Attention:** `overview`, `get_agent` and `read_agent` add `attention` to Herdr's status: `dialog` (a menu, including Cursor's workspace trust prompt, which Herdr reads as idle) or `question` (the agent stopped and the end of its last reply asks the owner something). `watch` shows whether the agent is watched and the last thing reported or answered about it.
 - **Layout:** `list_workspaces`, `list_panes`, `read_pane`, `split_pane`, `create_workspace`, `create_tab`, `rename`, `focus`, `move_pane`, `close`, `send_pane_input`.
@@ -52,7 +53,7 @@ Each gateway rereads `gateway.json` on every call, so a capability turned off ta
 
 With `allowExec` on, the allowed roots stop being a boundary for anything but the file tools: a command can `cd` anywhere the user can.
 
-`autoApprove` is the one switch that is on unless set to `false`: it answers go-ahead menus (see Tools), and `bridge_status` shows it as `capabilities.auto_approve`.
+`autoApprove` is on unless set to `false`: it enables automatic menu approval according to each agent's effective policy, and `bridge_status` shows it as `capabilities.auto_approve`.
 
 ## Agents
 
@@ -117,66 +118,11 @@ Every agent starts with full access, since 30-09: no permission or approval prom
 
 An alias can also be written inline in a gateway config: `"wren": {"kind": "claude", "args": ["--model", "claude-opus-5-5", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID.
 
-## The browser on OVH and its viewer
+## The browser for `browse`
 
-`browse` drives one persistent Chromium on OVH: the Portainer stack `agent-computer` (id 32), whose files live in `~/src/tries/2026-08-19-agent-computer/deploy/ovh/` (`stack.yml`, and a README with the build and update steps). Its profile is the Docker volume `agent-computer-ovh-config`, so logins survive restarts and redeploys; removing that volume signs every site out.
+`browse` (gateway config `browser`, see `config/ovh-gateway.example.json`) starts a run in a persistent, signed-in Chromium on an always-on machine. That browser is not part of this repo. Keep its CDP port and viewer on loopback, and put the viewer on your tailnet with `tailscale serve`, never `tailscale funnel`. Every site its profile is signed in to is a site ChatGPT can act on as you, so sign in only to the ones you want it to use.
 
-What reaches it, since 28-09:
-
-| Who | Where | Check |
-|---|---|---|
-| You, from a device on your tailnet | https://ovh-vps.your-tailnet.ts.net | being on the tailnet; no password |
-| WorkDone (`browse`, the MCP server, `exec`) | CDP `127.0.0.1:9223`, control `127.0.0.1:9224` on OVH | bearer from `ovh:~/.config/agent-computer/ovh.env` |
-| jev-browser on OVH | relay `127.0.0.1:9230`, which adds the bearer | local only |
-
-- **Tailnet only.** The stack publishes the viewer on OVH's loopback (`127.0.0.1:3000`), and `tailscale serve` puts it on the tailnet with Tailscale's HTTPS certificate: `ssh ovh 'sudo tailscale serve --bg --https=443 http://127.0.0.1:3000'`, checked with `tailscale serve status`, removed with `tailscale serve --https=443 off`. Never use `tailscale funnel` for it: that makes it public.
-- **No Cloudflare.** It used to be `headless.example.dev` through cloudflared and Cloudflare Access. That hostname, its tunnel route and its Access app are gone; the name now falls through to the `*.example.dev` wildcard, which serves a Cloudflare error.
-- **No password.** The viewer had Basic auth (user `agent`) behind Access. With the tailnet as the gate it was only a second prompt, so the stack no longer sets `PASSWORD`. The old password is still in `ovh.env`, unused.
-- **Off the `edge` network.** The browser container sits on the stack's own network, so no other container on OVH (cloudflared, the public stacks) can reach the viewer or CDP. Everything above goes through the loopback ports.
-- **Clipboard.** On (`SELKIES_CLIPBOARD_ENABLED: "true"`), so you can paste into it, e.g. a password from your manager. Allow the clipboard prompt the first time you paste. If paste still does nothing, the viewer page kept an old setting in your browser's local storage (`…/_clipboard_enabled` = `false`, saved while the server had it off): clear the site data for `ovh-vps.your-tailnet.ts.net`, or remove those `_clipboard` keys, and reload. The viewer's sidebar has a clipboard box as a fallback; the remote browser runs on Linux, so paste inside it with Ctrl+V.
-
-Changing the stack: edit `stack.yml` in the agent-computer repo and update stack 32 through Portainer's API with the stack's existing `Env` array, as its deploy README shows; the on-box portainer script sends an empty env and drops the secrets. Each update recreates the container: reload the viewer afterwards.
-
-## Signed-in sites for `browse` on OVH
-
-`browse` runs in the persistent Chromium on OVH, the one you watch at https://ovh-vps.your-tailnet.ts.net (tailnet only). It only knows the logins its own profile holds, and it keeps them across restarts and while the Mac sleeps. There are two ways to give it one.
-
-**Copy a login from the Mac.** From this Mac, with Chrome's `Profile 2` holding the login:
-
-```sh
-cd ~/src/tries/2026-08-19-agent-computer/deploy/ovh
-python3 ovh_session.py import --domains github.com \
-  --verify-url https://github.com/settings/profile --expect "Public profile" --reject url:/login
-```
-
-It copies that domain's cookies and local storage into OVH's profile, opens `--verify-url` there, and prints a verdict: `signed-in` when the `--expect` text shows and no `--reject` URL was hit. `--domains` takes a comma-separated list. The captured file is deleted afterwards. Check again any time without copying:
-
-```sh
-python3 ovh_session.py verify --url https://github.com/settings/profile --expect "Public profile" --reject url:/login
-```
-
-**Copy every signed-in site at once.** `scripts/export-browser-sessions.py` lists the sites Chrome's `Profile 2` is signed in to (`chrome-canary-cdp sites`), turns them into domains and leaves out the ones an agent should never reach: banks, brokers and payments, AWS (so `amazon.com`, whose cookies include the AWS console's), government ID and tax sites, work's corporate sign-ins, and the OVH account that owns the server. The list is `EXCLUDE` in the script.
-
-```sh
-scripts/export-browser-sessions.py            # print the domains it would copy
-scripts/export-browser-sessions.py --run      # copy them to OVH
-scripts/export-browser-sessions.py --run --only linkedin.com,github.com
-```
-
-Google and YouTube do not survive a copy: Chrome ties Google's session cookies to the Mac, so on OVH they land signed out. Sign in to Google on OVH itself.
-
-**Sign in on OVH itself.** Open https://ovh-vps.your-tailnet.ts.net from a device on your tailnet (no password: being on the tailnet is the access check) and log in there like on any computer. Use this for sites that tie a session to the IP or device it was made on. On 28-09: an imported LinkedIn session verified as signed in and LinkedIn revoked it about a minute later (the feed redirected to `/uas/login`); a second export, after the Mac signed in again, held. An imported GitHub session verified, then was signed out about 10 minutes later. Google never works as a copy. Once a copy is revoked its cookies are dead, so do not import the same ones again. A login made on OVH belongs to OVH's IP and lasts.
-
-**See what the browser has open**, without the viewer. CDP is on OVH's loopback and wants the bearer token from `ovh.env`:
-
-```sh
-ssh ovh 'set -a; . ~/.config/agent-computer/ovh.env; set +a
-  H="Authorization: Bearer $AGENT_COMPUTER_API_TOKEN"
-  curl -s -H "$H" http://127.0.0.1:9223/json/list | jq -c ".[] | select(.type==\"page\") | {title, url}"
-  curl -s -H "$H" -X PUT "http://127.0.0.1:9223/json/new?https://www.linkedin.com/feed/"'
-```
-
-Every site this browser is signed in to is a site ChatGPT can act on as you through `browse`, around the clock. Add the ones you want it to use, not the whole profile, and when a login expires, sign in again the same way.
+`scripts/export-browser-sessions.py` copies signed-in sites from a local Chrome profile into that browser, skipping banks, payments, cloud consoles, government sites and work sign-ins (`EXCLUDE` in the script). It depends on the author's `chrome-canary-cdp` and `ovh_session.py` tools. Sites that bind a session to its IP or device (Google, LinkedIn, GitHub) drop copied sessions, so sign in to those inside the remote browser instead.
 
 ## Where the security checks live
 

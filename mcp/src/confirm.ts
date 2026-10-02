@@ -10,7 +10,7 @@ import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
 import type { render as renderResult } from "./render.ts";
 
 // Versioned: ChatGPT caches a card by URI, so a changed card needs a new one.
-export const CONFIRM_URI = "ui://workdone/confirm-2.html";
+export const CONFIRM_URI = "ui://workdone/confirm-3.html";
 // A declared, empty CSP: the cards load nothing from outside. Without one ChatGPT's web app
 // shows "CSP off", and its iOS app showed a blank card (30-09), so both forms are declared.
 export const CARD_META = {
@@ -102,7 +102,7 @@ export function holdIfGated(pending: PendingCalls, machine: string, op: string, 
     ok: false,
     error: {
       code: "needs_confirmation",
-      message: `This call ${reason}: that is the owner's call. Call request_confirmation with pending "${id}" to show them an Approve button, or ask them in chat and call again with confirm: true after their yes.`,
+      message: `This call ${reason} and needs the owner's authorization. If their current decision or existing instruction covers it, call the original tool again with confirm: true; do not ask again. For an agent menu, reread it and use the approved dialog's expected_dialog_id. Otherwise call request_confirmation with pending "${id}" to show an Approve button, or obtain their decision in chat.`,
       pending: id,
     },
   };
@@ -113,14 +113,14 @@ function card(id: string, p: Pending) {
 }
 
 export function registerConfirm(server: McpServer, call: CallGateway, render: typeof renderResult, pending: PendingCalls = pendingCalls) {
-  registerCard(server, "confirm", [CONFIRM_URI, "ui://workdone/confirm.html"], { title: "Approve a held action", description: "Approve or decline an action that is the owner's call." }, HTML);
+  registerCard(server, "confirm", [CONFIRM_URI, "ui://workdone/confirm-2.html", "ui://workdone/confirm.html"], { title: "Approve a held action", description: "Approve or decline an action that is the owner's call." }, HTML);
 
   server.registerTool(
     "request_confirmation",
     {
       title: "Ask the owner to approve",
       description:
-        "Show the owner an Approve / Decline card for a call that returned needs_confirmation with a pending id. The card shows the exact command the server holds; only the owner's click runs it. After calling this, tell the user in one line what is waiting for their approval and stop: the result reaches you in the conversation once they click. Pending ids last 15 minutes and work once.",
+        "Show an Approve / Decline card when a call returned needs_confirmation with a pending id and the owner's authorization is still needed. If their current decision or an existing instruction already covers the operation, call the original tool with confirm:true instead of asking again. The card shows the exact held command or menu; its click runs that held call. After showing it, tell the user what needs approval and stop: the result reaches you once they click. Pending ids last 15 minutes, work once and are lost on an MCP server restart.",
       inputSchema: z.object({ pending: z.string().describe("The pending id from the needs_confirmation error.") }),
       annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
       _meta: { ui: { resourceUri: CONFIRM_URI } },

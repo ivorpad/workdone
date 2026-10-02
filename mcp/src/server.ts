@@ -23,10 +23,14 @@ export function logRpc(msgs: unknown, protocolHeader: string | null, log: (line:
       const { protocolVersion, capabilities, clientInfo, _meta } = (m as any).params ?? {};
       log(JSON.stringify({ event: "client_hello", method, protocolHeader, protocolVersion, clientInfo, capabilities, meta: _meta }));
     } else {
-      // The tool or resource named, never its arguments.
+      // The tool or resource named, never its arguments. For a tool call, the _meta keys
+      // ChatGPT sent, and the values of ones that look like a chat or session ID, to
+      // find what can name the chat a message to an agent came from.
       const p = (m as any).params ?? {};
       const name = method === "tools/call" ? p.name : method === "resources/read" ? p.uri : undefined;
-      log(JSON.stringify({ event: "rpc", method, name, protocolHeader }));
+      const meta = method === "tools/call" && p._meta && typeof p._meta === "object" ? p._meta : null;
+      const ids = meta ? Object.fromEntries(Object.entries(meta).filter(([k, v]) => /session|conversation|thread|chat/i.test(k) && typeof v === "string").map(([k, v]) => [k, (v as string).slice(0, 120)])) : undefined;
+      log(JSON.stringify({ event: "rpc", method, name, protocolHeader, ...(meta ? { meta_keys: Object.keys(meta).slice(0, 40), meta_ids: ids } : {}) }));
     }
   }
 }

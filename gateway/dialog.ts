@@ -38,6 +38,9 @@ export interface Dialog {
   style: "numbered" | "lettered" | "hinted" | "plain" | "horizontal";
   // Per option: letters go in as typed text, anything else as a Herdr key.
   keys: string[][];
+  // Labels plus wrapped continuation lines, for policy checks. Question descriptions
+  // stay separate from the short labels shown in choices.
+  optionText?: string[];
 }
 
 // Characters a CLI draws in front of the option the cursor is on.
@@ -49,6 +52,7 @@ const MARKED_RE = new RegExp(`^${MARK}\\s+(\\S.*)$`);
 // Hint lines under a menu. Idle input boxes and status lines never say these.
 const FOOTER_RE = /enter to (?:select|confirm)|press enter to confirm|enter continue|enter\/esc confirm|arrow keys to navigate|↑\/↓ to navigate|↑↓ navigate|\benter (?:select|confirm)\b|esc to cancel/i;
 const RULE_RE = /^[─━═▄▀]{10,}$/;
+const HEADER_RE = /^(?:Bash command|Create file|Edit file|Delete file|Overwrite file|Would you like to (?:run the following command|make the following edits)\?)$/i;
 const FREE_TEXT_RE = /^type something\.?$|tell (?:the agent|codex|claude)? ?what to (?:do|change)|what to do (?:instead|differently)/i;
 
 // A screen line without the box it may be drawn in.
@@ -58,12 +62,17 @@ function unbox(line: string): string {
 
 function region(lines: string[], first: number, last: number): string {
   let start = first;
-  for (let i = first - 1; i >= Math.max(0, first - 12); i--) {
+  for (let i = first - 1; i >= 0; i--) {
     if (RULE_RE.test(lines[i]!) || /^[╭┌]/.test(lines[i]!)) break;
     start = i;
+    if (HEADER_RE.test(lines[i]!)) break;
   }
   let end = last;
-  for (let i = last + 1; i < Math.min(lines.length, last + 6); i++) if (lines[i] && !RULE_RE.test(lines[i]!)) end = i;
+  for (let i = last + 1; i < lines.length; i++) {
+    if (RULE_RE.test(lines[i]!) || /^[╰└╭┌]/.test(lines[i]!)) break;
+    if (lines[i]) end = i;
+    if (FOOTER_RE.test(lines[i]!)) break;
+  }
   return lines.slice(start, end + 1).filter((l) => l && !RULE_RE.test(l) && !/^[╭╮╰╯└┘┌┐─]+$/.test(l)).join("\n");
 }
 
@@ -99,7 +108,7 @@ function horizontal(lines: string[], raw: string[]): Found {
     const end = lines.slice(i + 1, i + 5).findIndex((l) => /⇆\s+select/.test(l) && /\benter\s+confirm\b/.test(l));
     if (end < 0) continue;
     const header = lines.slice(0, i).findLastIndex((l) => /^(?:△\s+)?Permission required$/.test(l));
-    if (header < 0 || i - header > 35) continue;
+    if (header < 0) continue;
     const labels = ["Allow once", "Allow always", "Reject"];
     const backgrounds = labels.map((label) => backgroundBefore(raw[i]!, label));
     const current = backgrounds.findIndex((bg, idx) => bg !== undefined && backgrounds.every((other) => other !== undefined) && backgrounds.filter((_, n) => n !== idx).every((other) => other !== bg) && backgrounds[(idx + 1) % 3] === backgrounds[(idx + 2) % 3]);
@@ -133,11 +142,21 @@ function numbered(lines: string[]): Found {
       return c;
     });
     const last = found.at(-1)!.at;
+    const optionText = found.map(({ at, m }, idx) => {
+      const following = found[idx + 1]?.at ?? lines.length;
+      const continuation: string[] = [];
+      for (let j = at + 1; j < following; j++) {
+        const line = lines[j]!;
+        if (FOOTER_RE.test(line) || RULE_RE.test(line) || /^[╰└]/.test(line) || INPUT_RE.test(line)) break;
+        if (line) continuation.push(line);
+      }
+      return [m[4]!.trim(), ...continuation].join(" ");
+    });
     return {
       last,
       d: {
         text: region(lines, i, last), options, multi, free_text: options.some((o) => o.free_text),
-        style: "numbered", keys: options.map((o) => [String(o.n)]),
+        style: "numbered", keys: options.map((o) => [String(o.n)]), optionText,
       },
     };
   }
@@ -212,7 +231,7 @@ const INPUT_RE = /^[❯›→]\s*$|^[❯›→] (?:Try "|Ask Codex|Add a follow-
 // The menu at the bottom of the screen, or null. An input box below the last option
 // means the menu was answered and is only scrollback.
 export function parseDialog(screen: string): Dialog | null {
-  const raw = screen.replace(/\s+$/, "").split("\n").slice(-45);
+  const raw = screen.replace(/\s+$/, "").split("\n");
   // node:util's stripper does not understand colon-delimited SGR in every
   // runtime. Remove that complete control sequence before the general pass.
   const lines = raw.map((line) => unbox(stripVTControlCharacters(line.replace(/\x1b\[[\d;:]*m/g, ""))));
@@ -276,7 +295,6 @@ export function isPermissionDialog(d: Dialog): boolean {
     || /\b(?:run this command|write to this file|allow command|run a dynamic workflow)\?/i.test(text)
     || /\bWould you like to (?:run the following command|make the following edits)\?/i.test(text)
     || /\bClaude has written up a plan and is ready to execute\b/i.test(text)
-    || /\bEsc to cancel\s*·\s*Tab to amend\b/i.test(text)
     || /\bPermission required\b|\bDangerous command:\s.*\bAllow\?/i.test(text);
   return context && PERMISSION_TEXT_RE.test(text)
     && d.options.some((o) => DECLINE_RE.test(o.label) || o.free_text)
@@ -304,6 +322,6 @@ export function goAhead(d: Dialog, options: { includeGated?: boolean } = {}): Go
   if (!isPermissionDialog(d)) return null;
   // A push, merge, deletion or deploy is the owner's call, whatever the menu looks like.
   if (!options.includeGated && gatedBy(d.text)) return null;
-  const n = d.options.find((o) => APPROVE_RE.test(o.label) && !PERSIST_RE.test(o.label) && d.keys[o.n - 1]?.length)?.n;
+  const n = d.options.find((o) => APPROVE_RE.test(o.label) && !PERSIST_RE.test(d.optionText?.[o.n - 1] ?? o.label) && d.keys[o.n - 1]?.length)?.n;
   return n ? { kind: "permission", option: n } : null;
 }

@@ -203,7 +203,7 @@ describe("watch_poll and notify ops", () => {
     const used = new Date().toISOString();
     writeFileSync(join(state, "leases.json"), JSON.stringify({ "L-abc123": { label: "t", panes: ["w1:p1"], created: used, used } }));
     const text = "How should watch_here check a lease? " + "x".repeat(600);
-    expect(await gw.handle("tell", { pane_id: "w1:p1", text })).toMatchObject({ queued: true, lease: "L-abc123" });
+    expect(await gw.handle("tell", { pane_id: "w1:p1", text })).toMatchObject({ queued: true, lease: "…c123" });
     const first: any = await gw.handle("watch_poll", {});
     expect(first.reports.filter((r: any) => r.type === "message").map((r: any) => [r.lease, r.excerpt])).toEqual([["L-abc123", text]]);
     // Not a phone notification, and not delivered twice.

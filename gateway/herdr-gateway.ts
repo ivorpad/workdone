@@ -17,18 +17,35 @@ import { StateStore } from "./state.ts";
 
 // Fields worth keeping in the audit log. Commands are kept in full-ish: with exec
 // on, the log is the record of what ran.
-const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch"];
+const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat"];
 
-function auditDetail(params: Record<string, any>) {
+export function auditDetail(params: Record<string, any>) {
   const d: Record<string, unknown> = {};
   for (const k of AUDIT_FIELDS) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
   if (typeof params.command === "string") d.command = params.command.slice(0, 2000);
+  // The lease lets its holder drive a chat's agents: only its tail, enough to match a chat.
+  if (typeof params.lease === "string") d.lease = "…" + params.lease.slice(-4);
   for (const k of ["text", "prompt"]) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
   // The menu option answer_agent picked.
   for (const k of ["option", "options"]) if (params[k] !== undefined) d[k] = params[k];
   // A gated call that went ahead: the owner's yes, in chat or by the approval card.
   if (params.confirm === true) d.confirm = true;
+  if (typeof params.expected_dialog_id === "string" && /^[a-f0-9]{64}$/.test(params.expected_dialog_id)) d.expected_dialog_id = params.expected_dialog_id;
+  if (["ask", "permissions", "all_permissions", "default"].includes(params.mode)) d.mode = params.mode;
+  if (typeof params.ttl_seconds === "number") d.ttl_seconds = params.ttl_seconds;
   return d;
+}
+
+// A successful request can be a no-op when the notifier already answered. Keep
+// menu identities and the observed outcome without copying reply or menu text.
+export function auditOutcome(op: string, result: any): Record<string, unknown> {
+  if (op !== "answer_agent") return {};
+  const outcome: Record<string, unknown> = { answered: Boolean(result?.answered) };
+  if (typeof result?.status === "string") outcome.status = result.status;
+  if (typeof result?.answered?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(result.answered.dialog_id)) outcome.dialog_id = result.answered.dialog_id;
+  if (typeof result?.dialog?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(result.dialog.dialog_id)) outcome.next_dialog_id = result.dialog.dialog_id;
+  if (typeof result?.dialog?.kind === "string") outcome.next_kind = result.dialog.kind;
+  return { outcome };
 }
 
 function audit(cfg: GatewayConfig | undefined, entry: Record<string, unknown>) {
@@ -100,12 +117,12 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
     if (typeof op !== "string") throw new GatewayError("invalid_request", "op must be a string");
     const result: any = await gateway.request(op, params);
     // The notifier polls every few seconds; only polls that found something are worth a line.
-    if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ms: Date.now() - started });
+    if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ...auditOutcome(op, result), ms: Date.now() - started });
     respond({ id, ok: true, result: gateway.mask.result(op, result, params.target ?? params.pane_id) });
   } catch (err) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));
-    audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ms: Date.now() - started });
     const details = e.details as { dialog_id?: unknown; menu?: unknown } | undefined;
+    audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { dialog_id: details.dialog_id } : {}), ms: Date.now() - started });
     respond({ id, ok: false, error: { code: e.code, message: gateway.mask.text(e.message), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { details: { dialog_id: details.dialog_id, ...(typeof details.menu === "string" ? { menu: gateway.mask.text(details.menu) } : {}) } } : {}) } });
   }
 }

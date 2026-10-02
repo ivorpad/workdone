@@ -10,8 +10,8 @@
 //
 // A watch's credential is its cap, a random token the card gets in the tool result's
 // _meta and the model never sees. watch_next, watch_stop and replacing an open watch
-// need it; the lease alone is not enough. A watch that used up its rounds can't be
-// opened again for an hour. Events are handed out once. Watches live in memory: a
+// need it; the lease alone is not enough. A watch that used up its rounds ends, and the
+// thread can link again at once. Events are handed out once. Watches live in memory: a
 // restart forgets them, and the card opens its watch again.
 //
 // Polling is what ChatGPT sees, so a watch is only as long as the conversation: it ends
@@ -57,7 +57,6 @@ interface Watch {
   waiters: Array<() => void>;
   stopped: string | null;
   endedAt: number | null;
-  usedUp: boolean;
   // When events were last handed out, and how many agent messages the thread sent since.
   lastWakeAt: number | null;
   sentSinceWake: number;
@@ -94,8 +93,6 @@ export const POLL_MS = 20_000;
 export const QUIET_POLL_MS = 45_000;
 // A message an agent sent while its thread had no open link waits this long for one.
 const HOLD_MS = 3600_000;
-// After using up its rounds, a watch for that machine and lease can't be opened again for this long.
-const COOLDOWN_MS = 3600_000;
 // After a wake, the thread gets one message to its agents in this window. There is no
 // override: a back-and-forth goes on because each reply is a new wake.
 const REPLY_WINDOW_MS = 10 * 60_000;
@@ -117,18 +114,13 @@ export class Inbox {
 
   // cap: the open watch's cap, to replace or extend it. Without it, an open watch for
   // this machine and lease is left alone and the call is refused.
-  open(machine: string, lease: string, opts: { wake?: WakeType[]; maxRounds?: number; hours?: number; cap?: string } = {}): Opened {
+  open(machine: string, lease: string, opts: { wake?: WakeType[]; maxRounds?: number; hours?: number; cap?: string; panes?: string[] } = {}): Opened {
     this.sweep();
     const t = this.now();
     const same = [...this.watches].filter(([, w]) => w.machine === machine && w.lease === lease);
     const open = same.find(([, w]) => !w.stopped);
     if (open && opts.cap !== open[1].cap) {
       return { ok: false, code: "already_linked", message: `this chat's agents on ${machine} already have an open link; its card extends or replaces it, and Stop on the card ends it` };
-    }
-    const spent = same.find(([, w]) => w.usedUp && w.endedAt !== null && w.endedAt + COOLDOWN_MS > t);
-    if (spent) {
-      const until = new Date(spent[1].endedAt! + COOLDOWN_MS).toISOString();
-      return { ok: false, code: "cooldown", message: `the last link for these agents used up its rounds; a new one can open after ${until}` };
     }
     const maxRounds = opts.maxRounds ?? 200;
     // Replacing keeps the rounds already used, so replacing is never a way to reset them.
@@ -157,7 +149,6 @@ export class Inbox {
       waiters: [],
       stopped: null,
       endedAt: null,
-      usedUp: false,
       lastWakeAt: null,
       sentSinceWake: 0,
     };
@@ -167,6 +158,21 @@ export class Inbox {
     const key = `${machine}|${lease}`;
     const waiting = (this.held.get(key) ?? []).filter((e) => Date.parse(e.at) + HOLD_MS > t);
     this.held.delete(key);
+    // A chat that took an agent over (claim_agents moves a pane to the new lease) also gets
+    // what the agent told the lease it came from, which no card will ever open on.
+    const panes = new Set(opts.panes ?? []);
+    if (panes.size) {
+      for (const [k, list] of [...this.held]) {
+        if (!k.startsWith(`${machine}|`) || k === key) continue;
+        const mine = list.filter((e) => panes.has(e.pane_id));
+        if (!mine.length) continue;
+        waiting.push(...mine.filter((e) => Date.parse(e.at) + HOLD_MS > t));
+        const rest = list.filter((e) => !panes.has(e.pane_id));
+        if (rest.length) this.held.set(k, rest);
+        else this.held.delete(k);
+      }
+      waiting.sort((a, b) => a.seq - b.seq);
+    }
     if (w.wake.has("message")) w.queue.push(...waiting);
     return { ok: true, state: this.state(id)!, key: { watch_id: id, cap, lease } };
   }
@@ -239,7 +245,6 @@ export class Inbox {
       this.touch(cur);
     }
     if (cur.rounds >= cur.maxRounds) {
-      cur.usedUp = true;
       this.end(id, `reached its ${cur.maxRounds} rounds`);
     }
     this.log(JSON.stringify({ event: "watch_poll", ...this.tag(id, cur), wake_events: events.length, idle_in_s: Math.round((cur.idleUntil - this.now()) / 1000) }));
@@ -304,14 +309,13 @@ export class Inbox {
     for (const wake of w.waiters.splice(0)) wake();
   }
 
-  // Ended watches stay an hour after ending, so a card asking again hears why and a used-up
-  // watch's cooldown holds; expired ones end.
+  // Ended watches stay an hour after ending, so a card asking again hears why; expired ones end.
   private sweep() {
     const t = this.now();
     for (const [id, w] of this.watches) {
       if (!w.stopped && w.expires <= t) this.end(id, "expired");
       else if (!w.stopped && w.idleUntil <= t) this.end(id, "idle for " + IDLE_MS / 60_000 + " minutes: link again when you send an agent work");
-      if (w.stopped && w.endedAt !== null && w.endedAt + Math.max(3600_000, COOLDOWN_MS) <= t) this.watches.delete(id);
+      if (w.stopped && w.endedAt !== null && w.endedAt + 3600_000 <= t) this.watches.delete(id);
     }
   }
 }

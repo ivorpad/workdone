@@ -94,7 +94,7 @@ ChatGPT chat ──prompt_agent (lease L)──▶ MCP server ──ssh──▶
   | plus `questions` | 24 h, 50 |
   | plus `finished` | 8 h, 25 |
 
-  A link that used up its wakes can't be opened again for an hour.
+  A link that used up its wakes ends, and the chat can link again at once with `watch_here`.
 - **Polling load.** The card is the only thing that calls ChatGPT's host, so it stays light. A link ends after 30 minutes without activity (opening, a wake handed out, a message the chat sent an agent), not at its hours: polling alone doesn't count, and the chat links again with `watch_here` when it hands an agent work. A poll waits 20 s, or 45 s once the link has been quiet for 5 minutes. A second card polling the same link (another device) is held 30 s by the server, then answered `busy` (the wait is server-side so an older card without this code can't spin). After 8 errors in a row (backoff 5 s doubling to 5 min) the card stops. A silent 72 h link used to cost about 4,300 calls; a quiet one now costs about 50 before it ends.
 - **One message per wake.** After a wake, the chat may send its agents one `prompt_agent` or `steer_agent` in the next 10 minutes; a second gets `one_message_per_wake`. There is no parameter that lifts it: a back-and-forth goes on because each reply of the agent is a new wake, which allows the next message. Before a link's first wake, and 10 minutes after one, the chat is acting for the user and isn't limited.
 - **Restarts.** Watches live in memory. A card that finds its watch gone after a restart opens it again with the same lease and settings. Cards from before this change can't, and need one new link.
@@ -138,7 +138,7 @@ maple is now GPT-6.1 Sol (`gpt-6.1-sol`, Codex's newest) at ultra; GPT-6 Astra, 
 
 ## Loops and runaway work
 
-Asked of ChatGPT itself and written up in `docs/loop-risks.md`. The short version: `max_rounds` bounds one link, not the system. The risks it ranked highest are agents prompting each other directly (outside any count), "want me to continue?" ping-pong, review loops, and caps that reset on a new link or a restart. The link above answers part of that (replies only, one message per wake, ceilings, cooldown); a persistent budget shared across chats and agent-to-agent limits in the gateway are not built.
+Asked of ChatGPT itself and written up in `docs/loop-risks.md`. The short version: `max_rounds` bounds one link, not the system. The risks it ranked highest are agents prompting each other directly (outside any count), "want me to continue?" ping-pong, review loops, and caps that reset on a new link or a restart. The link above answers part of that (replies only, one message per wake, ceilings); a persistent budget shared across chats and agent-to-agent limits in the gateway are not built.
 
 ## Open
 

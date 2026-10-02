@@ -8,6 +8,7 @@
 //   Claude Code: its model aliases, with --effort.
 //   Codex: `codex debug models`, with -c model_reasoning_effort.
 //   Cursor: `cursor-agent models`, where the effort is part of the model ID.
+//   pi: the OpenRouter models in PI_MODELS, with --thinking.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -33,6 +34,7 @@ const POOLS: Record<string, string[]> = {
     "lizard", "gecko", "salmon", "shark", "horse", "mouse", "frog", "wolf", "goat", "sheep", "puppy", "kitten", "moose",
     "crocodile", "unicorn", "dragon", "dinosaur", "bunny", "piglet", "reindeer",
   ],
+  pi: ["daisy", "tulip", "lotus", "orchid", "poppy", "iris", "jasmine", "violet"],
 };
 
 // Names that once meant a model and are never handed out again, so an old habit or an
@@ -91,6 +93,23 @@ function claudeModels(): Array<Alias & { name: string }> {
   return CLAUDE_CODE.map(([name, model]) => ({
     name, kind: "claude", model, args: ["--model", model, "--effort", "{effort}", ...FULL_ACCESS.claude],
     efforts: Object.fromEntries(CLAUDE_EFFORTS.map((e) => [e, e])), effort: "high",
+  }));
+}
+
+// pi has no model list to read, so these are the OpenRouter models checked to answer in pi
+// on 30-09. pi runs without permission prompts, so FULL_ACCESS has nothing for it.
+const PI_MODELS: Array<[name: string, model: string]> = [
+  ["daisy", "z-ai/glm-5.3"],
+  ["tulip", "deepseek/deepseek-v4-pro"],
+  ["lotus", "deepseek/deepseek-v4.1-flash"],
+];
+const PI_EFFORTS = ["low", "medium", "high"];
+
+function piModels(): Array<Alias & { name: string }> {
+  if (!Bun.which("pi")) return [];
+  return PI_MODELS.map(([name, model]) => ({
+    name, kind: "pi", model, args: ["--provider", "openrouter", "--model", model, "--thinking", "{effort}"],
+    efforts: Object.fromEntries(PI_EFFORTS.map((e) => [e, e])), effort: "high",
   }));
 }
 
@@ -163,8 +182,8 @@ function main() {
   const file = resolve((process.argv[2] ?? "~/.config/herdr-chatgpt/agent-aliases.json").replace(/^~(?=\/)/, process.env.HOME ?? "~"));
   const old: Record<string, Alias> = existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
   const nameOf = new Map(Object.entries(old).map(([name, a]) => [`${a.kind}/${a.model}`, name]));
-  const models: Array<Alias & { name?: string }> = [...claudeModels(), ...codexModels(), ...cursorModels()];
-  if (models.length === 0) throw new Error("found no claude, codex or cursor-agent to list models from");
+  const models: Array<Alias & { name?: string }> = [...claudeModels(), ...codexModels(), ...cursorModels(), ...piModels()];
+  if (models.length === 0) throw new Error("found no claude, codex, cursor-agent or pi to list models from");
 
   const taken = new Set([...Object.keys(old), ...RETIRED]);
   const next: Record<string, Alias> = {};
@@ -172,7 +191,7 @@ function main() {
     let name = m.name ?? nameOf.get(`${m.kind}/${m.model}`);
     delete m.name;
     if (!name) {
-      name = POOLS[m.kind]!.find((n) => !taken.has(n)) ?? `${m.kind === "cursor" ? "beast" : m.kind === "codex" ? "tree" : "bird"}${taken.size + 1}`;
+      name = POOLS[m.kind]!.find((n) => !taken.has(n)) ?? `${m.kind === "cursor" ? "beast" : m.kind === "codex" ? "tree" : m.kind === "pi" ? "flower" : "bird"}${taken.size + 1}`;
       taken.add(name);
     }
     const want = DEFAULT_EFFORT[name];

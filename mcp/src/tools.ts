@@ -27,7 +27,7 @@ const timeoutMs = z.number().int().min(1000).max(110_000).optional().describe("W
 const layoutKind = z.enum(["pane", "tab", "workspace"]);
 const agentKind = z.string().describe("Agent kind, one of bridge_status agent_kinds for that machine.");
 const effort = z.string().optional().describe("Reasoning effort, one of bridge_status agents[kind].efforts (default: agents[kind].effort).");
-const watch = z.boolean().optional().describe("Notify the owner's phone whenever it finishes a turn, asks something or exits, and answer the menus it opens that only want a go-ahead (default true).");
+const watch = z.boolean().optional().describe("Watch the agent for completion, questions and manual permission notifications, and answer recognized menus according to its approval policy (default true).");
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
 const WRITE = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
@@ -84,7 +84,7 @@ export const TOOLS: Record<string, ToolDef> = {
   overview: {
     title: "Overview of agents",
     description:
-      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up; choices lists its numbered options for answer_agent, choices.kind says what it asks: permission, trust, notice or question, and choices.go_ahead is the option that lets the agent carry on, null for a question) or question (stopped and its last reply asks the owner something); watch says whether WorkDone watches it and what it last reported.",
+      "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up; choices lists its numbered options, dialog_id, kind: permission, trust, notice, gated or question, and go_ahead: a recognized routine go-ahead or null) or question (stopped and its last reply asks the owner something). blocked can mean either a permission or a question; inspect choices. watch shows its approval policy and last report.",
     input: {},
     annotations: READ,
   },
@@ -97,7 +97,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   get_agent: {
     title: "Get agent",
-    description: "Show one agent's status, location, attention (dialog or question, else null), choices (the menu that is up: numbered options for answer_agent, kind, and go_ahead, the option that lets it carry on or null for a question) and watch (whether WorkDone watches it, and its last report).",
+    description: "Show one agent's status, location, attention (dialog or question, else null), choices (the current menu's numbered options, kind, go_ahead and dialog_id) and watch (its approval policy and last report). blocked can mean either a permission or a question. Re-read this live menu before answer_agent and pass choices.dialog_id as expected_dialog_id.",
     input: {
       target,
       explain: z.boolean().optional().describe("Also return Herdr's reasoning for the status (rule that matched, skip and fallback reasons). Use it when the status looks wrong for what the screen shows."),
@@ -114,7 +114,7 @@ export const TOOLS: Record<string, ToolDef> = {
   prompt_agent: {
     title: "Prompt agent",
     description:
-      "Submit a prompt to an idle agent. Folder trust and update notices it sits at are answered first. With wait=true, waits until the agent settles or the timeout passes, answering the permission menus it opens on the way (listed in auto_approved), and returns its reply for agents that keep a transcript (check reply.matches_prompt); status blocked means it stopped at a question. Use wait only for a quick answer from one agent; when several agents are busy, send without wait and use wait_agent with targets. timed_out true means the prompt went in and the agent is still working, not a failure: the owner gets a phone notification when it finishes. Fails with agent_blocked if another kind of menu is up: answer it with answer_agent first. For an agent that is working, use steer_agent.",
+      "Submit a prompt to an idle agent. Startup notices, trust and permission menus are answered only when its approval policy allows them; ask leaves them for the user's decision. With wait=true, waits until the agent settles or the timeout passes and returns its reply for agents that keep a transcript (check reply.matches_prompt), listing any authorized answers in auto_approved. blocked can mean a permission or a question: get_agent shows choices. Use wait only for a quick answer from one agent; for several busy agents send without wait and use wait_agent with targets. timed_out true means the prompt went in and the agent is still working: do not resend. Fails with agent_blocked while a menu remains up. A user's approval or menu choice belongs in answer_agent, not a new prompt. For a working agent use steer_agent.",
     input: {
       target,
       text: z.string().min(1).describe("The prompt text."),
@@ -126,7 +126,7 @@ export const TOOLS: Record<string, ToolDef> = {
   wait_agent: {
     title: "Wait for agent",
     description:
-      "Wait until any of the given agents stops working (finishes, asks something, shows a menu, or is gone), or the timeout passes. Pass every agent you are waiting on in targets, so you hear about whichever needs you first instead of blocking on one. Go-ahead menus are answered on the way (auto_approved). Returns ready (which agents stopped) and agents: each one's status, ready, attention, choices when a menu is up, and doing (what a working agent is on now) or last_said. timed_out true is a normal answer, not an error: report progress to the user from agents and decide whether to wait again. Keep timeout_ms around 30000-60000 so the user hears from you between waits.",
+      "Wait until any of the given agents stops working (finishes, asks something, shows a menu, or is gone), or the timeout passes. Pass every agent you are waiting on in targets. Recognized menus are answered only when its approval policy allows them (auto_approved); ask leaves them for the user's decision. Returns ready and agents: each one's status, attention, choices when a menu is up, and doing or last_said. blocked can mean a permission or a question: inspect choices and use answer_agent for an authorized answer. timed_out true is normal: report progress and decide whether to wait again. Keep timeout_ms around 30000-60000 so the user hears from you between waits.",
     input: {
       target: target.optional().describe("One agent. Use targets for several."),
       targets: z.array(z.string()).min(1).max(12).optional().describe("Agent names or pane IDs to wait on together (on one machine)."),
@@ -138,14 +138,14 @@ export const TOOLS: Record<string, ToolDef> = {
   watch_agent: {
     title: "Watch agent",
     description:
-      "Watch an agent until it exits or you call again with stop=true: the owner's phone gets a short notification every time it finishes a turn, asks a question or exits, and WorkDone answers every menu it opens that only wants a go-ahead (a permission, folder trust, an update notice), starting with one already up (auto_approved). Use it for agents started outside WorkDone, e.g. typed into a pane or started by another agent; start_agent and spawn_agent already watch the agents they start.",
+      "Watch an agent until it exits or you call again with stop=true. The owner's phone gets completion, question, manual permission and exit notifications. Recognized menus, including one already up, are answered only when its approval policy allows them (auto_approved); ask leaves them for the user's decision. Ordinary questions are never answered automatically. Use it for agents started outside WorkDone; start_agent and spawn_agent already watch the agents they start.",
     input: { target, stop: z.boolean().optional().describe("Stop notifying about this agent.") },
     annotations: WRITE,
   },
   answer_agent: {
     title: "Answer agent menu",
     description:
-      "Answer the current menu using numbers from get_agent choices. Re-read after an agent.asks event and pass expected_dialog_id from that live menu so an old approval cannot answer a different prompt. Permission, trust and notice menus follow watch.approval_policy: ask mode waits for the user; otherwise answer choices.go_ahead without another question. Gated permission menus follow an explicit all_permissions policy for this agent, or require confirm:true after the user's authorization (which may already cover this operation). Questions need a choice from the user's instructions or a new answer. option is one number; multi-select takes options. text goes with a free_text option. Returns the next menu or the resulting status.",
+      "Answer the current menu using numbers from get_agent choices. Once the user approves or supplies a choice, call this tool to apply it, including under ask policy; prompt_agent and steer_agent do not answer menus. Re-read the live menu and pass its dialog_id as expected_dialog_id so an old approval cannot answer a different prompt. Automatic permission answers follow watch.approval_policy: ask waits for the user's decision. Gated permissions require an explicit all_permissions policy or confirm:true for the user's authorization, including an existing instruction covering this operation. Do not ask again for authorization already given. For questions, follow the user's choice, instructions or explicit delegation to choose for them; otherwise ask. option is one number; multi-select takes options. text goes with a free_text option. Returns the next menu or resulting status.",
     input: {
       target,
       option: z.number().int().min(1).optional().describe("The chosen option's n."),
@@ -183,7 +183,7 @@ export const TOOLS: Record<string, ToolDef> = {
   spawn_agent: {
     title: "Spawn agent",
     description:
-      "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. Folder trust and update notices it opens on are answered (auto_approved). The owner is notified whenever it finishes or needs them, and its go-ahead menus are answered (watch). blocked means a menu WorkDone did not answer: get_agent shows it.",
+      "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. Startup menus are answered only when the effective approval policy allows them (auto_approved). Watching reports completion, questions and manual permissions. blocked means an unanswered menu, which can be a permission or a question: get_agent shows choices. To establish subscriptions and an ask policy before task work begins, omit prompt, then configure and prompt the new agent.",
     input: {
       kind: agentKind,
       effort,
@@ -303,7 +303,7 @@ export const TOOLS: Record<string, ToolDef> = {
   exec: {
     title: "Run shell command",
     description:
-      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands. The user does not see this result: show them the output they asked for in a code block, with the exit code. A git push, commit, merge, rebase, reset --hard, GitHub write, rm -rf or deploy returns needs_confirmation: agents own their commits, so hand that work to the agent, or ask the user and pass confirm: true only after their yes.",
+      "Run a shell command (login shell) and return exit code, stdout and stderr. Runs in cwd, repo, or the first allowed root. Output keeps its start and end when long. Pass stdin to feed input, e.g. command 'python3 -' with a script in stdin. Not for interactive or never-ending commands. The user does not see this result: show the output they asked for with the exit code. Agents own their commits and pushes, so give that work to the agent. Direct gated operations require confirm:true for the user's authorization, including an existing instruction covering the operation; do not ask again for authorization already given. Without authorization, needs_confirmation offers a pending id for request_confirmation. An agent's permission policy does not authorize direct commands.",
     input: {
       command: z.string().min(1),
       cwd,
@@ -317,7 +317,7 @@ export const TOOLS: Record<string, ToolDef> = {
   browse: {
     title: "Browser run",
     description:
-      "Start a Jev browser run in the persistent signed-in browser (machine ovh, where browser is on in bridge_status; the user watches it at https://ovh-vps.your-tailnet.ts.net) and return its id at once. Goals run in order in one tab; give each one outcome and a stop rule. The owner gets a phone notification when the run ends, so say that and stop instead of polling. Every step is a paid model call. DONE is the model's claim: check the final URL and page text with browse_status before telling the user it worked.",
+      "Start a Jev browser run in the persistent signed-in browser (machine ovh, where browser is on in bridge_status) and return its id at once. Goals run in order in one tab; give each one outcome and a stop rule. The owner gets a phone notification when the run ends, so say that and stop instead of polling. Every step is a paid model call. DONE is the model's claim: check the final URL and page text with browse_status before telling the user it worked.",
     input: {
       url: z.string().describe("http(s) page to open first."),
       goals: z.array(z.string().min(1)).min(1).max(10).describe("One outcome per goal, e.g. 'Open the latest order. As soon as the order page is showing you are DONE.'"),
@@ -422,7 +422,7 @@ const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_ag
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.6.0" },
+    { name: "herdr-remote", version: "0.7.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

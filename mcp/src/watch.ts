@@ -8,8 +8,8 @@ import type { CallGateway } from "./gateway-client.ts";
 import { inbox, type Inbox, type WakeType } from "./inbox.ts";
 
 // Versioned: ChatGPT caches a card by URI, so a changed card needs a new one.
-export const WATCH_URI = "ui://workdone/watch-7.html";
-const OLD_URIS = ["ui://workdone/watch-6.html", "ui://workdone/watch-5.html", "ui://workdone/watch-4.html", "ui://workdone/watch-3.html", "ui://workdone/watch-2.html", "ui://workdone/watch-1.html"];
+export const WATCH_URI = "ui://workdone/watch-10.html";
+const OLD_URIS = ["ui://workdone/watch-9.html", "ui://workdone/watch-8.html", "ui://workdone/watch-7.html", "ui://workdone/watch-6.html", "ui://workdone/watch-5.html", "ui://workdone/watch-4.html", "ui://workdone/watch-3.html", "ui://workdone/watch-2.html", "ui://workdone/watch-1.html"];
 const HTML = await Bun.file(new URL("./watch.html", import.meta.url)).text();
 // Where the card finds its watch in a tool result: never in content or structuredContent.
 export const KEY_META = "workdone/watch";
@@ -51,11 +51,11 @@ export function registerWatch(server: McpServer, machines: string[], defaultMach
       // The lease must be one the machine's gateway gave out and still honours.
       const check = await call(m, "lease_check", { lease });
       if (!check.ok) return refuse(check.error.code, `could not check the lease on ${m}: ${check.error.message}`);
-      const lease_ = check.result as { valid?: boolean; reason?: string };
+      const lease_ = check.result as { valid?: boolean; reason?: string; panes?: string[] };
       if (!lease_.valid) return refuse("invalid_lease", `that lease is ${lease_.reason ?? "not valid"} on ${m}: call claim_agents for the agents the user assigned here, then link`);
       const limit = limitsFor(questions === true, finished === true);
       const wake: WakeType[] = ["message", "reply", "blocked", ...(questions ? (["question"] as const) : []), ...(finished ? (["finished"] as const) : [])];
-      const opened = box.open(m, lease, { wake, maxRounds: Math.min(max_rounds ?? limit.rounds, limit.rounds), hours: Math.min(hours ?? limit.hours, limit.hours), cap: watch_cap });
+      const opened = box.open(m, lease, { wake, maxRounds: Math.min(max_rounds ?? limit.rounds, limit.rounds), hours: Math.min(hours ?? limit.hours, limit.hours), cap: watch_cap, panes: lease_.panes });
       if (!opened.ok) return refuse(opened.code, opened.message);
       // Make sure the notifier is polling that machine.
       onWatch?.(m);

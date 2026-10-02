@@ -148,7 +148,7 @@ export class Gateway {
       created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] })) as any).lease;
       lease = created;
     }
-    const result: any = await this.handle(op, params);
+    const result: any = await this.handle(op, stamped(op, params, lease, lease ? this.state.leases()[lease]?.label : undefined));
     this.leases.after(op, lease, params, result);
     // The thread asked something and didn't wait: the agent's answer is owed to it.
     const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
@@ -477,4 +477,22 @@ export class Gateway {
     }
     return args as string[];
   }
+}
+
+// Text an outside caller sends an agent ends with who sent it: the owner's ChatGPT chat
+// by the tail of its lease and its label (and ChatGPT's own chat ID when the MCP server
+// got one), the op and the time. An agent, or the owner reading its pane, can then trace
+// any message. It is a closing line that names the owner, not a header: a header saying
+// "from ChatGPT" made agents treat the owner's request as forwarded third-party text and
+// refuse to answer with workdone-tell. Only the lease's tail: pane text is readable
+// without a lease, and the whole lease would let any chat drive this one's agents.
+const STAMPED: Record<string, string> = { prompt_agent: "text", steer_agent: "text", spawn_agent: "prompt" };
+
+export function stamped(op: string, params: Params, lease: string | null, label: string | undefined, now = new Date()): Params {
+  const key = STAMPED[op];
+  if (!key || typeof params[key] !== "string" || !params[key]) return params;
+  const chat = typeof params.origin_chat === "string" && /^[\w.:-]{1,80}$/.test(params.origin_chat) ? ` ${params.origin_chat}` : "";
+  const who = lease ? `lease …${lease.slice(-4)}${label ? ` "${label.replace(/["\n]/g, "").slice(0, 60)}"` : ""}` : "no lease";
+  const sig = `[Sent by the owner from their ChatGPT chat${chat} (${who}) through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. workdone-tell answers that chat.]`;
+  return { ...params, [key]: `${params[key]}\n\n${sig}` };
 }

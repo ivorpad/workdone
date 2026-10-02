@@ -19,6 +19,13 @@
   .muted { color: var(--muted); font-size: 12.5px; }
   button { font: inherit; padding: 5px 12px; border-radius: 8px; border: 1px solid var(--line); background: transparent; color: var(--fg); cursor: pointer; }
   button:disabled { opacity: .55; cursor: default; }
+  details { flex-basis: 100%; border-top: 1px solid var(--line); padding-top: 8px; }
+  summary { cursor: pointer; }
+  #loglist { list-style: none; margin: 8px 0 0; padding: 0; max-height: 360px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+  #loglist li { border-left: 2px solid var(--line); padding-left: 8px; }
+  #loglist li.sent { border-color: var(--on); }
+  #loglist li.held { border-color: var(--off); }
+  .msg { white-space: pre-wrap; word-break: break-word; font: 12.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -26,6 +33,7 @@
   <span class="dot" id="dot"></span>
   <div class="text"><div id="title">Starting…</div><div class="muted" id="detail"></div></div>
   <button id="stop" hidden>Stop</button>
+  <details id="log" hidden><summary class="muted" id="logsum"></summary><ol id="loglist"></ol></details>
 </main>
 <script>
   // MCP Apps view: JSON-RPC over postMessage with the host (ChatGPT).
@@ -76,6 +84,37 @@
     $("stop").hidden = !on;
   }
 
+  // What the agents sent back, newest first, with whether it reached the chat: for
+  // debugging when a wake doesn't show up. Only this card sees it; the model doesn't.
+  const LOG_MAX = 40;
+  const logged = [];
+  function logAdd(events) {
+    for (const e of events) logged.unshift({ e, status: "waiting", cls: "held" });
+    logged.splice(LOG_MAX);
+    renderLog();
+  }
+  function logMark(events, status, cls) {
+    for (const item of logged) if (events.includes(item.e)) { item.status = status; item.cls = cls; }
+    renderLog();
+  }
+  function renderLog() {
+    $("log").hidden = logged.length === 0;
+    $("logsum").textContent = "Messages from agents (" + logged.length + ")";
+    const list = $("loglist");
+    list.replaceChildren(...logged.map(({ e, status, cls }) => {
+      const li = document.createElement("li");
+      li.className = cls;
+      const head = document.createElement("div");
+      head.className = "muted";
+      const at = e.at ? new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : "";
+      head.textContent = [at, (e.agent || "?") + " (" + e.pane_id + ")", verb[e.type] || e.type, status].filter(Boolean).join(" · ");
+      const body = document.createElement("div");
+      body.className = "msg";
+      body.textContent = e.message || e.excerpt || "(no text)";
+      li.append(head, body);
+      return li;
+    }));
+  }
   const verb = { message: "sent you a message", reply: "replied", question: "asks", blocked: "is waiting at a menu", finished: "finished" };
   function wakeText(e, state) {
     const who = (e.agent || e.pane_id) + " on " + e.machine;
@@ -94,12 +133,48 @@
     return lines.join("\n");
   }
 
+  const HELD = "another card in this chat reopened the link after a WorkDone restart; that card brings the replies in";
   async function loop() {
     let fails = 0;
     // Give up after this many errors in a row (about 15 minutes with the backoff): the
     // link is not worth hammering a host that keeps failing.
     const MAX_FAILS = 8;
+    // Events taken from the server but not yet in the chat. ChatGPT refuses ui/message
+    // while it is still answering ("The composer is unavailable"), and the server hands
+    // each event out once, so a refused wake is kept and sent again, never dropped. Events
+    // that arrive together go out as one wake: six agents answering at once are one turn.
+    let pending = [];
+    let ending = null;
+    let tries = 0;
+    const MAX_TRIES = 25;
     while (!stopped) {
+      if (pending.length) {
+        const text = pending.length === 1 ? wakeText(pending[0], watch)
+          : "[WorkDone watch] " + pending.length + " updates arrived together; handle each one.\n\n" + pending.map((e) => wakeText(e, watch)).join("\n\n");
+        try {
+          await request("ui/message", { role: "user", content: [{ type: "text", text }] });
+          logMark(pending, "in the chat", "sent");
+          const last = pending[pending.length - 1];
+          show(watch, pending.length === 1 ? "last: " + (last.agent || last.pane_id) + " " + (verb[last.type] || last.type) : "last: " + pending.length + " updates together");
+          pending = [];
+          tries = 0;
+        } catch (err) {
+          tries += 1;
+          if (tries >= MAX_TRIES) {
+            logMark(pending, "dropped: " + err.message, "");
+            show(watch, "gave up on " + pending.length + " update(s) after " + tries + " tries (" + err.message + "); read_agent has them");
+            pending = [];
+            tries = 0;
+          } else {
+            const wait = Math.min(60000, 5000 * 2 ** (tries - 1));
+            logMark(pending, "ChatGPT refused (" + err.message + "), try " + tries, "held");
+            show(watch, "ChatGPT is busy (" + err.message + "); " + pending.length + " waiting, retry in " + wait / 1000 + " s");
+            await new Promise((r) => setTimeout(r, wait));
+          }
+          continue;
+        }
+      }
+      if (ending) { stopped = true; show(ending); return; }
       let res;
       try {
         res = await request("tools/call", { name: "watch_next", arguments: { watch_id: key.watch_id, cap: key.cap } });
@@ -116,8 +191,11 @@
       if (s.busy) continue;
       let state = s.state || null;
       // The server forgot this watch (it restarted): open it again with the same lease and
-      // settings, and go on under the new id, until the old one would have expired.
-      if (!state && !stopped && new Date(watch.expires).getTime() > Date.now()) {
+      // settings, and go on under the new id. Only while the link was still live by what
+      // this card last heard: a card from an old link, started again when the page
+      // reloads, would otherwise reopen a link that ended long ago.
+      const live = new Date(watch.expires).getTime() > Date.now() && new Date(watch.idle_until).getTime() > Date.now();
+      if (!state && !stopped && live) {
         try {
           const hours = Math.max(0.25, (new Date(watch.expires).getTime() - Date.now()) / 3600000);
           const again = await request("tools/call", { name: "watch_here", arguments: {
@@ -128,23 +206,21 @@
           const fresh = again && again.structuredContent;
           const freshKey = keyOf(again);
           if (fresh && freshKey) { watch = fresh; key = freshKey; show(watch, "reconnected after a WorkDone restart"); continue; }
+          if (/already_linked/.test(JSON.stringify((again && again.content) || ""))) { stopped = true; show(null, HELD); return; }
         } catch (e) {
+          // Another card in this chat reopened the link first: it carries on, this one stops.
+          if (/already_linked/.test(e.message)) { stopped = true; show(null, HELD); return; }
           show(watch, "could not reconnect: " + e.message);
           await new Promise((r) => setTimeout(r, 30000));
           continue;
         }
       }
       if (state) watch = state;
-      for (const e of s.events || []) {
-        try {
-          await request("ui/message", { role: "user", content: [{ type: "text", text: wakeText(e, watch) }] });
-          show(watch, "last: " + (e.agent || e.pane_id) + " " + (verb[e.type] || e.type));
-        } catch (err) {
-          show(watch, "ChatGPT refused a wake: " + err.message);
-        }
-      }
-      if (!state || !state.active) { stopped = true; show(state); return; }
-      if (!(s.events || []).length) show(watch);
+      pending.push(...(s.events || []));
+      if ((s.events || []).length) logAdd(s.events);
+      // A link that just ended still delivers what it took first.
+      if (!state || !state.active) { if (pending.length) { ending = state; continue; } stopped = true; show(state); return; }
+      if (!pending.length) show(watch);
     }
   }
 

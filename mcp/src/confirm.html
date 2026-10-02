@@ -54,6 +54,7 @@
     </div>
     <div id="outcome" hidden>
       <div id="status"></div>
+      <div id="notification" class="note" hidden></div>
       <pre id="output" hidden></pre>
     </div>
   </section>
@@ -65,11 +66,24 @@
   let nextId = 1;
   const waiting = new Map();
   let held = null;
+  let decided = false;
 
   function request(method, params) {
     const id = nextId++;
-    window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
-    return new Promise((resolve, reject) => waiting.set(id, { resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject(new Error(method + " timed out"));
+      }, method === "tools/call" ? 150000 : 10000);
+      waiting.set(id, { resolve, reject, timer });
+      try {
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      } catch (e) {
+        waiting.delete(id);
+        clearTimeout(timer);
+        reject(e);
+      }
+    });
   }
   function notify(method, params) {
     window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
@@ -82,6 +96,7 @@
     if (msg.id !== undefined && waiting.has(msg.id) && !msg.method) {
       const w = waiting.get(msg.id);
       waiting.delete(msg.id);
+      clearTimeout(w.timer);
       msg.error ? w.reject(new Error(msg.error.message || "request failed")) : w.resolve(msg.result);
       return;
     }
@@ -116,11 +131,16 @@
     const what = " on " + s.machine + ": " + s.detail;
     if (s.status === "declined") return "The owner declined" + what;
     if (s.status === "failed") return "The owner approved, but it failed" + what + "\n" + JSON.stringify(r.error);
+    if (s.op === "answer_agent") return r.answered === null
+      ? "The owner approved, but no menu remained and no option was pressed" + what + ". Check the agent."
+      : "The owner approved and the agent menu was answered" + what;
     const code = r.exit_code !== undefined && r.exit_code !== null ? " (exit " + r.exit_code + ")" : "";
     return "The owner approved and it ran" + code + what;
   }
 
   async function decide(approve) {
+    if (!held || decided) return;
+    decided = true;
     $("approve").disabled = $("decline").disabled = true;
     $("status").className = "wait";
     $("status").textContent = approve ? "Running…" : "Declining…";
@@ -130,17 +150,26 @@
       const s = res.structuredContent || {};
       $("actions").hidden = true;
       $("status").className = s.status === "ran" ? "ok" : "bad";
-      $("status").textContent = s.status === "ran" ? "Approved and ran" : s.status === "declined" ? "Declined" : res.content && res.content[0] ? res.content[0].text : "Failed";
+      $("status").textContent = s.status === "ran"
+        ? s.op === "answer_agent" ? s.result && s.result.answered === null ? "No menu remained; check the agent" : "Agent menu answered" : "Approved and ran"
+        : s.status === "declined" ? "Declined" : res.content && res.content[0] ? res.content[0].text : "Failed";
       const r = s.result || {};
       const out = [r.stdout, r.stderr].filter(Boolean).join("\n").trim();
       if (out) { $("output").textContent = out; $("output").hidden = false; }
       const text = s.status ? summary(s) : ($("status").textContent);
-      await request("ui/update-model-context", { content: [{ type: "text", text: text + (out ? "\n\n" + out.slice(-4000) : "") }] }).catch(() => {});
-      await request("ui/message", { role: "user", content: [{ type: "text", text }] }).catch(() => {});
+      const delivery = await Promise.allSettled([
+        request("ui/update-model-context", { content: [{ type: "text", text: text + (out ? "\n\n" + out.slice(-4000) : "") }] }),
+        request("ui/message", { role: "user", content: [{ type: "text", text }] }),
+      ]);
+      if (delivery[1].status === "rejected") {
+        $("notification").textContent = "Could not notify this chat. Tell the chat the result shown above so it can continue.";
+        $("notification").hidden = false;
+      }
     } catch (e) {
+      $("actions").hidden = true;
       $("status").className = "bad";
-      $("status").textContent = "Could not reach WorkDone: " + e.message;
-      $("approve").disabled = $("decline").disabled = false;
+      $("status").textContent = "Could not confirm the result: " + e.message + ". " +
+        (approve ? "The approval may already have run. Check the agent before making another approval." : "Check the agent before making another decision.");
     }
   }
 

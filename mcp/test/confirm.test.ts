@@ -81,9 +81,11 @@ describe("confirm by click", () => {
     expect(res.contents[0]).toMatchObject({ uri: CONFIRM_URI, mimeType: "text/html;profile=mcp-app" });
     expect((res.contents[0] as any).text).toContain("confirm_pending");
     // ChatGPT's iOS app asks for an older URI; it gets the current card, not an error.
-    const old = await c.readResource({ uri: "ui://workdone/confirm.html" });
-    expect((old.contents[0] as any).text).toBe((res.contents[0] as any).text);
-    expect(old.contents[0]!._meta).toMatchObject({ ui: { csp: { connectDomains: [] } } });
+    for (const uri of ["ui://workdone/confirm-2.html", "ui://workdone/confirm.html"]) {
+      const old = await c.readResource({ uri });
+      expect((old.contents[0] as any).text).toBe((res.contents[0] as any).text);
+      expect(old.contents[0]!._meta).toMatchObject({ ui: { csp: { connectDomains: [] } } });
+    }
     await c.close();
   });
 

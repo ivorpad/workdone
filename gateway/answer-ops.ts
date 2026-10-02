@@ -45,13 +45,18 @@ export function dialogView(d: Dialog) {
   };
 }
 
-export const dialogId = (d: Dialog): string => createHash("sha256").update(JSON.stringify([d.text, d.options.map((o) => [o.n, o.label, o.free_text]), d.multi])).digest("hex");
+export const dialogId = (d: Dialog): string => {
+  // A digit can move a numbered menu's cursor without answering it. The selected
+  // row changes no authority; commands, labels and checked boxes still do.
+  const text = d.style === "numbered" ? d.text.replace(/^[❯›>▶→]\s*(?=\d{1,2}\.\s)/gm, "") : d.text;
+  return createHash("sha256").update(JSON.stringify([text, d.options.map((o) => [o.n, o.label, o.free_text]), d.multi, d.optionText])).digest("hex");
+};
 
 // One line: a newline would submit whatever came before it.
 const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
 
 export async function menuScreen(herdr: HerdrCall, paneId: string): Promise<string> {
-  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 60, format: "text", strip_ansi: false }));
+  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 240, format: "text", strip_ansi: false }));
 }
 
 // Letters go as Herdr keys too: Cursor's approval menus ignore a letter typed as text.
@@ -100,12 +105,12 @@ async function answerMenu(herdr: HerdrCall, paneId: string, d: Dialog, chosen: n
   if (d.style === "numbered" && !d.multi && !first.free_text) {
     await Bun.sleep(timing.text);
     const still = parseDialog(await menuScreen(herdr, paneId));
-    const same = still && still.options.map((o) => o.label).join("\n") === d.options.map((o) => o.label).join("\n");
+    const same = still && dialogId(still) === dialogId(d);
     if (same && still.options[first.n - 1]!.current) await press(herdr, paneId, ["enter"]);
   }
   if (text) await type(herdr, paneId, text);
   // Cursor's "tell the agent what to do instead" field waits for enter; empty skips.
-  else if (first.free_text && d.style === "hinted") await type(herdr, paneId, "");
+  else if (first?.free_text && d.style === "hinted") await type(herdr, paneId, "");
   return await after(herdr, paneId);
 }
 
@@ -143,7 +148,7 @@ export async function approveMenus(
       if (!go || (opts.kinds && !opts.kinds.includes(go.kind))) break;
       const a: Approval = { kind: go.kind, option: d.options[go.option - 1]!.label, menu: menuExcerpt(d) };
       const res = await answerMenu(herdr, paneId, d, [go.option]);
-      const took = !res.dialog || res.dialog.text !== d.text;
+      const took = !res.dialog || res.dialog.dialog_id !== dialogId(d);
       store.audit({ op: "auto_approve", ok: took, via, policy: policy?.mode ?? "default", args: { target: paneId, kind: a.kind, option: a.option, menu: d.text.slice(0, 1000) } });
       if (!took) break;
       approved.push(a);
@@ -211,8 +216,8 @@ export function answerOps(g: Gateway): Record<string, Op> {
         const currentAgent = await g.scopedAgent(agent.pane_id);
         if (params.lease !== undefined && g.cfg.leases) await g.leases.check("answer_agent", params);
         const policy = approvalPolicy(g.state, agent.pane_id, currentAgent);
-        const allowed = policy?.mode === "all_permissions" && goAhead(d, { includeGated: true })?.option === first.n;
-        if (gated && APPROVE_RE.test(first.label) && params.confirm !== true && !allowed) {
+        const allowed = first !== undefined && policy?.mode === "all_permissions" && goAhead(d, { includeGated: true })?.option === first.n;
+        if (gated && first && APPROVE_RE.test(first.label) && params.confirm !== true && !allowed) {
           throw new GatewayError("needs_confirmation", `this menu asks to run a ${gated}, which is the owner's call: use their existing authorization or ask them, then call again with confirm: true`, { dialog_id: dialogId(d), menu: d.text });
         }
         if (!d.multi) {
@@ -223,7 +228,9 @@ export function answerOps(g: Gateway): Record<string, Op> {
           if (text && !first.free_text) throw new GatewayError("invalid_params", `option ${first.n} ("${first.label}") takes no text; the options that do are marked free_text`);
         }
         const labels = chosen.map((n) => d.options[n - 1]!.label);
-        return { answered: { options: chosen, labels, ...(text ? { text } : {}) }, ...(await answerMenu(g.herdr, agent.pane_id, d, chosen, text)) };
+        const result = await answerMenu(g.herdr, agent.pane_id, d, chosen, text);
+        if (result.dialog?.dialog_id === dialogId(d)) throw new GatewayError("answer_not_applied", "the agent still shows the same menu after the answer keys; get_agent to read its current state before deciding whether to try again", { dialog_id: dialogId(d), menu: d.text });
+        return { answered: { dialog_id: dialogId(d), options: chosen, labels, ...(text ? { text } : {}) }, ...result };
       });
       if (!res) throw new GatewayError("agent_busy", "WorkDone is answering this agent's menu already; read_agent again in a few seconds");
       return res;

@@ -52,6 +52,19 @@ describe("inbox routing", () => {
     expect((await box.next(late.key.watch_id, late.key.cap, 0)).events).toEqual([]);
   });
 
+  test("a chat that takes an agent over gets what the agent told the lease it came from", async () => {
+    const box = new Inbox();
+    box.add("mac", [
+      report({ type: "message", lease: "L-old0001", pane_id: "w1:p1", excerpt: "told the old lease" }),
+      report({ type: "message", lease: "L-old0001", pane_id: "w2:p1", excerpt: "another agent's" }),
+    ]);
+    const w = opened(box, "mac", "L-new0001", { panes: ["w1:p1"] });
+    expect((await box.next(w.key.watch_id, w.key.cap, 0)).events.map((e) => e.excerpt)).toEqual(["told the old lease"]);
+    // The other pane's message stays with the lease that holds it.
+    const other = opened(box, "mac", "L-old0001", { panes: ["w2:p1"] });
+    expect((await box.next(other.key.watch_id, other.key.cap, 0)).events.map((e) => e.excerpt)).toEqual(["another agent's"]);
+  });
+
   test("events are handed out once, and a long poll wakes on a new one", async () => {
     const box = new Inbox();
     const w = opened(box, "mac", "L-abc123");
@@ -104,7 +117,7 @@ describe("inbox credentials", () => {
 });
 
 describe("inbox limits", () => {
-  test("a link that used up its rounds ends, and can't be opened again for an hour", async () => {
+  test("a link that used up its rounds ends, and can be opened again at once", async () => {
     let now = 0;
     const box = new Inbox(() => now);
     const w = opened(box, "mac", "L-abc123", { maxRounds: 2 });
@@ -112,9 +125,6 @@ describe("inbox limits", () => {
     const got = await box.next(w.key.watch_id, w.key.cap, 0);
     expect(got.events.map((e) => e.excerpt)).toEqual(["Which branch?", "second"]);
     expect(got.state).toMatchObject({ active: false, rounds: 2, ended: "reached its 2 rounds" });
-    expect(box.open("mac", "L-abc123")).toMatchObject({ ok: false, code: "cooldown" });
-    expect(box.open("mac", "L-abc123", { cap: w.key.cap })).toMatchObject({ ok: false, code: "cooldown" });
-    now += 3600_000;
     expect(box.open("mac", "L-abc123").ok).toBe(true);
   });
 

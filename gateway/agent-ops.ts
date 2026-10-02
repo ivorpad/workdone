@@ -2,7 +2,7 @@
 // start, wait for ready, first prompt), watches that report every turn of an agent,
 // and what each agent needs from its owner.
 
-import { approveMenus, dialogView } from "./answer-ops.ts";
+import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -55,7 +55,8 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
   const originalWatch = watchView(watched[agent.pane_id]);
   const watch = originalWatch ? { ...originalWatch, approval_policy: approvalPolicy(g.state, agent.pane_id, agent) } : null;
   const read = async (source: string) =>
-    known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: source !== "visible" }).catch(() => null));
+    source === "visible" ? await menuScreen(g.herdr, agent.pane_id).catch(() => "")
+      : known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: true }).catch(() => null));
   const visibleMenu = parseDialog(await read("visible"));
   if (agent.agent_status === "blocked" || visibleMenu) {
     const menu = visibleMenu;
@@ -170,14 +171,15 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const paneId = str(params, "pane_id", TARGET_RE);
       const text = str(params, "text").trim();
       if (!text) throw new GatewayError("invalid_params", "text is empty");
-      if (text.length > 4000) throw new GatewayError("invalid_params", "text exceeds 4000 characters");
       // The agent must be one Herdr sees, inside the allowed roots, as for every other op.
       const agents: any[] = (await g.herdr("agent.list", {})).agents ?? [];
       if (!agents.some((x) => x.pane_id === paneId && paneInScope(x, g.cfg.allowedRoots))) throw new GatewayError("not_found", `agent ${paneId} not found`);
       const lease = Object.entries(g.state.leases()).find(([, l]) => l.panes.includes(paneId))?.[0];
       if (!lease) throw new GatewayError("no_thread", "no ChatGPT thread holds this agent: ask the owner to link a chat with it first");
       g.state.addTold({ pane_id: paneId, text, at: new Date().toISOString() });
-      return { queued: true, lease, note: "delivered to the linked chat within about 20 s, if its link card is open" };
+      // Only the lease's tail: the agent prints this into its pane, which any chat can read,
+      // and the whole lease would let that chat drive this one's agents.
+      return { queued: true, lease: "…" + lease.slice(-4), note: "queued, not delivered yet: it reaches the chat (within about 20 s) only while that chat's link card is open, and is held up to an hour for one; if no reply comes, the chat is not listening" };
     },
 
     // Internal, used by the MCP server's notifier rather than by ChatGPT.
