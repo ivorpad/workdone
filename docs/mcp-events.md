@@ -2,7 +2,9 @@
 
 Use `agent.finished` and `agent.asks` for ChatGPT completion and question notifications. The [OpenAI MCP Events guide](https://developers.openai.com/plugins/build/mcp-events) is the protocol authority. ChatGPT accepts webhook subscriptions with MCP 2.0 / `2026-07-28`; Events polling and streaming are unavailable.
 
-This repo implements the server side. It has not been deployed or verified against a real ChatGPT callback. The recorded deployment still uses a No Auth tunnel app and permits no public callback egress. Keep `watch_here` / `watch_next` as a fallback until the checks below pass. Phone notifications continue separately. `tell` messages still need the card because these two event types do not cover them.
+Subscriptions only happen in ChatGPT **Work** chats (web, or the desktop app with Cloud selected) and dots. In a regular Chat, ChatGPT calls `events/list` but never `events/subscribe`. Mention the WorkDone Events plugin in a Work chat and ask it to subscribe; ChatGPT turns the request into a scheduled task triggered by the event.
+
+Verified on 2026-10-02 in a Work chat: `events/subscribe` with callback host `connectors.api.openai.com`, a passing callback challenge, `events_delivered` with status 200, and the chat posting about the finished agent on its own. Not yet checked: `agent.asks`, refresh past `refreshBefore`, unsubscribe from ChatGPT's side after a delivery, and a restart with deliveries pending (steps 5 to 7 below). Keep `watch_here` / `watch_next` for regular Chats. Phone notifications continue separately. `tell` messages still need the card because these two event types do not cover them.
 
 ## Subscription behavior
 
