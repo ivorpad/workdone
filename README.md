@@ -2,6 +2,12 @@
 
 WorkDone lets a ChatGPT chat run the coding agents (Claude Code, Codex, Cursor) that live in Herdr panes on your own machines. From the chat you can see what every agent is doing, read its last reply, start agents by name, prompt or steer them, and answer their permission menus. It also gives ChatGPT a file and shell API on the same machines.
 
+## Why
+
+I wanted to keep working with my agents while away from the keyboard: out walking or jogging, at the gym, or driving with CarPlay. ChatGPT's voice mode is already on the phone and in the car, so WorkDone makes it the voice front end. I ask what the agents are doing, hear their replies, start one with a task, or answer the question it's stuck on, all without a screen. That is also why agents have short names you can say out loud ("panda on extra high") and why misheard names are matched loosely.
+
+It is not a way around ChatGPT's or any agent's usage limits. The agents run on your own machines under your own accounts, exactly as they would if you typed to them.
+
 It is an MCP server, a small gateway per machine, a ChatGPT plugin with its skill, and a skill for the agents on the other end. One person built it for their own setup: a Mac that sleeps and an always-on Linux VPS (called `ovh` throughout), both on one tailnet.
 
 ```text
