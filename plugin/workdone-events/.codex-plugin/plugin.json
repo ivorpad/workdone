@@ -1,6 +1,6 @@
 {
   "name": "workdone-events",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Native event subscriptions for the Herdr agents behind WorkDone: ChatGPT is told when an agent finishes a turn or asks a question.",
   "author": {
     "name": "Ivor"
