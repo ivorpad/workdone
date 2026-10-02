@@ -13,10 +13,13 @@ const UNREACHABLE = /timed out|No route to host|Connection refused|Could not res
 // After a machine fails to connect, calls to it fail fast for this long instead of each
 // waiting out the connect timeout: a sleeping Mac would otherwise stall every listing.
 export const OFFLINE_MS = 60_000;
+// A connect that failed never reached the gateway, so it is safe to try again: one
+// relayed Tailscale packet lost must not take a machine out for OFFLINE_MS.
+export const CONNECT_RETRY_MS = 1000;
 
 let seq = 0;
 
-export function sshGateway(cfg: OvhConfig, now: () => number = Date.now): CallGateway {
+export function sshGateway(cfg: OvhConfig, now: () => number = Date.now, retryMs = CONNECT_RETRY_MS): CallGateway {
   const argv = new Map(Object.entries(cfg.machines).map(([name, t]) => [name, [t.binary, ...sshArgs(t)]]));
   const offline = new Map<string, { until: number; since: string; reason: string }>();
   return async (machine, op, params) => {
@@ -33,19 +36,29 @@ export function sshGateway(cfg: OvhConfig, now: () => number = Date.now): CallGa
       };
     }
     const id = `mcp-${Date.now()}-${++seq}`;
-    const proc = Bun.spawn(cmd, {
-      stdin: new TextEncoder().encode(JSON.stringify({ id, op, params }) + "\n"),
-      stdout: "pipe",
-      stderr: "pipe",
-      env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME ?? "/nonexistent" },
-    });
-    const timer = setTimeout(() => proc.kill(), cfg.requestTimeoutMs);
-    const [stdout, stderr, code] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
-      proc.exited,
-    ]);
-    clearTimeout(timer);
+    const run = async () => {
+      const proc = Bun.spawn(cmd, {
+        stdin: new TextEncoder().encode(JSON.stringify({ id, op, params }) + "\n"),
+        stdout: "pipe",
+        stderr: "pipe",
+        env: { PATH: "/usr/bin:/bin", HOME: process.env.HOME ?? "/nonexistent" },
+      });
+      const timer = setTimeout(() => proc.kill(), cfg.requestTimeoutMs);
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+        proc.exited,
+      ]);
+      clearTimeout(timer);
+      return { proc, stdout, stderr, code };
+    };
+    let { proc, stdout, stderr, code } = await run();
+    const unreachable = () => !stdout.trim() && code === 255 && UNREACHABLE.test(stderr);
+    if (unreachable()) {
+      console.error(JSON.stringify({ event: "gateway_connect_retry", machine, op, stderr: stderr.slice(0, 300) }));
+      await Bun.sleep(retryMs);
+      ({ proc, stdout, stderr, code } = await run());
+    }
 
     const line = stdout.split("\n").find((l) => l.trim());
     if (!line) {
