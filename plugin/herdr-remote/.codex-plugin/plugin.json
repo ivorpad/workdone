@@ -28,7 +28,7 @@
       "What are my agents doing right now, on both machines?",
       "Ask the idle relay agent to summarise its last change.",
       "Start an agent in a new worktree of relay and have it fix the lint errors.",
-      "Start a robin worker in relay on the automations task and let me know when it needs me."
+      "Start a Claude Opus worker in relay on the automations task and let me know when it needs me."
     ],
     "screenshots": []
   }

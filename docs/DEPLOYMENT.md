@@ -18,7 +18,7 @@ Three roles:
 
 Related documents, which this one does not repeat:
 
-- `README.md`: tools, capabilities, agent aliases, notifications, where the security checks live.
+- `README.md`: tools, capabilities, agent CLIs and models, notifications, where the security checks live.
 - `docs/INSTALL_AND_SETUP.md`: the original runbook and its security constraints. It uses Node and some old names. Where it differs, this document and the code win.
 - `docs/mcp-events.md` and `issuer/README.md`: native Events and the OAuth issuer.
 - `docs/chatgpt-link.md`: the link card, `tell`, the permission policies and the approval card.
@@ -43,7 +43,7 @@ Related documents, which this one does not repeat:
 13. [Phase 11: acceptance tests](#13-phase-11-acceptance-tests)
 14. [Phase 12 (optional): the server as a machine, and phone notifications](#14-phase-12-optional-the-server-as-a-machine-and-phone-notifications)
 15. [Phase 13 (optional): extra machines](#15-phase-13-optional-extra-machines)
-16. [Phase 14 (optional): capabilities and agent aliases](#16-phase-14-optional-capabilities-and-agent-aliases)
+16. [Phase 14 (optional): capabilities and agent models](#16-phase-14-optional-capabilities-and-agent-models)
 17. [Phase 15 (optional, experimental): native Events and OAuth issuer](#17-phase-15-optional-experimental-native-events-and-oauth-issuer)
 18. [Daily operation and updates](#18-daily-operation-and-updates)
 19. [Rotate the tunnel API key](#19-rotate-the-tunnel-api-key)
@@ -188,15 +188,15 @@ Backup first. Minimal changes to the example:
 - `allowedRoots`: `["<ALLOWED_ROOT>"]`. Each root must exist. `/` and `~` are rejected.
 - `repos`: `{}` or the real repos inside the roots. A repo outside the roots makes loading fail.
 - `herdrSocketPath`: `<HERDR_SOCKET>` if it is not the default one.
-- `agentAliases`: the example points at `~/.config/herdr-chatgpt/agent-aliases.json`. **If that file does not exist, the gateway does not start.** Either delete the key for now, or generate the file (§16.2).
-- `agentKinds`: only the CLIs installed on the workstation (`claude`, `codex`, `cursor`, `pi`).
+- `agentModels`: the example points at `~/.config/herdr-chatgpt/agent-models.json`. **If that file does not exist, the gateway does not start.** Either delete the key for now, or generate the file (§16.2).
+- `agentKinds`: optional. Without it the gateway offers every agent CLI installed on the machine (`claude`, `codex`, `cursor`, `opencode`, `pi` and the other kinds Herdr knows). List them to offer fewer.
 - On Linux: `shell` (for example `/usr/bin/zsh` or `/bin/bash`) and `extraPath` (remove `/opt/homebrew/bin`).
 - All `allow*` capabilities stay `false` in the initial install.
 
 ```bash
 cp -p ~/.config/herdr-chatgpt/gateway.json ~/.config/herdr-chatgpt/gateway.json.bak-$(date +%Y%m%d%H%M%S)
 # edit with jq or with the editor; minimal example:
-jq --arg root '<ALLOWED_ROOT>' '.allowedRoots = [$root] | .repos = {} | del(.agentAliases)' \
+jq --arg root '<ALLOWED_ROOT>' '.allowedRoots = [$root] | .repos = {} | del(.agentModels)' \
   ~/.config/herdr-chatgpt/gateway.json > /tmp/gw.json && install -m 600 /tmp/gw.json ~/.config/herdr-chatgpt/gateway.json && rm /tmp/gw.json
 ```
 
@@ -773,7 +773,7 @@ Verification: the `deploy-ovh.sh` output at the end includes a line with `"machi
 
 ---
 
-## 16. Phase 14 (optional): capabilities and agent aliases
+## 16. Phase 14 (optional): capabilities and agent models
 
 ### 16.1 Capabilities
 
@@ -792,21 +792,21 @@ Other useful switches:
 
 Verification: `bridge_status` on that machine shows the capability in `capabilities`.
 
-### 16.2 Agent aliases
+### 16.2 Agent models
 
-ChatGPT starts agents by alias (birds, trees, animals), never by CLI or model. On each machine:
+ChatGPT starts agents by CLI, model and effort ("claude opus high"). The model list says which models each CLI offers, always the newest version of each family. On each machine:
 
 ```bash
-bun scripts/agent-aliases.ts        # writes ~/.config/herdr-chatgpt/agent-aliases.json and prints the map
+bun scripts/agent-models.ts        # writes ~/.config/herdr-chatgpt/agent-models.json and prints the list
 ```
 
-and in its `gateway.json`, `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`. On machines without the repo, copy the script or copy the file generated on the workstation, so the names match.
+and in its `gateway.json`, `"agentModels": "~/.config/herdr-chatgpt/agent-models.json"`. On machines without the repo, copy the script, or copy the file generated on the workstation: a CLI missing on the machine that runs the script keeps the entries another machine wrote. Rerun it when a CLI ships a new model.
 
-**Warning for the human:** the script adds each CLI's full-access options to every alias (`FULL_ACCESS` in the script): Claude Code starts with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`. The agents will commit, push and delete without asking. If you do not want that, edit `FULL_ACCESS` before generating the file. Anything that must stay the owner's decision also needs a protection outside the agent (for example, branch protection on GitHub).
+**Warning for the human:** the script adds each CLI's full-access options to every model (`FULL_ACCESS` in the script): Claude Code starts with `--dangerously-skip-permissions`, Codex with `--dangerously-bypass-approvals-and-sandbox`, Cursor with `--force --trust` and OpenCode with `--auto`. The agents will commit, push and delete without asking. If you do not want that, edit `FULL_ACCESS` before generating the file. Anything that must stay the owner's decision also needs a protection outside the agent (for example, branch protection on GitHub).
 
-Each CLI needs its session logged in on each machine (`claude`, `codex login`, `cursor-agent login`…), **[HUMAN]**. OAuth sessions are not copied between machines: sharing a refresh token can log out the session on one of them.
+Each CLI needs its session logged in on each machine (`claude`, `codex login`, `cursor-agent login`, `opencode auth login`, pi's OpenRouter key…), **[HUMAN]**. OAuth sessions are not copied between machines: sharing a refresh token can log out the session on one of them.
 
-Verification: `bridge_status` lists the aliases in `agent_kinds`.
+Verification: `bridge_status` lists the CLIs in `agent_kinds` and each CLI's models under `agents`.
 
 ---
 
@@ -1005,7 +1005,7 @@ If a machine sleeps or leaves the tailnet, its calls return `machine_offline` fo
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | `bun install` on the server: `UnknownLockfileVersion` | Server Bun differs from the workstation's | Install the workstation's version at `/usr/local/bin/bun` (phase 2) |
-| The gateway does not start: error reading `agent-aliases.json` | The example `gateway.json` points at an alias file that does not exist | Generate it (§16.2) or remove `agentAliases` |
+| The gateway does not start: error reading `agent-models.json` | The example `gateway.json` points at a model file that does not exist | Generate it (§16.2) or remove `agentModels` |
 | `allowed root is too broad` or `repo … is outside allowedRoots` | Root `/` or `~`, or repo outside the roots | Specific roots that exist; repos inside them |
 | `Host key verification failed` | Server `known_hosts` empty or with a different key | Repeat phase 5 comparing fingerprints. Never `StrictHostKeyChecking=no` |
 | `Permission denied (publickey)` from the server | `authorized_keys` line missing, `from=` with a different IP, or Tailscale SSH answering on 22 | Check the line and `RunSSH`. If sshd sees `127.0.0.1` or another IP instead of the tailnet one, Tailscale is running in userspace mode |

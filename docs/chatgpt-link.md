@@ -23,7 +23,7 @@ For manual approvals in this thread, claim the agent and subscribe to `agent.ask
 {"machine":"mac","target":"w5M:pA","lease":"LEASE_FROM_CLAIM_AGENTS","mode":"ask","ttl_seconds":3600}
 ```
 
-`set_agent_approval` establishes the watch if needed. Registering subscriptions first also covers a menu already on screen; use `get_agent` to reconcile its current state. An automatic policy can approve that current menu immediately and returns those choices in `auto_approved`. In ChatGPT, a request such as “Ask me before granting maple on mac any permission, and show its completion here” supplies the policy and notification task. [The Events runbook](mcp-events.md) covers the authenticated connection. Use `watch_here` for the notification task while Events is unavailable.
+`set_agent_approval` establishes the watch if needed. Registering subscriptions first also covers a menu already on screen; use `get_agent` to reconcile its current state. An automatic policy can approve that current menu immediately and returns those choices in `auto_approved`. In ChatGPT, a request such as “Ask me before granting the relay agent on mac any permission, and show its completion here” supplies the policy and notification task. [The Events runbook](mcp-events.md) covers the authenticated connection. Use `watch_here` for the notification task while Events is unavailable.
 
 The default policy lifetime is 24 hours; `ttl_seconds` accepts 60 through 86400 and is capped by the current lease expiry. `get_agent.watch.approval_policy` shows the effective override, or null. Policies are stored durably with the lease and bound to the agent kind, session and watch generation. Release, takeover, expiry, a detected session change or stopping its watch removes that override's authority. The machine default then applies. `all_permissions` requires a stable Herdr agent session ID and returns `session_required` without one. Older Herdr versions without session identity cannot detect a silent restart into the same agent kind for `ask` or `permissions`; renew the policy deliberately when restarting.
 
@@ -121,13 +121,11 @@ The native implementation is ready for local verification, but production cutove
 
 ## Launch permissions and WorkDone policy
 
-The alias generator (`scripts/agent-aliases.ts`, `FULL_ACCESS`) adds `--dangerously-skip-permissions` to Claude Code and `--dangerously-bypass-approvals-and-sandbox` to Codex; Cursor keeps `--force --trust`. The recorded 2026-09-30 OVH test ran robin and maple shell commands without prompts. Agents already running keep the mode they started with.
+The model list generator (`scripts/agent-models.ts`, `FULL_ACCESS`) adds `--dangerously-skip-permissions` to Claude Code, `--dangerously-bypass-approvals-and-sandbox` to Codex, `--force --trust` to Cursor and `--auto` to OpenCode. The recorded 2026-09-30 OVH test ran Claude Code and Codex shell commands without prompts. Agents already running keep the mode they started with.
 
 WorkDone's policy only handles menus that the harness actually shows. Setting `ask` cannot restore permissions bypassed by a launch flag or create Pi permission checks where no extension provides them. To receive manual permission notifications, start the agent in a harness mode that asks, then set `ask` before its task. Removing bypass flags changes launch configuration and is a separate operator choice. What must always stay the owner's call also needs enforcement outside the agent, for example GitHub branch protection on `main`.
 
-Before this, the slowness with Codex agents was measured, not guessed: with approvals on, maple showed 19 permission menus in 25 minutes and WorkDone answered each about 2.5 s after it appeared (Herdr's `blocked` event to the audit's `auto_approve`).
-
-maple is now GPT-6.1 Sol (`gpt-6.1-sol`, Codex's newest) at ultra; GPT-6 Astra, maple's old model, is walnut.
+Before this, the slowness with Codex agents was measured, not guessed: with approvals on, one Codex agent showed 19 permission menus in 25 minutes and WorkDone answered each about 2.5 s after it appeared (Herdr's `blocked` event to the audit's `auto_approve`).
 
 ## What ChatGPT does and doesn't do (seen 2026-09-30)
 

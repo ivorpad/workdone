@@ -118,12 +118,12 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
     const result: any = await gateway.request(op, params);
     // The notifier polls every few seconds; only polls that found something are worth a line.
     if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ...auditOutcome(op, result), ms: Date.now() - started });
-    respond({ id, ok: true, result: gateway.mask.result(op, result, params.target ?? params.pane_id) });
+    respond({ id, ok: true, result });
   } catch (err) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));
     const details = e.details as { dialog_id?: unknown; menu?: unknown } | undefined;
     audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { dialog_id: details.dialog_id } : {}), ms: Date.now() - started });
-    respond({ id, ok: false, error: { code: e.code, message: gateway.mask.text(e.message), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { details: { dialog_id: details.dialog_id, ...(typeof details.menu === "string" ? { menu: gateway.mask.text(details.menu) } : {}) } } : {}) } });
+    respond({ id, ok: false, error: { code: e.code, message: e.message, ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { details: { dialog_id: details.dialog_id, ...(typeof details.menu === "string" ? { menu: details.menu } : {}) } } : {}) } });
   }
 }
 

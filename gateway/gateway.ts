@@ -18,7 +18,7 @@ import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
 import { layoutOps } from "./layout-ops.ts";
 import { leaseOps } from "./leases.ts";
-import { Mask, aliasArgs } from "./mask.ts";
+import { findModel, modelArgs } from "./models.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { StateStore } from "./state.ts";
 import { agentReply } from "./transcript.ts";
@@ -55,13 +55,11 @@ const EFFORT_WORDS: Record<string, string> = {
 
 export class Gateway {
   readonly state: StateStore;
-  readonly mask: Mask;
   private extra: Record<string, Op>;
   readonly leases: ReturnType<typeof leaseOps>;
 
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
-    this.mask = new Mask(cfg.agentAliases, cfg.redact, cfg.agentKinds, this.state);
     this.leases = leaseOps(this);
     this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
@@ -184,12 +182,15 @@ export class Gateway {
           herdr_protocol: pong.protocol,
           allowed_roots: cfg.allowedRoots,
           repos: Object.keys(cfg.repos),
-          agent_kinds: this.mask.on ? Object.keys(cfg.agentAliases) : cfg.agentKinds,
-          ...(this.mask.on && {
-            agents: Object.fromEntries(Object.entries(cfg.agentAliases).map(([name, a]) => [
-              name, { efforts: Object.keys(a.efforts), effort: a.effort, ...(a.note && { note: a.note }) },
-            ])),
-          }),
+          agent_kinds: cfg.agentKinds,
+          // Per CLI, the models spawn_agent can name, each its family's newest version.
+          agents: Object.fromEntries(cfg.agentKinds.map((kind) => {
+            const families = cfg.agentModels[kind] ?? {};
+            return [kind, {
+              default_model: Object.entries(families).find(([, m]) => m.default)?.[0] ?? null,
+              models: Object.fromEntries(Object.entries(families).map(([name, m]) => [name, { model: m.model, efforts: Object.keys(m.efforts), effort: m.effort }])),
+            }];
+          })),
           capabilities: {
             exec: cfg.allowExec,
             file_read: cfg.allowFileRead,
@@ -362,7 +363,7 @@ export class Gateway {
 
       case "start_agent": {
         const pane = await this.shellPane(str(params, "pane_id", TARGET_RE));
-        const { kind, alias, args } = this.agentKind(params);
+        const { kind, model, args } = this.agentKind(params);
         const name = str(params, "name", AGENT_NAME_RE);
         // A shell pane has no agent, so anything still watched there is left over from one that exited.
         this.state.unwatch(pane.pane_id);
@@ -382,7 +383,6 @@ export class Gateway {
           if (!(err instanceof GatewayError && err.code === "agent_not_ready")) throw err;
           notReady = err;
         }
-        this.mask.started(pane.pane_id, name, alias);
         // A new agent can open on menus that only want a go-ahead: folder trust, an update notice.
         const got = await approveMenus(cfg, this.herdr, pane.pane_id, "start_agent", { waitMs: 20_000 });
         if (got.approved.length) {
@@ -445,25 +445,35 @@ export class Gateway {
     }
   }
 
-  // The Herdr kind and args for a new agent. With aliases configured, kind names an
-  // alias and its args, at the effort asked for, come first; a plain Herdr kind still works.
-  agentKind(params: Params): { kind: string; alias: string; args: string[] } {
-    // Names often arrive through dictation: "Tiger.", "Extra High".
-    const want = spoken(str(params, "kind"));
+  // The Herdr kind and args for a new agent: the CLI (kind), then a model family from
+  // agentModels at the effort asked for, else the CLI's default model there, else the
+  // CLI on its own default with no model args.
+  agentKind(params: Params): { kind: string; model: string | null; args: string[] } {
+    // Names often arrive through dictation: "Claude.", "Gemini Flash", "Extra High".
+    const kind = spoken(str(params, "kind"));
+    const asked = optStr(params, "model");
     const e = optStr(params, "effort");
     const effort = e === undefined ? undefined : (EFFORT_WORDS[spoken(e)] ?? spoken(e));
     const extra = this.agentArgs(params);
-    const a = Object.hasOwn(this.cfg.agentAliases, want) ? this.cfg.agentAliases[want]! : null;
-    if (a) {
-      try {
-        return { kind: a.kind, alias: want, args: [...aliasArgs(a, effort), ...extra] };
-      } catch (err) {
-        throw new GatewayError("invalid_params", `${want}: ${(err as Error).message}`);
+    if (!this.cfg.agentKinds.includes(kind)) throw new GatewayError("invalid_params", `kind must be one of ${this.cfg.agentKinds.join(", ")}`);
+    const families = this.cfg.agentModels[kind] ?? {};
+    let name: string | undefined;
+    if (asked !== undefined) {
+      name = findModel(families, spoken(asked)) ?? undefined;
+      if (!name) {
+        const offered = Object.keys(families);
+        throw new GatewayError("invalid_params", offered.length ? `${kind} model must be one of ${offered.join(", ")}` : `no models are listed for ${kind} on this machine; omit model to use its default`);
       }
+    } else name = Object.entries(families).find(([, m]) => m.default)?.[0];
+    if (!name) {
+      if (effort !== undefined) throw new GatewayError("invalid_params", `${kind} has no model list here, so it takes no effort`);
+      return { kind, model: null, args: extra };
     }
-    if (this.cfg.agentKinds.includes(want)) return { kind: want, alias: this.mask.aliasOf(null, want), args: extra };
-    const offered = this.mask.on ? Object.keys(this.cfg.agentAliases) : this.cfg.agentKinds;
-    throw new GatewayError("invalid_params", `kind must be one of ${offered.join(", ")}`);
+    try {
+      return { kind, model: name, args: [...modelArgs(families[name]!, effort), ...extra] };
+    } catch (err) {
+      throw new GatewayError("invalid_params", `${kind} ${name}: ${(err as Error).message}`);
+    }
   }
 
   // Extra command-line arguments for a new agent. They can do anything a shell can

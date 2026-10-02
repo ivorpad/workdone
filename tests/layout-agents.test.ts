@@ -520,77 +520,85 @@ describe("cursor and managed agents", () => {
   });
 });
 
-describe("agent aliases", () => {
-  const agentAliases = {
-    otter: { kind: "claude", args: ["--model", "opus", "--effort", "{effort}"], efforts: ["low", "high", "xhigh", "max"], effort: "high" },
-    fox: { kind: "cursor", args: ["--model", "{effort}"], efforts: { high: "grok-4.7-high", "high-fast": "grok-4.7-high-fast" } },
+describe("agent models", () => {
+  const agentModels = {
+    claude: {
+      opus: { model: "claude-opus-5-5", args: ["--model", "claude-opus-5-5", "--effort", "{effort}"], efforts: ["low", "high", "xhigh", "max"], effort: "high", default: true },
+      sonnet: { model: "claude-sonnet-5-5", args: ["--model", "claude-sonnet-5-5", "--effort", "{effort}"], efforts: ["low", "high"], effort: "high" },
+    },
+    cursor: {
+      "gemini-flash": { model: "gemini-3.8-flash", args: ["--model", "{effort}"], efforts: { high: "gemini-3.8-flash-high" } },
+      grok: { model: "grok-4.7", args: ["--model", "{effort}"], efforts: { high: "grok-4.7-high", "high-fast": "grok-4.7-high-fast" } },
+    },
   };
+  const opts = { agentModels, agentKinds: ["claude", "cursor", "codex"] };
+  const starts = (sent: any[]) => sent.filter(([m]) => m === "agent.start").map(([, p]) => [p.kind, p.args]);
 
-  test("effort picks the args, and defaults to the alias's own", async () => {
-    const { gw, sent } = gateway({ agentAliases });
-    await gw.handle("spawn_agent", { kind: "fox", effort: "high-fast", name: "a", repo: "app" });
-    await gw.handle("spawn_agent", { kind: " Otter.", effort: "Max", name: "b", repo: "app" });
-    await gw.handle("spawn_agent", { kind: "Fox", effort: "High Fast", name: "d", repo: "app" });
-    await gw.handle("spawn_agent", { kind: "otter", effort: "extra high", name: "e", repo: "app" });
-    const starts = sent.filter(([m]) => m === "agent.start").map(([, p]) => p.args);
-    expect(starts).toEqual([
-      ["--model", "grok-4.7-high-fast"], ["--model", "opus", "--effort", "max"],
-      ["--model", "grok-4.7-high-fast"], ["--model", "opus", "--effort", "xhigh"],
+  test("kind, model and effort pick the args, loosely as dictated", async () => {
+    const { gw, sent } = gateway(opts);
+    await gw.handle("spawn_agent", { kind: "cursor", model: "grok", effort: "high-fast", name: "a", repo: "app" });
+    await gw.handle("spawn_agent", { kind: " Claude.", model: "Opus", effort: "Max", name: "b", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "cursor", model: "Gemini Flash", name: "c", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "claude", model: "claude-sonnet-5-5", effort: "low", name: "d", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "claude", effort: "extra high", name: "e", repo: "app" });
+    expect(starts(sent)).toEqual([
+      ["cursor", ["--model", "grok-4.7-high-fast"]],
+      ["claude", ["--model", "claude-opus-5-5", "--effort", "max"]],
+      ["cursor", ["--model", "gemini-3.8-flash-high"]],
+      ["claude", ["--model", "claude-sonnet-5-5", "--effort", "low"]],
+      // No model: the CLI's default model in the list.
+      ["claude", ["--model", "claude-opus-5-5", "--effort", "xhigh"]],
     ]);
-    await expect(gw.handle("spawn_agent", { kind: "fox", effort: "max", name: "c", repo: "app" })).rejects.toThrow("fox: effort must be one of high, high-fast");
+  });
+
+  test("a CLI with no listed models starts on its own default and takes no effort", async () => {
+    const { gw, sent } = gateway(opts);
+    await gw.handle("spawn_agent", { kind: "codex", name: "a", repo: "app" });
+    await gw.handle("spawn_agent", { kind: "cursor", name: "b", repo: "app" });
+    expect(starts(sent)).toEqual([["codex", []], ["cursor", []]]);
+    await expect(gw.handle("spawn_agent", { kind: "codex", effort: "high", name: "c", repo: "app" })).rejects.toThrow("takes no effort");
+  });
+
+  test("unknown kinds, models and efforts are refused with what is offered", async () => {
+    const { gw } = gateway(opts);
+    await expect(gw.handle("spawn_agent", { kind: "gemini", name: "x", repo: "app" })).rejects.toThrow("kind must be one of claude, cursor, codex");
+    await expect(gw.handle("spawn_agent", { kind: "cursor", model: "opus", name: "x", repo: "app" })).rejects.toThrow("cursor model must be one of gemini-flash, grok");
+    await expect(gw.handle("spawn_agent", { kind: "cursor", model: "grok", effort: "max", name: "x", repo: "app" })).rejects.toThrow("cursor grok: effort must be one of high, high-fast");
+  });
+
+  test("the result names the model, and bridge_status lists models per CLI", async () => {
+    const { gw } = gateway(opts);
+    const res: any = await gw.handle("spawn_agent", { kind: "claude", model: "sonnet", name: "w", repo: "app" });
+    expect(res).toMatchObject({ kind: "claude", model: "sonnet" });
     const status: any = await gw.handle("bridge_status", {});
-    expect(status.agents).toEqual({ otter: { efforts: ["low", "high", "xhigh", "max"], effort: "high" }, fox: { efforts: ["high", "high-fast"], effort: "high" } });
+    expect(status.agent_kinds).toEqual(["claude", "cursor", "codex"]);
+    expect(status.agents.claude).toEqual({
+      default_model: "opus",
+      models: {
+        opus: { model: "claude-opus-5-5", efforts: ["low", "high", "xhigh", "max"], effort: "high" },
+        sonnet: { model: "claude-sonnet-5-5", efforts: ["low", "high"], effort: "high" },
+      },
+    });
+    expect(status.agents.codex).toEqual({ default_model: null, models: {} });
   });
 
-  test("a machine offers only the aliases of kinds it has", () => {
-    const cfg = loadConfig({ allowedRoots: ["/srv/allowed"], agentKinds: ["claude"], agentAliases });
-    expect(Object.keys(cfg.agentAliases)).toEqual(["otter"]);
+  test("a machine offers only the models of CLIs it has", () => {
+    const cfg = loadConfig({ allowedRoots: ["/srv/allowed"], agentKinds: ["claude"], agentModels });
+    expect(Object.keys(cfg.agentModels)).toEqual(["claude"]);
   });
 
-  test("a bad alias fails the config", () => {
-    const load = (a: unknown) => () => loadConfig({ allowedRoots: ["/srv/allowed"], agentAliases: { x: a } });
-    expect(load({ kind: "claude", args: ["--effort", "{effort}"] })).toThrow("exactly when efforts");
-    expect(load({ kind: "claude", args: ["--effort", "{effort}"], efforts: ["low"], effort: "max" })).toThrow("not in efforts");
+  test("a bad model list fails the config, including an old alias file", () => {
+    const load = (m: unknown) => () => loadConfig({ allowedRoots: ["/srv/allowed"], agentModels: m });
+    expect(load({ claude: { opus: { model: "x", args: ["--effort", "{effort}"] } } })).toThrow("exactly when efforts");
+    expect(load({ claude: { opus: { model: "x", args: ["--effort", "{effort}"], efforts: ["low"], effort: "max" } } })).toThrow("not in efforts");
+    expect(() => loadConfig({ allowedRoots: ["/srv/allowed"], agentAliases: { otter: { kind: "claude", args: [] } } })).toThrow("old alias entry");
   });
 
-  test("an alias starts its kind with its args, and the result names the alias", async () => {
-    const { gw, sent } = gateway({ agentAliases });
-    const res: any = await gw.handle("spawn_agent", { kind: "otter", name: "w", repo: "app" });
-    expect(sent.find(([m]) => m === "agent.start")![1]).toMatchObject({ kind: "claude", args: ["--model", "opus", "--effort", "high"] });
-    const shown = JSON.stringify(gw.mask.result("spawn_agent", res));
-    expect(shown).toContain('"kind":"otter"');
-    expect(shown).not.toMatch(/claude/i);
-    // The alias sticks to the pane and the name, not just the kind.
-    const listed: any = gw.mask.result("list_agents", await gw.handle("list_agents", {}));
-    expect(listed.agents.find((a: any) => a.name === "w").agent).toBe("otter");
-    expect(listed.agents.find((a: any) => a.pane_id === "w1:p1").agent).toBe("otter");
-  });
-
-  test("screens, titles and errors lose vendor and model names but keep paths", async () => {
-    const { gw } = gateway({ agentAliases });
-    screen = TRUST_SCREEN + "\n claude-opus-5-thinking-high · Opus 5.5 · ~/.claude/x";
-    const res: any = gw.mask.result("read_agent", await gw.handle("read_agent", { target: "w4:p1", source: "visible" }), "w4:p1");
-    expect(res.agent.agent).toBe("fox");
-    expect(res.agent.cwd).toBe("/srv/allowed/app");
-    expect(res.text).toContain("live $ fox");
-    expect(res.text).toContain("/srv/allowed/app");
-    expect(res.text).not.toMatch(/cursor-agent|Cursor|grok|claude|Opus/);
-    expect(gw.mask.text("pane w1 runs Claude Code")).toBe("pane w1 runs agent");
-  });
-
-  test("bridge_status offers the aliases, and file ops are not touched", async () => {
-    const { gw } = gateway({ agentAliases });
-    const status: any = await gw.handle("bridge_status", {});
-    expect(status.agent_kinds).toEqual(["otter", "fox"]);
-    await expect(gw.handle("spawn_agent", { kind: "gemini", name: "x", repo: "app" })).rejects.toThrow("kind must be one of otter, fox");
-    const file = { path: "/srv/allowed/app/CLAUDE.md", text: "Claude reads this" };
-    expect(gw.mask.result("read_file", file)).toEqual(file);
-  });
-
-  test("without aliases nothing is masked", async () => {
-    const { gw } = gateway();
-    const res = { agent: { pane_id: "w1:p1", agent: "claude" }, text: "Claude Code" };
-    expect(gw.mask.result("read_agent", res)).toEqual(res);
+  test("agent text keeps vendor and model names", async () => {
+    const { gw } = gateway(opts);
+    screen = TRUST_SCREEN + "\n claude-opus-5-thinking-high · Opus 5.5";
+    const res: any = await gw.handle("read_agent", { target: "w4:p1", source: "visible" });
+    expect(res.text).toContain("Opus 5.5");
   });
 });
 

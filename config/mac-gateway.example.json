@@ -7,8 +7,8 @@
       "tasks": { "test": "bun test", "typecheck": "bun run typecheck" }
     }
   },
-  "agentKinds": ["claude", "codex", "cursor", "pi"],
-  "agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json",
+  "agentKinds": ["claude", "codex", "cursor", "opencode", "pi"],
+  "agentModels": "~/.config/herdr-chatgpt/agent-models.json",
   "allowExec": false,
   "allowFileRead": false,
   "allowFileWrite": false,

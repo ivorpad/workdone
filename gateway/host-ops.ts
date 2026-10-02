@@ -26,11 +26,11 @@ function rawPath(params: Params, key: string): string {
   return p;
 }
 
-// The gateway's own files: its config (with the alias map that names each agent's model)
-// and its state. Out of reach even when an allowed root contains them.
+// The gateway's own files: its config and its state. Out of reach even when an allowed
+// root contains them.
 function privateDirs(cfg: GatewayConfig): string[] {
   const conf = process.env.HERDR_GATEWAY_CONFIG ?? join(process.env.HOME ?? "/", ".config/herdr-chatgpt/gateway.json");
-  return [cfg.stateDir, dirname(conf), ...cfg.privatePaths].map((p) => canonical(p));
+  return [cfg.stateDir, dirname(conf)].map((p) => canonical(p));
 }
 
 function checkRoots(cfg: GatewayConfig, p: string): string {

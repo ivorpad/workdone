@@ -21,16 +21,14 @@ describe("paths", () => {
     await expect(full.read_file!({ path: join(root, "escape", "secret.txt") })).rejects.toMatchObject({ code: "path_not_allowed" });
     await expect(full.list_dir!({ path: join(root, "escape") })).rejects.toMatchObject({ code: "path_not_allowed" });
   });
-  test("the gateway's state and alias map are refused even inside a root", async () => {
+  test("the gateway's state is refused even inside a root", async () => {
     const own = realpathSync(mkdtempSync(join(tmpdir(), "herdr-host-own-")));
     const inside = join(own, "gw-state");
     mkdirSync(inside);
     writeFileSync(join(inside, "watch.json"), "{}");
-    writeFileSync(join(own, "aliases.json"), JSON.stringify({ otter: { kind: "claude", args: [] } }));
     writeFileSync(join(own, "notes.txt"), "fine");
-    const ops = hostOps(loadConfig({ ...base, allowedRoots: [own], stateDir: inside, allowFileRead: true, agentAliases: join(own, "aliases.json") }), () => own);
+    const ops = hostOps(loadConfig({ ...base, allowedRoots: [own], stateDir: inside, allowFileRead: true }), () => own);
     await expect(ops.read_file!({ path: join(inside, "watch.json") })).rejects.toMatchObject({ code: "path_not_allowed" });
-    await expect(ops.read_file!({ path: join(own, "aliases.json") })).rejects.toMatchObject({ code: "path_not_allowed" });
     expect(await ops.read_file!({ path: join(own, "notes.txt") })).toBeDefined();
   });
   test("relative paths are refused", async () => {

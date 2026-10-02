@@ -25,8 +25,9 @@ const source = z
   .describe("Which snapshot to read. recent_unwrapped (default) suits transcripts and logs.");
 const timeoutMs = z.number().int().min(1000).max(110_000).optional().describe("Wait budget in ms, at most 110000.");
 const layoutKind = z.enum(["pane", "tab", "workspace"]);
-const agentKind = z.string().describe("Agent kind, one of bridge_status agent_kinds for that machine.");
-const effort = z.string().optional().describe("Reasoning effort, one of bridge_status agents[kind].efforts (default: agents[kind].effort).");
+const agentKind = z.string().describe("The agent CLI, one of bridge_status agent_kinds for that machine (claude, codex, cursor, opencode, pi, ...).");
+const model = z.string().optional().describe("Model family for that CLI, one of bridge_status agents[kind].models (e.g. opus, sol, grok), always its newest version. Omit for agents[kind].default_model, or the CLI's own default when there is none.");
+const effort = z.string().optional().describe("Reasoning effort, one of that model's efforts in bridge_status (default: the model's effort). Needs a model or a default_model.");
 const watch = z.boolean().optional().describe("Watch the agent for completion, questions and manual permission notifications, and answer recognized menus according to its approval policy (default true).");
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -186,6 +187,7 @@ export const TOOLS: Record<string, ToolDef> = {
       "Start a new agent in one call: make a place for it, start it, wait until it is ready, and optionally send a first prompt. Placement: worktree_branch (with repo) makes a new git worktree; split_from splits that pane; workspace_id adds a tab; otherwise a new workspace. Startup menus are answered only when the effective approval policy allows them (auto_approved). Watching reports completion, questions and manual permissions. blocked means an unanswered menu, which can be a permission or a question: get_agent shows choices. To establish subscriptions and an ask policy before task work begins, omit prompt, then configure and prompt the new agent.",
     input: {
       kind: agentKind,
+      model,
       effort,
       name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe("Unique lowercase name for the agent."),
       repo: repo.optional(),
@@ -207,6 +209,7 @@ export const TOOLS: Record<string, ToolDef> = {
     input: {
       pane_id: paneId,
       kind: agentKind,
+      model,
       effort,
       name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe("Unique lowercase name for the agent."),
       args: z.array(z.string()).max(20).optional().describe("Extra command-line arguments for the agent (needs exec)."),

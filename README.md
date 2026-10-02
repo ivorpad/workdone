@@ -6,7 +6,7 @@ WorkDone lets a ChatGPT chat run the coding agents (Claude Code, Codex, Cursor) 
 
 ## Why
 
-I wanted to keep working with my agents while away from the keyboard: out walking or jogging, at the gym, or driving with CarPlay. ChatGPT's voice mode is already on the phone and in the car, so WorkDone makes it the voice front end. I ask what the agents are doing, hear their replies, start one with a task, or answer the question it's stuck on, all without a screen. That is also why agents have short names you can say out loud ("panda on extra high") and why misheard names are matched loosely.
+I wanted to keep working with my agents while away from the keyboard: out walking or jogging, at the gym, or driving with CarPlay. ChatGPT's voice mode is already on the phone and in the car, so WorkDone makes it the voice front end. I ask what the agents are doing, hear their replies, start one with a task, or answer the question it's stuck on, all without a screen. That is also why you start agents by saying the CLI, model and effort ("claude opus on extra high") and why misheard words are matched loosely.
 
 It is not a way around ChatGPT's or any agent's usage limits. The agents run on your own machines under your own accounts, exactly as they would if you typed to them.
 
@@ -43,7 +43,7 @@ Everything runs on Bun.
 
 ## Read this first
 
-This gives a chat model a shell on your machines. Each gateway has capability flags (below), allowed roots and a list of operations that need the owner's confirmation, but with `allowExec` on, ChatGPT can run anything your user can. The agent aliases also start every agent with its permission prompts off. Read [Where the security checks live](#where-the-security-checks-live) before you deploy, and keep the No Auth listener (port 8787, reached only through the Secure MCP Tunnel) off the public internet. Only the OAuth listener for Events may be exposed.
+This gives a chat model a shell on your machines. Each gateway has capability flags (below), allowed roots and a list of operations that need the owner's confirmation, but with `allowExec` on, ChatGPT can run anything your user can. The generated model list also starts every agent with its permission prompts off. Read [Where the security checks live](#where-the-security-checks-live) before you deploy, and keep the No Auth listener (port 8787, reached only through the Secure MCP Tunnel) off the public internet. Only the OAuth listener for Events may be exposed.
 
 ## Status
 
@@ -86,7 +86,7 @@ Every tool takes an optional `machine` (`mac`, `ovh`, and whatever `scripts/add-
 - **Menus and steering:** `answer_agent` answers the menu an agent shows (approval, question, folder trust, update notice) by option number, plus `text` for an option that opens a field, and `options` for a multi-select. `gateway/dialog.ts` reads the menu off the screen and knows each CLI's keys: Claude Code and Codex take the digit (Claude's folder trust has no numbers, so arrows and enter), Cursor the key in parentheses or the letter in brackets, and a multi-select flips boxes with digits then tabs to its review step. `steer_agent` types a message into a working agent: Claude Code and Codex queue it until the current tool call ends, and Cursor gets a second enter so it goes in at once. It refuses while a menu is up, since its enter would answer the menu, and prompts an idle agent instead. `get_agent`, `read_agent` and `overview` return the parsed menu as `choices`. Codex's folder trust, update and model notices, which Herdr reads as idle, count as `attention: dialog` too, and `prompt_agent` refuses to type into any of them. Keys go one at a time with a pause, and text apart from its enter: in one burst the CLIs dropped keys or took the enter before the text. Letters go as Herdr key presses, not typed text: Cursor's approval menus ignore a pasted `y`. The screens this was built from are in `tests/fixtures/screens`.
 - **Permission policies:** `set_agent_approval` saves `ask`, `permissions`, `all_permissions` or `default` for one claimed agent. `ask` leaves permission, trust and notice menus for the owner's decision. `permissions` approves recognized ordinary menus using allow once; `all_permissions` also covers recognized gated agent permissions when the owner explicitly authorizes that scope. `default` removes the override. Policies expire within 24 hours and stop on lease release, takeover, unwatch or a detected session change. They govern visible menus, not an agent's launch flags, ordinary questions or direct shell commands. [Policy details](docs/chatgpt-link.md#choose-how-an-agent-handles-permissions) include session and launch-mode limits.
 - **Go-ahead menus:** `goAhead` in `gateway/dialog.ts` recognizes command and file permissions, folder trust, and routine update and model notices. The notifier and agent operations answer these only when the effective policy allows them. They use allow once, skip updates and keep the pinned model; persistent always-allow rules are not selected. Results list successful answers in `auto_approved`, and the audit log records `auto_approve` with the menu text. `choices` includes `kind` (`permission`, `trust`, `notice`, `gated`, `question`), `go_ahead` and `dialog_id`. `blocked` can mean a permission or a question. Once the owner answers or delegates a choice, ChatGPT rereads the menu and calls `answer_agent` with the current `expected_dialog_id`; `ask` does not prevent that manual answer. A new prompt or steering message cannot answer a menu. One process answers a pane at a time. Harness deny rules refuse without a menu and cannot be approved here. `"autoApprove": false` disables automatic approval.
-- **Agent aliases:** ChatGPT starts agents by names, never by CLI or model; the list is in [Agents](#agents). With `agentAliases` in a gateway config, each name fixes the Herdr kind, the model and the efforts on offer. `bridge_status` lists the names as `agent_kinds` and their efforts under `agents`, and `spawn_agent`/`start_agent` take `kind` and `effort`. Replies show the name an agent was started as (agents started another way get the first name of their kind, or `agent`), and vendor and model names in agent text, titles and errors are replaced with it. The words come from `redact` (default list in `gateway/mask.ts`, matched case-sensitively, so a plain "cursor" in prose is kept). File and shell ops (`read_file`, `exec` and the rest) return content unchanged, and so do ID and path fields. The scrub works on words, so an agent that describes itself in some other way can still give itself away. The file tools refuse the gateway's config directory, its state directory and the alias file even inside an allowed root. `exec` is a shell, though: with it on, ChatGPT can `cat` the alias file or read `ps`, so the names keep model names out of what the agent tools return but are not a secret from a caller with exec.
+- **Agents by CLI, model and effort:** `spawn_agent` and `start_agent` take `kind` (the CLI), `model` (a family such as `opus` or `grok`) and `effort`; see [Agents](#agents). `bridge_status` lists each machine's CLIs in `agent_kinds` and, under `agents`, each CLI's models with their efforts and its `default_model`.
 - **Owner's calls:** `gateway/gated.ts` gates git push, commit, merge, rebase, reset --hard, branch delete and clean, GitHub writes (`gh pr/issue/release` edits, `gh api` POST/PATCH/PUT/DELETE), `rm -rf` and deploys. `answer_agent` accepts `confirm: true` when the owner's existing instruction or current decision authorizes the operation; ChatGPT should not request the same authorization again. A saved `all_permissions` policy can also approve a recognized gated agent permission. Direct `exec`, `run_command_in_pane` and `send_pane_input` still require `confirm: true` for covered authorization. Without it, these tools return `needs_confirmation`. Audit records identify confirmed calls and automatic policy answers.
 - **Approve by click or chat:** the MCP server keeps each refused gated call for 15 minutes under a `pending` id (`mcp/src/confirm.ts`). `request_confirmation` shows a card with the exact held command or menu and Approve / Decline. Its app-only `confirm_pending` runs the held call once with `confirm: true` and reports the result. An approval in chat also works: ChatGPT applies it through the original tool with `confirm: true`, rereading a menu and passing its `expected_dialog_id` before answering. Use a card when the owner's decision is still needed, not after they already authorized the operation. A held menu answer is bound to that dialog; a changed menu requires a new decision. Pending calls live in the MCP server's memory, so a restart drops them.
 - **Talking with ChatGPT:** in a Work chat, native MCP Events (`agent.finished`, `agent.asks`) wake the subscribed chat through a verified webhook when a watched agent completes a turn or asks a question; [docs/mcp-events.md](docs/mcp-events.md) covers OAuth, subscriptions and the callback network policy. In a regular Chat, `watch_here` / `watch_next` and the [card link](docs/chatgpt-link.md) are the fallback, with the limits in [Status](#status). `scripts/tell.sh` messages arrive as `agent.message`, even from an agent no chat has linked.
@@ -114,66 +114,23 @@ With `allowExec` on, the allowed roots stop being a boundary for anything but th
 
 ## Agents
 
-These are the author's 38 names, the same on every machine; generate your own with `scripts/agent-aliases.ts`. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
+ChatGPT starts an agent by naming the CLI, the model and, if you like, the effort: "claude opus on extra high", "cursor grok", "codex sol". Dictated words are matched loosely: "Gemini Flash" is `gemini-flash`, "Extra High" is `xhigh`, "maximum" is `max`. Without a model, the CLI starts on its default model from the list below, or on its own configured default when the list has none for it.
 
-Every agent starts with full access: no permission or approval prompts and no sandbox (`FULL_ACCESS` in `scripts/agent-aliases.ts`). Claude Code gets `--dangerously-skip-permissions` and shows "bypass permissions on"; Codex gets `--dangerously-bypass-approvals-and-sandbox` and still asks folder trust once, which WorkDone answers. So agents run pushes, commits, merges and deletions without a menu, and the gated list only covers what ChatGPT runs itself (`exec`, `run_command_in_pane`, `send_pane_input`) and menus agents still show. Protect what must stay the owner's call on the server side, e.g. GitHub branch protection on `main`. Agents already running keep the mode they started with.
+**CLIs.** A gateway offers the agent CLIs installed on its machine, out of the 24 kinds Herdr 0.9.1 can start (`AGENT_CLIS` in `gateway/config.ts`): Claude Code, Codex, Cursor, OpenCode and pi, plus Gemini CLI, Copilot, Amp, Droid, Qwen and the rest. Set `agentKinds` in `gateway.json` to offer fewer. Claude Code, Codex, Cursor, OpenCode and pi get a model list; any other CLI starts on its own default model.
 
-**Claude Code.** Claude models run only here, pinned by full model ID. Efforts: low, medium, high, xhigh, max.
+**Models.** `bun scripts/agent-models.ts` asks each installed CLI what it offers and writes `~/.config/herdr-chatgpt/agent-models.json`, which `gateway.json` points at with `"agentModels"`. Per CLI it keeps one entry per model family, the family's newest version, and drops a family whose newest version is a generation behind its vendor's (Codex's `gpt-5.5` once `gpt-6` is out). Rerun it when a CLI ships a model; `bridge_status` shows ChatGPT the current list. Where the models come from:
 
-| Name | Model | Default |
-|---|---|---|
-| eagle | Claude Fable 5.1 (`claude-fable-5-1`) | high |
-| robin | Claude Opus 5.5 (`claude-opus-5-5`) | high |
-| falcon | Claude Sonnet 5.5 (`claude-sonnet-5-5`) | max |
+| CLI | Models from | Model names | Effort |
+| --- | --- | --- | --- |
+| Claude Code | `CLAUDE_CODE` in the script, pinned by full ID | `opus` (default), `fable`, `sonnet` | `--effort` low to max |
+| Codex | `codex debug models` | `sol` (default), `astra`, `luna`, `reserve` | `-c model_reasoning_effort`, as Codex lists it per model |
+| Cursor | `cursor-agent models` | `auto` (default), `grok`, `gemini-flash`, `gemini-pro`, `kimi`, `glm`, `composer`, `muse-spark` | part of Cursor's model ID, `-fast` variants included |
+| OpenCode | `opencode models openrouter` | OpenRouter's `~vendor/family-latest` routes: `grok`, `kimi`, `glm`, `deepseek-pro`, `gemini-pro`, ... | none |
+| pi | `pi --list-models openrouter` | the same routes | `--thinking` low to max, where the model thinks |
 
-**Codex.** Efforts: low, medium, high, xhigh, max, and ultra where marked.
+The names in the table are what this generator produced on the author's Mac on 2026-10-02. A vendor's models go through its own CLI when that CLI is installed: Claude models only in Claude Code, GPT models only in Codex. On a machine without Claude Code, Cursor, OpenCode and pi offer them instead.
 
-| Name | Model | Default | Efforts |
-|---|---|---|---|
-| maple | GPT-6.1 Sol | ultra | low … max, ultra |
-| walnut | GPT-6 Astra | medium | low … max, ultra |
-| willow | GPT-6 Sol | medium | low … max, ultra |
-| cedar | GPT-6 Luna | medium | low … max |
-| cherry | GPT Reserve | medium | low … max |
-| olive | GPT-5.6 Sol | low | low … max, ultra |
-| apple | GPT-5.6 Terra | medium | low … max, ultra |
-| lemon | GPT-5.6 Luna | medium | low … max |
-| mango | GPT-5.5 | medium | low … xhigh |
-
-**Cursor.** Started with `--force --trust`: no approval or folder trust prompts. "fast" means each effort also has a `-fast` form (`high-fast`, `xhigh-fast`, …).
-
-| Name | Model | Default | Efforts |
-|---|---|---|---|
-| zebra | GPT-5.6 Sol | high | none, low, medium, high, xhigh, max; fast |
-| turtle | GPT-5.6 Terra | high | none, low, medium, high, xhigh, max; fast |
-| giraffe | GPT-5.6 Luna | high | none, low, medium, high, xhigh, max; fast |
-| lobster | GPT-5.5 | high | none, low, medium, high, xhigh; fast |
-| badger | GPT-5.4 | high | low, medium, high, xhigh; fast |
-| salmon | GPT-5.4 mini | high | none, low, medium, high, xhigh |
-| shark | GPT-5.4 nano | high | none, low, medium, high, xhigh |
-| hippo | GPT-5.3 Codex | high | low, default, high, xhigh; fast |
-| rhino | GPT-5.2 | high | low, default, high, xhigh; fast |
-| frog | GPT-5.1 | high | low, default, high |
-| kitten | GPT-5 mini | default | default |
-| panda | Grok 4.7 | xhigh-fast | low, medium, high, xhigh; fast |
-| pony | Grok 4.6 | high | low, medium, high, xhigh; fast |
-| jaguar | Grok 4.5 | high | low, medium, high; fast |
-| rabbit | Gemini 3.8 Flash | high | low, medium, high |
-| llama | Gemini 3.7 Flash | high | low, medium, high |
-| lizard | Gemini 3.6 Flash | high | minimal, low, medium, high |
-| goat | Gemini 3.5 Flash | default | default |
-| wolf | Gemini 3 Flash | default | default |
-| gecko | Gemini 3.1 Pro | default | default |
-| monkey | Composer 2.5 | default | default; fast |
-| camel | Kimi K3 | high | low, high, max |
-| moose | Kimi K2.7 Code | default | default |
-| dolphin | GLM 5.2 | high | high, max |
-| kangaroo | Muse Spark 1.3 | high | minimal, low, medium, high, xhigh, max |
-| gorilla | Cursor "auto" (Cursor picks) | default | default |
-
-**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`, maple: `ultra`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 2026-09-28; the file is the source of truth.
-
-An alias can also be written inline in a gateway config: `"wren": {"kind": "claude", "args": ["--model", "claude-opus-5-5", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID.
+**Full access.** Every listed model starts with its CLI's no-prompt mode (`FULL_ACCESS` in the script): `--dangerously-skip-permissions` for Claude Code, `--dangerously-bypass-approvals-and-sandbox` for Codex, `--force --trust` for Cursor and `--auto` for OpenCode; pi has no permission prompts. So agents run pushes, commits, merges and deletions without a menu, and the gated list only covers what ChatGPT runs itself (`exec`, `run_command_in_pane`, `send_pane_input`) and menus agents still show. Protect what must stay the owner's call on the server side, e.g. GitHub branch protection on `main`. Remove the flags from `FULL_ACCESS` and rerun the script if you want agents to ask.
 
 ## The browser for `browse`
 

@@ -3,12 +3,24 @@
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
-import { DEFAULT_REDACT, parseAliases, type AgentAlias } from "./mask.ts";
+import { parseModels, type ModelList } from "./models.ts";
 
-export const GATEWAY_VERSION = "0.8.0";
+export const GATEWAY_VERSION = "0.9.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
+// The agent kinds Herdr 0.9.1 can start (herdr agent start --kind), each with the
+// executable that shows it is installed. scripts/agent-models.ts lists models for claude,
+// codex, cursor, opencode and pi; the others start on their own default model.
+// Where agent CLIs install themselves besides the system directories. Only used to see
+// which are installed: Herdr starts them with its own PATH.
+const AGENT_DIRS = ["~/.local/bin", "~/.bun/bin", "~/.opencode/bin", "~/.npm-global/bin", "~/Library/pnpm", "~/.local/share/pnpm", "~/.cargo/bin"];
+export const AGENT_CLIS: Record<string, string> = {
+  claude: "claude", codex: "codex", cursor: "cursor-agent", opencode: "opencode", pi: "pi",
+  gemini: "gemini", copilot: "copilot", amp: "amp", droid: "droid", cline: "cline", kilo: "kilo", kiro: "kiro",
+  qwen: "qwen", kimi: "kimi", grok: "grok", devin: "devin", agy: "agy", omp: "omp", mastracode: "mastracode",
+  hermes: "hermes", qodercli: "qodercli", letta: "letta", maki: "maki", muse: "muse",
+};
 export const BRANCH_RE = /^(?!-)(?!.*\.\.)[A-Za-z0-9._\/-]{1,100}$/;
 export const READ_SOURCES = ["visible", "recent", "recent_unwrapped", "detection"] as const;
 export const AGENT_STATUSES = ["idle", "working", "blocked", "done", "unknown"] as const;
@@ -30,14 +42,11 @@ export interface GatewayConfig {
   allowedRoots: string[];
   repos: Record<string, RepoConfig>;
   agentKinds: string[];
-  agentAliases: Record<string, AgentAlias>;
-  redact: string[];
+  agentModels: ModelList;
   browser: BrowserConfig | null;
   // Run exec in a Herdr pane, in the owner's desktop session (keychain, .zshrc, ssh-agent),
   // instead of as the gateway's own ssh login.
   execInPane: boolean;
-  // Files the file tools never serve: the alias map when it lives outside the config dir.
-  privatePaths: string[];
   // Answer menus that only ask for a go-ahead (a permission, folder trust, an update
   // notice) for watched agents and while a tool call waits. On unless set to false.
   autoApprove: boolean;
@@ -156,30 +165,27 @@ export function loadConfig(raw: unknown): GatewayConfig {
     }
     notifyCommand = c.notifyCommand.map((a: string) => expandHome(a));
   }
-  // Inline, or the path of a JSON file such as the one scripts/agent-aliases.ts writes.
-  const aliasSource = typeof c.agentAliases === "string" ? JSON.parse(readFileSync(absPath(c.agentAliases, "agentAliases"), "utf8")) : c.agentAliases;
-  const allAliases: Record<string, AgentAlias> = parseAliases(aliasSource, AGENT_NAME_RE);
-  if (c.redact !== undefined && (!Array.isArray(c.redact) || !c.redact.every((w: unknown) => typeof w === "string" && w))) {
-    throw new Error("redact must be an array of non-empty strings");
-  }
+  // Inline, or the path of a JSON file such as the one scripts/agent-models.ts writes.
+  const modelsKey = c.agentModels !== undefined ? "agentModels" : "agentAliases";
+  const modelSource = typeof c[modelsKey] === "string" ? JSON.parse(readFileSync(absPath(c[modelsKey], modelsKey), "utf8")) : c[modelsKey];
+  const allModels = parseModels(modelSource);
   const extraPath = pathList(c.extraPath, "extraPath");
-  // Herdr starts kind "cursor" as cursor-agent. Without a list in the config, offer it where it is installed.
+  // Without a list in the config, offer the agent CLIs installed here. Herdr starts kind
+  // "cursor" as cursor-agent.
   const agentKinds: string[] = Array.isArray(c.agentKinds)
     ? c.agentKinds.filter((k: unknown) => typeof k === "string")
-    : ["claude", "codex", ...(findExecutable("cursor-agent", extraPath) ? ["cursor"] : [])];
-  // One alias file serves every machine; each offers only the aliases of kinds it has.
-  const agentAliases = Object.fromEntries(Object.entries(allAliases).filter(([, a]) => agentKinds.includes(a.kind)));
+    : Object.entries(AGENT_CLIS).filter(([, exe]) => findExecutable(exe, [...extraPath, ...AGENT_DIRS.map(expandHome)])).map(([kind]) => kind);
+  // One model file can serve every machine; each offers only the CLIs it has.
+  const agentModels = Object.fromEntries(Object.entries(allModels).filter(([kind]) => agentKinds.includes(kind)));
   const envShell = process.env.SHELL?.startsWith("/") ? process.env.SHELL : "/bin/sh";
   return {
     herdrSocketPath: expandHome(c.herdrSocketPath ?? "~/.config/herdr/herdr.sock"),
     allowedRoots,
     repos,
     agentKinds,
-    agentAliases,
-    redact: c.redact ?? DEFAULT_REDACT,
+    agentModels,
     browser: parseBrowser(c.browser),
     execInPane: c.execInPane === true,
-    privatePaths: typeof c.agentAliases === "string" ? [expandHome(c.agentAliases)] : [],
     autoApprove: c.autoApprove !== false,
     leases: c.leases !== false,
     allowRawPaneRun: c.allowRawPaneRun === true,

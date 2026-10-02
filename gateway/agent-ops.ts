@@ -336,7 +336,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
     // Where the agent goes: a new worktree (worktree_branch + repo), a split of an
     // existing pane (split_from), a new tab (workspace_id), or else a new workspace.
     async spawn_agent(params) {
-      const { kind, alias, args } = g.agentKind(params);
+      const { kind, model, args } = g.agentKind(params);
       const name = str(params, "name", AGENT_NAME_RE);
       const watch = optBool(params, "watch", true);
       const prompt = optStr(params, "prompt");
@@ -383,7 +383,6 @@ export function agentOps(g: Gateway): Record<string, Op> {
           throw new GatewayError(err.code, `${err.message}; the new pane is ${paneId}: start_agent there, or close it`);
         }
       }
-      g.mask.started(paneId, name, alias);
       const ready = async (ms: number) =>
         (await g.herdr("agent.wait", { target: paneId, until: ["idle", "done", "blocked"], timeout_ms: Math.max(1000, Math.min(ms, left())) }, ms + 10_000).catch(() => null))?.agent ??
         (await g.herdr("agent.get", { target: paneId }).catch(() => null))?.agent ?? { agent_status: "unknown" };
@@ -397,7 +396,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
         g.state.manage(paneId, { name, cwd: placed.pane.cwd ?? null, kind }, started, true);
         showWatched(g.herdr, paneId, true);
       }
-      const out: Record<string, unknown> = { ...placed, name, kind, status, watching: watch, ...(approved.length ? { auto_approved: approved } : {}) };
+      const out: Record<string, unknown> = { ...placed, name, kind, model, status, watching: watch, ...(approved.length ? { auto_approved: approved } : {}) };
       if (status === "blocked") {
         out.note = "the agent is showing a menu WorkDone did not answer: get_agent shows it as choices";
       } else if (prompt && status !== "idle" && status !== "done") {
