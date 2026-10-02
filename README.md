@@ -1,5 +1,7 @@
 # WorkDone
 
+![A ChatGPT chat linked with the agents on a Mac: a message an agent sent with workdone-tell and the agent's reply, shown in the link card](docs/images/link-card.png)
+
 WorkDone lets a ChatGPT chat run the coding agents (Claude Code, Codex, Cursor) that live in Herdr panes on your own machines. From the chat you can see what every agent is doing, read its last reply, start agents by name, prompt or steer them, and answer their permission menus. It also gives ChatGPT a file and shell API on the same machines.
 
 ## Why
