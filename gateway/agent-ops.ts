@@ -406,7 +406,17 @@ export function agentOps(g: Gateway): Record<string, Op> {
       } else if (prompt) {
         const wait = optBool(params, "wait", false);
         try {
-          out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()) });
+          // Herdr can report the pane idle a moment before the agent is registered under
+          // its name (pi, behind its update notices): retry that for a few seconds.
+          for (let attempt = 0; ; attempt++) {
+            try {
+              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()) });
+              break;
+            } catch (err) {
+              if (!(err instanceof GatewayError && err.code === "agent_not_ready") || attempt >= 30 || left() < 5000) throw err;
+              await Bun.sleep(500);
+            }
+          }
         } catch (err) {
           // Started, but at a dialog Herdr does not flag that is not a go-ahead.
           if (!(err instanceof GatewayError && err.code === "agent_blocked")) throw err;

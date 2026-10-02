@@ -49,7 +49,7 @@ echo "== gateway config (kept if it already exists)"
 roots=$(printf '%s\n' "$@" | jq -R . | jq -sc .)
 jq -n --argjson roots "$roots" --arg shell "$shell" '{
     herdrSocketPath: "~/.config/herdr/herdr.sock",
-    allowedRoots: $roots, repos: {}, agentKinds: ["claude", "codex"],
+    allowedRoots: $roots, repos: {}, agentModels: "~/.config/herdr-chatgpt/agent-models.json",
     allowExec: false, allowFileRead: false, allowFileWrite: false,
     allowRawPaneRun: false, allowCloseAny: false, allowWorktreeRemove: false,
     shell: $shell, extraPath: ["~/.bun/bin", "~/.local/bin", "~/.npm-global/bin", "/usr/local/bin"],
@@ -62,10 +62,12 @@ jq -n --argjson roots "$roots" --arg shell "$shell" '{
     else (umask 077; cat > ~/.config/herdr-chatgpt/gateway.json); echo written; fi'
 
 echo "== gateway files"
-COPYFILE_DISABLE=1 tar -C "$repo" --no-xattrs -czf - gateway scripts/install-gateway.sh scripts/tell.sh |
+COPYFILE_DISABLE=1 tar -C "$repo" --no-xattrs -czf - gateway scripts/install-gateway.sh scripts/tell.sh scripts/agent-models.ts |
   ssh "$alias" 'rm -rf ~/herdr-chatgpt-gateway-staging && mkdir -m 700 ~/herdr-chatgpt-gateway-staging &&
     tar -C ~/herdr-chatgpt-gateway-staging -xzf - &&
-    BUN="$HOME/.bun/bin/bun" sh ~/herdr-chatgpt-gateway-staging/scripts/install-gateway.sh'
+    BUN="$HOME/.bun/bin/bun" sh ~/herdr-chatgpt-gateway-staging/scripts/install-gateway.sh &&
+    echo "== models of the agent CLIs installed there" &&
+    $SHELL -lc "$HOME/.bun/bin/bun ~/herdr-chatgpt-gateway-staging/scripts/agent-models.ts" | tail -1'
 launcher=$home/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
 printf '%s\n' '{"id":"1","op":"bridge_status","params":{}}' | ssh "$alias" "$launcher" |
   jq -ec 'select(.ok) | {herdr: .result.herdr_version, roots: .result.allowed_roots}' ||

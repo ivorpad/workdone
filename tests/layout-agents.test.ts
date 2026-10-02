@@ -205,6 +205,17 @@ describe("agents", () => {
     };
     await expect(new Gateway(gw.cfg, never).handle("spawn_agent", { kind: "claude", name: "x", repo: "app" })).rejects.toThrow(/the new pane is w9\d:p1/);
   });
+  test("spawn_agent retries the first prompt while Herdr has not registered the agent's name", async () => {
+    const { gw, herdr } = gateway();
+    let refusals = 2;
+    const late: typeof herdr = async (method, params) => {
+      if (method === "agent.prompt" && refusals-- > 0) throw new GatewayError("agent_not_ready", "agent w9:p1 is not an active named agent");
+      return herdr(method, params);
+    };
+    const res: any = await new Gateway(gw.cfg, late).handle("spawn_agent", { kind: "claude", name: "slow", repo: "app", prompt: "go" });
+    expect(res.prompt.submitted).toBe(true);
+    expect(refusals).toBe(-1);
+  });
   test("agent args need exec", async () => {
     const { gw } = gateway();
     await expect(gw.handle("spawn_agent", { kind: "claude", name: "w", repo: "app", args: ["--model", "x"] })).rejects.toMatchObject({ code: "capability_disabled" });
