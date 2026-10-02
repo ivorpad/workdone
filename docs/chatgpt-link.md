@@ -1,8 +1,8 @@
 # ChatGPT ↔ agents: native Events and the fallback card
 
-Prefer native MCP Events for completion and question notifications. WorkDone now implements `agent.finished` and `agent.asks` using authenticated subscriptions and signed callbacks. [MCP Events setup](mcp-events.md) explains the required OAuth connection, callback allowlist and real ChatGPT checks. Events has not been verified end to end on the deployed No Auth app, so the existing card remains available during migration.
+Prefer native MCP Events in ChatGPT Work chats. WorkDone implements `agent.finished`, `agent.asks` and `agent.message` with authenticated subscriptions and signed callbacks. [MCP Events setup](mcp-events.md) explains the OAuth connection, callback allowlist and real ChatGPT checks. `agent.finished` was verified end to end in a Work chat on 2026-10-02; `agent.message` is deployed but not yet seen in a real chat. Regular Chats never subscribe, so they use the card.
 
-Permission policy applies to both notification paths. The rest of this page describes that policy, the fallback card, agent-written `tell` messages and the Approve card. `tell` still uses the card. Phone notifications keep their separate path.
+Permission policy applies to both notification paths. The rest of this page describes that policy, the fallback card, agent-written `tell` messages and the Approve card. `tell` reaches a linked chat through its card and a subscribed Work chat through `agent.message`. Phone notifications keep their separate path.
 
 ## Choose how an agent handles permissions
 
@@ -35,7 +35,11 @@ This policy and structured manual-approval path need the updated gateway, MCP se
 
 ## Using the fallback card
 
-Use this when native Events is unavailable or when the chat needs `tell` messages. Once completion and question subscriptions are proven, stop the old watch card for those events to avoid duplicate wakes. **Link a chat with an agent.** In ChatGPT:
+Use this when native Events is unavailable, as in a regular Chat. The card shows what reached the chat: here, an agent's `tell` message and its reply to the chat, each with the time and pane.
+
+![The link card in a ChatGPT chat, linked with the agents on mac, showing a message an agent sent with workdone-tell and the agent's reply](images/link-card.png)
+
+Once completion and question subscriptions are proven, stop the old watch card for those events to avoid duplicate wakes. **Link a chat with an agent.** In ChatGPT:
 
 ```
 @WorkDone link this chat with the agent in w5M:pA (take it over)
