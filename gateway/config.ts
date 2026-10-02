@@ -5,7 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
 import { DEFAULT_REDACT, parseAliases, type AgentAlias } from "./mask.ts";
 
-export const GATEWAY_VERSION = "0.7.0";
+export const GATEWAY_VERSION = "0.8.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
