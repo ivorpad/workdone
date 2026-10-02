@@ -82,7 +82,7 @@ ChatGPT chat ──prompt_agent (lease L)──▶ MCP server ──ssh──▶
 
 ### Credentials and limits
 
-(Designed with ChatGPT through the link itself on 30-09: it asked for the lease check, the hidden cap and the ceilings, then, reviewing the diff, rejected the "abandoned card" replacement and a model-settable override of the one-message rule. Committed as d744c56 on 30-09; not deployed yet, waiting for ChatGPT's approval.)
+(Designed with ChatGPT through the link itself on 2026-09-30: it asked for the lease check, the hidden cap and the ceilings, then, reviewing the diff, rejected the "abandoned card" replacement and a model-settable override of the one-message rule. Committed as d744c56 on 2026-09-30; not deployed yet, waiting for ChatGPT's approval.)
 
 - **Lease check.** `watch_here` asks the machine's gateway (`lease_check`) whether the lease exists and is live (used in the last 24 h, the gateway's own lapse rule), and refuses `invalid_lease` otherwise.
 - **Hidden cap.** Each watch has a random `cap` (`wc_` + 40 hex). The watch id, cap and lease come back only in the tool result's `_meta["workdone/watch"]`, which the card reads. The model sees none of them. `watch_next` and `watch_stop` need the cap, and a wrong cap gets nothing. Replacing an open link needs the cap too (`already_linked` otherwise), and a replacement keeps the rounds used. The lease isn't in the wake text any more.
@@ -113,11 +113,11 @@ The native implementation is ready for local verification, but production cutove
 - `request_confirmation({pending})` shows what the server holds: machine, reason, command or captured menu and selected option. A held `answer_agent` captures the refused menu's dialog ID; a later click cannot answer a replacement menu. Older gateways that cannot supply that binding do not create an answer card.
 - Approve and Decline call `confirm_pending`, app-only (`_meta.ui.visibility: ["app"]`), so the model can't call it. It runs the held call once with `confirm: true` and the card tells the chat the result.
 - Tested on chatgpt.com: Approve ran `mkdir … && rm -rf /tmp/workdone-confirm-test`, audited with `"confirm": true`; Decline dropped a `git commit`, audited only as refused.
-- `confirm: true` from the model still works. On 30-09 ChatGPT passed it unasked for an `rm -rf` because the user's message named the command, so the card is only a real gate once that route is closed (not done).
+- `confirm: true` from the model still works. On 2026-09-30 ChatGPT passed it unasked for an `rm -rf` because the user's message named the command, so the card is only a real gate once that route is closed (not done).
 
 ## Launch permissions and WorkDone policy
 
-The alias generator (`scripts/agent-aliases.ts`, `FULL_ACCESS`) adds `--dangerously-skip-permissions` to Claude Code and `--dangerously-bypass-approvals-and-sandbox` to Codex; Cursor keeps `--force --trust`. The recorded 30-09 OVH test ran robin and maple shell commands without prompts. Agents already running keep the mode they started with.
+The alias generator (`scripts/agent-aliases.ts`, `FULL_ACCESS`) adds `--dangerously-skip-permissions` to Claude Code and `--dangerously-bypass-approvals-and-sandbox` to Codex; Cursor keeps `--force --trust`. The recorded 2026-09-30 OVH test ran robin and maple shell commands without prompts. Agents already running keep the mode they started with.
 
 WorkDone's policy only handles menus that the harness actually shows. Setting `ask` cannot restore permissions bypassed by a launch flag or create Pi permission checks where no extension provides them. To receive manual permission notifications, start the agent in a harness mode that asks, then set `ask` before its task. Removing bypass flags changes launch configuration and is a separate operator choice. What must always stay the owner's call also needs enforcement outside the agent, for example GitHub branch protection on `main`.
 
@@ -125,7 +125,7 @@ Before this, the slowness with Codex agents was measured, not guessed: with appr
 
 maple is now GPT-6.1 Sol (`gpt-6.1-sol`, Codex's newest) at ultra; GPT-6 Astra, maple's old model, is walnut.
 
-## What ChatGPT does and doesn't do (seen 30-09)
+## What ChatGPT does and doesn't do (seen 2026-09-30)
 
 - **Protocol.** ChatGPT and the tunnel client both probe `server/discover` with 2026-07-28 first. The MCP server moved to the v2 SDK (`@modelcontextprotocol/server` 2.0.0) and serves both revisions; ChatGPT switched over after a Refresh tools. `logRpc` in `mcp/src/server.ts` logs each handshake (`client_hello`, with the `_meta` envelope) and every method with the tool name, never arguments.
 - **No forms.** ChatGPT offers no `elicitation` capability on either revision, so OpenAI's form elicitation isn't available. Its capabilities are `openai/visibility` and MCP Apps (`text/html;profile=mcp-app`).

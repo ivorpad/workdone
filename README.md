@@ -1,14 +1,42 @@
-# Herdr ChatGPT bridge
+# WorkDone
+
+WorkDone lets a ChatGPT chat run the coding agents (Claude Code, Codex, Cursor) that live in Herdr panes on your own machines. From the chat you can see what every agent is doing, read its last reply, start agents by name, prompt or steer them, and answer their permission menus. It also gives ChatGPT a file and shell API on the same machines.
+
+It is an MCP server, a small gateway per machine, a ChatGPT plugin with its skill, and a skill for the agents on the other end. One person built it for their own setup: a Mac that sleeps and an always-on Linux VPS (called `ovh` throughout), both on one tailnet.
 
 ```text
-ChatGPT → OpenAI Secure MCP Tunnel → MCP server on OVH (127.0.0.1:8787)
-       → OpenSSH over Tailscale → forced-command gateway on the Mac   → Herdr socket, files, shell
-       → OpenSSH to 127.0.0.1   → forced-command gateway on OVH (debian) → same
+ChatGPT → OpenAI Secure MCP Tunnel → MCP server on the VPS (127.0.0.1:8787)
+       → OpenSSH over Tailscale → forced-command gateway on the Mac → Herdr socket, files, shell
+       → OpenSSH to 127.0.0.1   → forced-command gateway on the VPS  → same
 ```
 
-The runbook this implements is `docs/INSTALL_AND_SETUP.md`. Everything runs on Bun.
+Everything runs on Bun.
 
-`docs/DESPLIEGUE.md` (Spanish) is the step-by-step deployment runbook: placeholders to fill in, which steps need a human, a check after each phase, and known failures with their fixes.
+## Read this first
+
+This gives a chat model a shell on your machines. Each gateway has capability flags (below), allowed roots and a list of operations that need the owner's confirmation, but with `allowExec` on, ChatGPT can run anything your user can. The agent aliases also start every agent with its permission prompts off. Read [Where the security checks live](#where-the-security-checks-live) before you deploy, and keep the No Auth listener (port 8787, reached only through the Secure MCP Tunnel) off the public internet. Only the OAuth listener for Events may be exposed.
+
+## Status
+
+Works day to day, from ChatGPT to the machines: listing and reading agents, spawning and prompting them, answering menus, the approval card, files and exec.
+
+The other direction, an agent telling ChatGPT something without being asked, does not work reliably:
+
+- **Native MCP Events** (`agent.finished`, `agent.asks`) are implemented, and the OAuth issuer in `issuer/` signs ChatGPT in. ChatGPT lists the events but never calls `events/subscribe`, so no event has been delivered to a real chat. [openai/codex#49665](https://github.com/openai/codex/issues/49665) reports the same thing.
+- **The card fallback** (`watch_here` and `workdone-tell`) wakes the chat with `ui/message` from an MCP Apps card. A message only gets through while that chat's card is open, and it is held for at most an hour. A closed tab, the mobile app, or a chat that has scrolled the card away means the agent's message waits or is lost.
+
+## Docs
+
+| | |
+| --- | --- |
+| [docs/INSTALL_AND_SETUP.md](docs/INSTALL_AND_SETUP.md) | Install runbook, written for an agent to follow |
+| [docs/DESPLIEGUE.md](docs/DESPLIEGUE.md) | Step-by-step deployment in Spanish: placeholders, human steps, a check after each phase, known failures |
+| [docs/chatgpt-link.md](docs/chatgpt-link.md) | The two-way link between a chat and an agent, approval policies, what ChatGPT does and doesn't do |
+| [docs/mcp-events.md](docs/mcp-events.md) | Native MCP Events, OAuth and the callback network policy |
+| [docs/loop-risks.md](docs/loop-risks.md) | Risks of letting a chat and its agents wake each other |
+| [plugin/herdr-remote/skills/herdr-remote/SKILL.md](plugin/herdr-remote/skills/herdr-remote/SKILL.md) | The instructions ChatGPT gets. They name the author's machines (`mac`, `ovh`, `syno`) and browser tools, so edit them for yours |
+| [skills/workdone-link/SKILL.md](skills/workdone-link/SKILL.md) | The skill for agents talking back to the linked chat |
+| [issuer/README.md](issuer/README.md) | The single-owner OAuth issuer for Events |
 
 ## Layout
 
@@ -32,12 +60,12 @@ Every tool takes an optional `machine` (`mac`, `ovh`, and whatever `scripts/add-
 - **Agent aliases:** ChatGPT starts agents by names, never by CLI or model; the list is in [Agents](#agents). With `agentAliases` in a gateway config, each name fixes the Herdr kind, the model and the efforts on offer. `bridge_status` lists the names as `agent_kinds` and their efforts under `agents`, and `spawn_agent`/`start_agent` take `kind` and `effort`. Replies show the name an agent was started as (agents started another way get the first name of their kind, or `agent`), and vendor and model names in agent text, titles and errors are replaced with it. The words come from `redact` (default list in `gateway/mask.ts`, matched case-sensitively, so a plain "cursor" in prose is kept). File and shell ops (`read_file`, `exec` and the rest) return content unchanged, and so do ID and path fields. The scrub works on words, so an agent that describes itself in some other way can still give itself away. The file tools refuse the gateway's config directory, its state directory and the alias file even inside an allowed root. `exec` is a shell, though: with it on, ChatGPT can `cat` the alias file or read `ps`, so the names keep model names out of what the agent tools return but are not a secret from a caller with exec.
 - **Owner's calls:** `gateway/gated.ts` gates git push, commit, merge, rebase, reset --hard, branch delete and clean, GitHub writes (`gh pr/issue/release` edits, `gh api` POST/PATCH/PUT/DELETE), `rm -rf` and deploys. `answer_agent` accepts `confirm: true` when the owner's existing instruction or current decision authorizes the operation; ChatGPT should not request the same authorization again. A saved `all_permissions` policy can also approve a recognized gated agent permission. Direct `exec`, `run_command_in_pane` and `send_pane_input` still require `confirm: true` for covered authorization. Without it, these tools return `needs_confirmation`. Audit records identify confirmed calls and automatic policy answers.
 - **Approve by click or chat:** the MCP server keeps each refused gated call for 15 minutes under a `pending` id (`mcp/src/confirm.ts`). `request_confirmation` shows a card with the exact held command or menu and Approve / Decline. Its app-only `confirm_pending` runs the held call once with `confirm: true` and reports the result. An approval in chat also works: ChatGPT applies it through the original tool with `confirm: true`, rereading a menu and passing its `expected_dialog_id` before answering. Use a card when the owner's decision is still needed, not after they already authorized the operation. A held menu answer is bound to that dialog; a changed menu requires a new decision. Pending calls live in the MCP server's memory, so a restart drops them.
-- **Talking with ChatGPT:** prefer native MCP Events for `agent.finished` and `agent.asks`. A verified webhook wakes the subscribed chat when a watched agent completes a turn or asks a question. [Setup and migration](docs/mcp-events.md) covers OAuth, durable subscriptions and the callback network policy. `watch_here` / `watch_next` remain available until Events passes the real ChatGPT lifecycle test, and for `scripts/tell.sh` messages, which have no native event yet. The [card link](docs/chatgpt-link.md) is the fallback.
+- **Talking with ChatGPT:** `watch_here` / `watch_next` and the [card link](docs/chatgpt-link.md) are what reaches a chat today, with the limits in [Status](#status). Native MCP Events (`agent.finished`, `agent.asks`) would wake a subscribed chat through a verified webhook when a watched agent completes a turn or asks a question; [docs/mcp-events.md](docs/mcp-events.md) covers OAuth, subscriptions and the callback network policy, but ChatGPT has not subscribed yet. `scripts/tell.sh` messages have no native event.
 - **Attention:** `overview`, `get_agent` and `read_agent` add `attention` to Herdr's status: `dialog` (a menu, including Cursor's workspace trust prompt, which Herdr reads as idle) or `question` (the agent stopped and the end of its last reply asks the owner something). `watch` shows whether the agent is watched and the last thing reported or answered about it.
 - **Layout:** `list_workspaces`, `list_panes`, `read_pane`, `split_pane`, `create_workspace`, `create_tab`, `rename`, `focus`, `move_pane`, `close`, `send_pane_input`.
 - **Repos:** `list_repos`, `list_worktrees`, `create_worktree`, `remove_worktree`.
 - **Browser:** `browse` starts a Jev browser run (`jev-browser run URL GOAL...`) in OVH's persistent signed-in Chromium and returns a run id at once; the run is detached from the ssh call, so it outlives it. `browse_status` gives a run's state (`running`, `done`, `blocked`, `failed`, `stopped`, `lost`), the JSON summary with each goal's status and final URL, the end of the step log and `final_pages` (each goal's last URL, title and the start of its visible text: 800 characters by default, `text_chars` up to 6000; read from the trace, since the file tools do not serve the gateway's state), or the last 10 runs. `browse_stop` kills the run's process group. Runs live in `<stateDir>/jobs/<id>/` (`job.json`, `log.txt`, `summary.json`, `trace.json`, `exit`); the newest 50 are kept. A gateway offers it with `"browser": {"command": ["~/.local/bin/jev-browser", "run"], "cwd": "~/src/jev-browser"}` (the cwd holds jev-browser's `.env`) and `allowExec` on. Browser results are not masked, so URLs stay usable.
-- **exec in your own session:** with `"execInPane": true` in a gateway config (the Mac and OVH), `exec` runs the command the way you would after `ssh` and a new Herdr pane: in a tab of a `workdone exec` workspace, in your interactive zsh, so `.zshrc` (aliases, functions, PATH), the keychain (`gh`'s token on the Mac) and your ssh-agent are there. The command runs in a subshell of that shell, sourced from a file, with stdin, stdout and stderr through files; the gateway waits for its exit code, reads the output and closes the tab. The workspace stays, so you can watch commands appear. It costs about a second a call (a new tab and shell). A timeout sends ctrl+c. Without the switch (syno), `exec` runs as the gateway's own ssh login (`zsh -lc`, no keychain, no `.zshrc`): on the Mac that is why `gh` failed with 401 from ChatGPT while it worked in the Robin panes. The result has `via: "pane"` when it ran in a pane.
+- **exec in your own session:** with `"execInPane": true` in a gateway config (the author turns it on for the Mac and the VPS), `exec` runs the command the way you would after `ssh` and a new Herdr pane: in a tab of a `workdone exec` workspace, in your interactive zsh, so `.zshrc` (aliases, functions, PATH), the keychain (`gh`'s token on the Mac) and your ssh-agent are there. The command runs in a subshell of that shell, sourced from a file, with stdin, stdout and stderr through files; the gateway waits for its exit code, reads the output and closes the tab. The workspace stays, so you can watch commands appear. It costs about a second a call (a new tab and shell). A timeout sends ctrl+c. Without the switch, `exec` runs as the gateway's own ssh login (`zsh -lc`, no keychain, no `.zshrc`): on the Mac that is why `gh` failed with 401 from ChatGPT while it worked in the agents' panes. The result has `via: "pane"` when it ran in a pane.
 - **Host:** `exec` (shell command, returns exit code and output), `run_command_in_pane`, `list_dir`, `read_file` (text; PDF and Office files as Markdown through `documentConverter`; images as MCP image content), `write_file`, `move_path`, `delete_path` (moves into `~/.local/state/herdr-chatgpt/trash`), `search_files` (ripgrep).
 
 Each gateway rereads `gateway.json` on every call, so a capability turned off takes effect on the next call:
@@ -57,9 +85,9 @@ With `allowExec` on, the allowed roots stop being a boundary for anything but th
 
 ## Agents
 
-The same 38 names on the Mac, OVH and syno. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
+These are the author's 38 names, the same on every machine; generate your own with `scripts/agent-aliases.ts`. Birds run in Claude Code, trees and fruit in Codex, other animals in Cursor. Say a name and, if you like, an effort ("panda on extra high"); without one the agent uses its default. Dictated names and efforts are matched loosely: "Extra High" is `xhigh`, "maximum" is `max`.
 
-Every agent starts with full access, since 30-09: no permission or approval prompts and no sandbox (`FULL_ACCESS` in `scripts/agent-aliases.ts`). Claude Code gets `--dangerously-skip-permissions` and shows "bypass permissions on"; Codex gets `--dangerously-bypass-approvals-and-sandbox` and still asks folder trust once, which WorkDone answers. So agents run pushes, commits, merges and deletions without a menu, and the gated list only covers what ChatGPT runs itself (`exec`, `run_command_in_pane`, `send_pane_input`) and menus agents still show. Protect what must stay the owner's call on the server side, e.g. GitHub branch protection on `main`. Agents already running keep the mode they started with.
+Every agent starts with full access: no permission or approval prompts and no sandbox (`FULL_ACCESS` in `scripts/agent-aliases.ts`). Claude Code gets `--dangerously-skip-permissions` and shows "bypass permissions on"; Codex gets `--dangerously-bypass-approvals-and-sandbox` and still asks folder trust once, which WorkDone answers. So agents run pushes, commits, merges and deletions without a menu, and the gated list only covers what ChatGPT runs itself (`exec`, `run_command_in_pane`, `send_pane_input`) and menus agents still show. Protect what must stay the owner's call on the server side, e.g. GitHub branch protection on `main`. Agents already running keep the mode they started with.
 
 **Claude Code.** Claude models run only here, pinned by full model ID. Efforts: low, medium, high, xhigh, max.
 
@@ -114,7 +142,7 @@ Every agent starts with full access, since 30-09: no permission or approval prom
 | kangaroo | Muse Spark 1.3 | high | minimal, low, medium, high, xhigh, max |
 | gorilla | Cursor "auto" (Cursor picks) | default | default |
 
-**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`, maple: `ultra`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 28-09; the file is the source of truth.
+**Where the list comes from.** `bun scripts/agent-aliases.ts` writes it to `~/.config/herdr-chatgpt/agent-aliases.json` and prints it; gateway configs point there with `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`, and each machine offers only the names of the CLIs it has. Claude Code's three are fixed in `CLAUDE_CODE`; the rest come from `codex debug models` and `cursor-agent models`, leaving Cursor's Claude models out. Rerun it when a CLI adds models: existing names stay, a model a CLI stops offering loses its name, and a CLI missing on the machine keeps its old ones. Then copy the file to the other machines so the names match; the gateways read it on every call. `DEFAULT_EFFORT` in the script holds defaults you chose (panda: `xhigh-fast`, maple: `ultra`), and `RETIRED` holds names that are never handed out again: parrot (Haiku) and the 23 that were Claude models in Cursor, tiger, lion and koala among them. The table above is a copy of the map on 2026-09-28; the file is the source of truth.
 
 An alias can also be written inline in a gateway config: `"wren": {"kind": "claude", "args": ["--model", "claude-opus-5-5", "--effort", "{effort}"], "efforts": ["low", "medium", "high", "xhigh", "max"], "effort": "high"}`. `efforts` maps each effort ChatGPT may pass to what replaces `{effort}` in `args`, which for Cursor is the whole model ID.
 
@@ -122,7 +150,7 @@ An alias can also be written inline in a gateway config: `"wren": {"kind": "clau
 
 `browse` (gateway config `browser`, see `config/ovh-gateway.example.json`) starts a run in a persistent, signed-in Chromium on an always-on machine. That browser is not part of this repo. Keep its CDP port and viewer on loopback, and put the viewer on your tailnet with `tailscale serve`, never `tailscale funnel`. Every site its profile is signed in to is a site ChatGPT can act on as you, so sign in only to the ones you want it to use.
 
-`scripts/export-browser-sessions.py` copies signed-in sites from a local Chrome profile into that browser, skipping banks, payments, cloud consoles, government sites and work sign-ins (`EXCLUDE` in the script). It depends on the author's `chrome-canary-cdp` and `ovh_session.py` tools. Sites that bind a session to its IP or device (Google, LinkedIn, GitHub) drop copied sessions, so sign in to those inside the remote browser instead.
+`scripts/export-browser-sessions.py` copies signed-in sites from a local Chrome profile into that browser, skipping banks, payments, cloud consoles, government sites and work sign-ins (`EXCLUDE` in the script). It depends on two tools that are not in this repo (`chrome-canary-cdp` and `ovh_session.py`), so treat it as an example. Sites that bind a session to its IP or device (Google, LinkedIn, GitHub) drop copied sessions, so sign in to those inside the remote browser instead.
 
 ## Where the security checks live
 
@@ -198,3 +226,7 @@ scripts/deploy-ovh.sh                # from the Mac: OVH gateway, its key, MCP s
 scripts/add-machine.sh NAME ALIAS '~/dir' ...   # from the Mac: any machine with Bun and a Herdr server
 printf '%s\n' '{"id":"1","op":"bridge_status","params":{}}' | ~/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
 ```
+
+## License
+
+MIT. See [LICENSE](LICENSE).

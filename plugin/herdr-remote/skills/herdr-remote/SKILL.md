@@ -92,7 +92,7 @@ Agents are started by kind. `bridge_status` `agent_kinds` lists the kinds each m
 - New worker: `spawn_agent` with `kind`, a `name`, a place (`cwd` or `repo`, or `split_from`, `workspace_id`, `worktree_branch`), and the task in `prompt`:
 
   ```json
-  {"machine": "mac", "kind": "robin", "effort": "high", "name": "relay-automations", "cwd": "~/src/tries/2026-08-26-relay",
+  {"machine": "mac", "kind": "robin", "effort": "high", "name": "relay-automations", "cwd": "~/src/relay",
    "prompt": "Continue the Automations MVP on feat/automations-mvp..."}
   ```
 

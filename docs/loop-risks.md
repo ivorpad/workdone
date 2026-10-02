@@ -1,6 +1,6 @@
 # Loop and runaway risks in agent ↔ ChatGPT wiring
 
-ChatGPT's analysis, 30-09, asked in the "Run watcher loop" chat after the first review → fix loop through `watch_here`. Condensed from its answer; its wording where quoted.
+ChatGPT's analysis, 2026-09-30, asked in the "Run watcher loop" chat after the first review → fix loop through `watch_here`. Condensed from its answer; its wording where quoted.
 
 Its summary: the simple `watch_here` case is bounded by `max_rounds` and expiry, but the whole setup is not. Fresh watches, fresh threads, spawned agents, takeovers and direct agent → Herdr prompts form a feedback graph, and "max_rounds=20 bounds one edge of that graph, not the graph itself."
 

@@ -134,12 +134,12 @@ Important: confirm this connection is ordinary OpenSSH over Tailscale, not Tails
 
 Inspect the current tailnet policy first. Do not replace it.
 
-Prefer tagging OVH as `tag:herdr-mcp` and the Mac as `tag:ivor-mac` only if those tag semantics fit the existing policy. Merge a grant equivalent to:
+Prefer tagging OVH as `tag:herdr-mcp` and the Mac as `tag:owner-mac` only if those tag semantics fit the existing policy. Merge a grant equivalent to:
 
 ```json
 {
   "src": ["tag:herdr-mcp"],
-  "dst": ["tag:ivor-mac"],
+  "dst": ["tag:owner-mac"],
   "ip": ["tcp:22"]
 }
 ```
