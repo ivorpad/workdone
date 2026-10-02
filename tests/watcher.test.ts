@@ -199,7 +199,6 @@ describe("watch_poll and notify ops", () => {
   test("tell: an agent's message goes to the thread holding it, whole, and once", async () => {
     const { gw, watch, state } = setup();
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
-    await expect(gw.handle("tell", { pane_id: "w1:p1", text: "hi" })).rejects.toThrow(/no ChatGPT thread holds this agent/);
     const used = new Date().toISOString();
     writeFileSync(join(state, "leases.json"), JSON.stringify({ "L-abc123": { label: "t", panes: ["w1:p1"], created: used, used } }));
     const text = "How should watch_here check a lease? " + "x".repeat(600);
@@ -210,6 +209,28 @@ describe("watch_poll and notify ops", () => {
     expect(first.messages.some((m: string) => m.includes("How should"))).toBe(false);
     const second: any = await gw.handle("watch_poll", {});
     expect((second.reports ?? []).filter((r: any) => r.type === "message")).toEqual([]);
+  });
+  test("tell without a link: queued for agent.message subscribers, collected with nothing watched", async () => {
+    const { gw } = setup();
+    expect(await gw.handle("tell", { pane_id: "w1:p1", text: "hi" })).toMatchObject({ queued: true, linked: false });
+    const found: any = await gw.handle("watch_poll", {});
+    expect(found.remaining).toBe(0);
+    expect(found.reports.map((r: any) => [r.type, r.lease, r.excerpt])).toEqual([["message", null, "hi"]]);
+    expect(found.reports[0].event_id).toBeString();
+    expect((await gw.handle("watch_poll", {}) as any).reports).toBeUndefined();
+  });
+  test("watch_poll with tells waits for a tell even with nothing watched", async () => {
+    const { gw } = setup();
+    const started = Date.now();
+    const waiting = gw.handle("watch_poll", { wait_ms: 8000, tells: true });
+    setTimeout(() => { gw.handle("tell", { pane_id: "w1:p1", text: "later" }); }, 300);
+    const found: any = await waiting;
+    expect(found.reports.map((r: any) => r.excerpt)).toEqual(["later"]);
+    expect(Date.now() - started).toBeLessThan(6000);
+    // Without tells, nothing watched is one pass at once, as before.
+    const quick = Date.now();
+    expect(await gw.handle("watch_poll", { wait_ms: 8000 })).toMatchObject({ remaining: 0 });
+    expect(Date.now() - quick).toBeLessThan(1000);
   });
   test("a working agent stays on the list with its status recorded", async () => {
     const { gw, agents, watch, saved } = setup();

@@ -49,7 +49,7 @@ export function createReportSink(events?: Pick<EventsService, "addReports">, fal
   };
 }
 
-export function createEventService(cfg: OvhConfig, call: CallGateway, auth: AuthService, options: Pick<EventsOptions, "sender" | "now" | "random" | "log"> = {}): EventsService | undefined {
+export function createEventService(cfg: OvhConfig, call: CallGateway, auth: AuthService, options: Pick<EventsOptions, "sender" | "now" | "random" | "log" | "onSubscribed"> = {}): EventsService | undefined {
   if (!cfg.events) return undefined;
   const unavailable = new Set(["machine_offline", "gateway_unreachable", "herdr_unavailable", "herdr_timeout", "herdr_closed"]);
   return new EventsService({
@@ -199,8 +199,12 @@ if (import.meta.main) {
   const cfg = parseConfig(await Bun.file(path).json());
   const call = sshGateway(cfg);
   const auth = cfg.auth ? new AuthService(cfg.auth, Object.keys(cfg.machines)) : undefined;
-  const events = auth ? createEventService(cfg, call, auth) : undefined;
-  const notifier = cfg.notify || events ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events)) : null;
+  // A new agent.message subscription starts polling its machines, which may have nothing watched.
+  const onSubscribed = (name: string, args: { machine?: string }) => {
+    if (name === "agent.message") for (const m of args.machine ? [args.machine] : Object.keys(cfg.machines)) notifier?.markPending(m);
+  };
+  const events = auth ? createEventService(cfg, call, auth, { onSubscribed }) : undefined;
+  const notifier = cfg.notify || events ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events), (m) => events?.wantsMessages(m) ?? false) : null;
   events?.start();
   const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events });
   const servers = endpoints.map(({ host, port, handler }) => Bun.serve({ hostname: host, port, fetch: handler, idleTimeout: 255 }));

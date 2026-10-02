@@ -175,8 +175,10 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const agents: any[] = (await g.herdr("agent.list", {})).agents ?? [];
       if (!agents.some((x) => x.pane_id === paneId && paneInScope(x, g.cfg.allowedRoots))) throw new GatewayError("not_found", `agent ${paneId} not found`);
       const lease = Object.entries(g.state.leases()).find(([, l]) => l.panes.includes(paneId))?.[0];
-      if (!lease) throw new GatewayError("no_thread", "no ChatGPT thread holds this agent: ask the owner to link a chat with it first");
       g.state.addTold({ pane_id: paneId, text, at: new Date().toISOString() });
+      // Without a link it can still reach a chat subscribed to agent.message events (a
+      // ChatGPT Work chat). The gateway can't see those subscriptions, so it can't say.
+      if (!lease) return { queued: true, linked: false, note: "no chat has linked this agent: only a chat subscribed to agent.message events gets it, and if none is, nobody does" };
       // Only the lease's tail: the agent prints this into its pane, which any chat can read,
       // and the whole lease would let that chat drive this one's agents.
       return { queued: true, lease: "…" + lease.slice(-4), note: "queued, not delivered yet: it reaches the chat (within about 20 s) only while that chat's link card is open, and is held up to an hour for one; if no reply comes, the chat is not listening" };
@@ -189,7 +191,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const waitMs = optInt(params, "wait_ms", 0, WATCH_WAIT_MAX_MS) ?? 0;
       const agents = () => pollWatched(g.cfg, g.herdr, Date.now());
       const jobs = () => pollJobs(g.cfg);
-      if (waitMs > 0) return await pollWaiting(g.cfg, g.herdr, waitMs, agents, jobs);
+      if (waitMs > 0) return await pollWaiting(g.cfg, g.herdr, waitMs, agents, jobs, params.tells === true);
       const found = await agents();
       const runs = jobs();
       return withReports({ messages: [...found.messages, ...runs.messages], remaining: found.remaining + runs.remaining }, found.reports);

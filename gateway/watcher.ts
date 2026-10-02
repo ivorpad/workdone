@@ -201,7 +201,9 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
 export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number): Promise<Found> {
   const store = new StateStore(cfg.stateDir);
   const watched = store.watched();
-  if (Object.keys(watched).length === 0) return { messages: [], remaining: 0, reports: [] };
+  // A tell is collected even with nothing watched: a chat subscribed to agent.message
+  // may be listening without holding a watch.
+  if (Object.keys(watched).length === 0 && !store.hasTold()) return { messages: [], remaining: 0, reports: [] };
   const agents: any[] = (await herdr("agent.list", {})).agents ?? [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
@@ -260,7 +262,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     const w = watched[t.pane_id];
     const agent = byPane.get(t.pane_id);
     const name = agent?.name ?? w?.name ?? null;
-    reports.push({ pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
+    reports.push({ event_id: randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
   }
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
   for (const { paneId, w, agent, d, bg, menu, approved } of decided) {
@@ -319,8 +321,9 @@ export function watchSubscriptions(paneIds: string[]): Array<Record<string, unkn
 // subscription is open before the first pass, so a change during a pass wakes the
 // wait; one between two calls is caught by state_change_seq, as without waiting.
 // Without a subscription (nothing watched, a Herdr without events) it is one pass and
-// the caller keeps to its interval.
-export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: number, agents: () => Promise<Found>, jobs: () => Found): Promise<Found> {
+// the caller keeps to its interval, unless `tells` asks it to wait for a tell anyway:
+// the MCP server does that while a chat is subscribed to agent.message.
+export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: number, agents: () => Promise<Found>, jobs: () => Found, tells = false): Promise<Found> {
   const subscribe = subscriberOf(herdr);
   const deadline = Date.now() + waitMs;
   const watchedIds = () => Object.keys(new StateStore(cfg.stateDir).watched()).sort().join("\n");
@@ -339,14 +342,15 @@ export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: 
       const a = await agents();
       const j = jobs();
       const found = withReports({ messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining }, a.reports);
-      if (!sub || found.messages.length || found.reports?.length || found.remaining === 0 || Date.now() >= deadline) return found;
+      if ((!sub && !tells) || found.messages.length || found.reports?.length || (found.remaining === 0 && !tells) || Date.now() >= deadline) return found;
       const panes = new Set(subscribed.split("\n"));
       for (;;) {
         const left = deadline - Date.now();
         if (left <= 0) break;
         let event: any;
         try {
-          event = await sub.next(Math.min(WAIT_TICK_MS, left));
+          if (sub) event = await sub.next(Math.min(WAIT_TICK_MS, left));
+          else await Bun.sleep(Math.min(WAIT_TICK_MS, left));
         } catch {
           // Herdr went away: one last pass says what is known.
           sub = null;
@@ -355,7 +359,7 @@ export async function pollWaiting(cfg: GatewayConfig, herdr: HerdrCall, waitMs: 
         if (event) {
           if (!panes.has(event.data?.pane_id)) continue;
           // The next pass sees everything that already happened: skip the queued events.
-          while (await sub.next(0).catch(() => null));
+          while (sub && await sub.next(0).catch(() => null));
           break;
         }
         const runs = jobs();

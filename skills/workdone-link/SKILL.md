@@ -27,16 +27,16 @@ It is message passing between two collaborators, not a live call: nothing blocks
 
    Leave secrets out: tokens, keys, passwords and personal data don't go into the message.
 
-4. Read the output. `{"ok":true,"result":{"queued":true,…}}` means it's on its way (the chat gets it within about 20 s while its link card is open; a message waits up to an hour for a link). Then **don't wait for the answer**: no sleep loops, no polling. Tell the user in one line what you asked, and either carry on with work that doesn't depend on the answer or end your turn. The answer arrives as your next message.
+4. Read the output. `{"ok":true,"result":{"queued":true,…}}` means it's on its way: a ChatGPT Work chat subscribed to `agent.message` gets it within seconds, and a linked chat's card within about 20 s while the card is open (a message waits up to an hour for a card). `"linked": false` means no chat has linked you, so only an `agent.message` subscriber will see it. Then **don't wait for the answer**: no sleep loops, no polling. Tell the user in one line what you asked, and either carry on with work that doesn't depend on the answer or end your turn. The answer arrives as your next message.
 
 ### When sending fails
 
 | Output | Meaning | What to do |
 |---|---|---|
-| `no_thread` | No ChatGPT chat holds this agent | Tell the owner to link one: in ChatGPT, `@WorkDone link this chat with <your pane ID or name> (take it over)`. Then carry on without it. |
+| `"linked": false` | No ChatGPT chat holds this agent | Only a chat subscribed to `agent.message` gets it. If no answer comes, tell the owner to link one: in ChatGPT, `@WorkDone link this chat with <your pane ID or name> (take it over)`. Then carry on without it. |
 | `not in a Herdr pane` (exit 2) | `$HERDR_PANE_ID` is unset | You're not running inside Herdr; the link can't work here. |
 | `not_found` | WorkDone can't see this pane | The pane is outside the machine's allowed roots, or Herdr doesn't list it. Say so. |
-| queued, but no answer comes | The chat's link card isn't open in a browser | Nothing to fix on your side; mention it if the owner is waiting on the answer. |
+| queued, but no answer comes | No chat is subscribed to `agent.message` and the linked chat's card isn't open in a browser | Nothing to fix on your side; mention it if the owner is waiting on the answer. |
 
 ## Answering ChatGPT
 

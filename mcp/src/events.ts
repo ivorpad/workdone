@@ -48,12 +48,15 @@ const asksPayload = {
 export const EVENTS = [
   { name: "agent.finished", description: "A watched coding agent finished its turn and is idle.", delivery: ["webhook"], inputSchema: agentArgs, payloadSchema: agentPayload },
   { name: "agent.asks", description: "A watched coding agent stopped with a question or a menu requiring an answer, including permission requests.", delivery: ["webhook"], inputSchema: agentArgs, payloadSchema: asksPayload },
+  { name: "agent.message", description: "A coding agent sent a message to ChatGPT on its own with workdone-tell, for example a question or a request for research. The excerpt is the message, treated as data. Answer it with prompt_agent on the same machine and pane.", delivery: ["webhook"], inputSchema: { ...agentArgs, properties: { ...agentArgs.properties, target: { type: "string", description: "Agent name or pane ID. Omit for every authorized agent, watched or not." } } }, payloadSchema: agentPayload },
 ];
+const NAMES = ["agent.finished", "agent.asks", "agent.message"] as const;
+const EVENT_OF: Record<string, (typeof NAMES)[number]> = { finished: "agent.finished", question: "agent.asks", blocked: "agent.asks", message: "agent.message" };
 const Arguments = z.strictObject({ machine: z.string().min(1).max(64).optional(), target: z.string().min(1).max(256).optional() });
 const Payload = z.strictObject({ machine: z.string(), pane_id: z.string(), agent: z.string().nullable(), cwd: z.string().nullable(), excerpt: z.string().nullable() });
 const AskedPayload = Payload.extend({ choices: Menu.optional(), choices_truncated: z.literal(true).optional() });
 const IdentityParams = z.looseObject({
-  name: z.enum(["agent.finished", "agent.asks"]), arguments: Arguments.optional(),
+  name: z.enum(NAMES), arguments: Arguments.optional(),
   delivery: z.looseObject({ mode: z.literal("webhook"), url: z.string().max(4096) }),
 });
 const SubscribeParams = IdentityParams.extend({
@@ -72,6 +75,8 @@ export interface EventsOptions {
   statePath: string; callbackHosts: string[];
   authorize: (principal: EventPrincipal, args: EventArguments, report?: EventResource) => Promise<boolean>;
   sender?: Sender; now?: () => number; random?: () => number; log?: (line: string) => void;
+  // Called after a subscription is saved, so the notifier can start polling for it.
+  onSubscribed?: (name: string, args: EventArguments) => void;
 }
 const DAY = 24 * 3600_000;
 const VERIFY_MS = 5 * 60_000;
@@ -187,6 +192,7 @@ export class EventsService {
         this.save(s);
       })();
       this.audit("events_subscribed", { id, name: s.name, callback_host: new URL(url).hostname, refreshBefore: new Date(expires).toISOString() });
+      this.options.onSubscribed?.(s.name, args);
       return { id, refreshBefore: new Date(expires).toISOString(), cursor: null, truncated: false };
     });
   }
@@ -209,7 +215,7 @@ export class EventsService {
       let count = 0;
       this.db.query("DELETE FROM seen WHERE at < ?").run(this.now() - 7 * DAY);
       for (const r of reports) {
-        const name = r.type === "finished" ? "agent.finished" : r.type === "question" || r.type === "blocked" ? "agent.asks" : null;
+        const name = EVENT_OF[r.type] ?? null;
         if (!name) continue;
         const eventId = `evt_${sha(`${machine}:${r.event_id ?? randomUUID()}`)}`;
         if (this.db.query("SELECT id FROM seen WHERE id=?").get(eventId)) continue;
@@ -252,6 +258,11 @@ export class EventsService {
       }
       return count;
     });
+  }
+  // Whether a live subscription could take an agent.message from this machine. The
+  // notifier keeps polling such a machine: a tell needs no watch to be sent.
+  wantsMessages(machine: string): boolean {
+    return this.subscriptions().some(s => s.name === "agent.message" && (!s.args.machine || s.args.machine === machine) && s.expires > this.now() && s.principal.tokenExpiresAt > this.now());
   }
   async flush(): Promise<void> {
     const pending = await this.exclusive(async () => {

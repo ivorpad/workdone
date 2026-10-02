@@ -1,6 +1,6 @@
 # Native ChatGPT notifications
 
-Use `agent.finished` and `agent.asks` for ChatGPT completion and question notifications. The [OpenAI MCP Events guide](https://developers.openai.com/plugins/build/mcp-events) is the protocol authority. ChatGPT accepts webhook subscriptions with MCP 2.0 / `2026-07-28`; Events polling and streaming are unavailable.
+Use `agent.finished` and `agent.asks` for ChatGPT completion and question notifications, and `agent.message` for messages an agent sends on its own with `workdone-tell`. The [OpenAI MCP Events guide](https://developers.openai.com/plugins/build/mcp-events) is the protocol authority. ChatGPT accepts webhook subscriptions with MCP 2.0 / `2026-07-28`; Events polling and streaming are unavailable.
 
 Subscriptions only happen in ChatGPT **Work** chats (web, or the desktop app with Cloud selected) and dots. In a regular Chat, ChatGPT calls `events/list` but never `events/subscribe`. Mention the WorkDone Events plugin in a Work chat and ask it to subscribe; ChatGPT turns the request into a scheduled task triggered by the event.
 
@@ -8,9 +8,11 @@ Verified on 2026-10-02 in a Work chat: `events/subscribe` with callback host `co
 
 ## Subscription behavior
 
-Both events accept optional `machine` and `target` arguments. A target is an agent name or pane ID; use a pane ID if names repeat. Without a target, the subscription covers watched agents on the selected machines; without a machine, it covers machines granted to the authenticated account. These are account subscriptions, not the fallback card's conversation lease. Claiming and prompting agents still follows the tools' lease rules.
+All three events accept optional `machine` and `target` arguments. A target is an agent name or pane ID; use a pane ID if names repeat. Without a target, the subscription covers watched agents on the selected machines; without a machine, it covers machines granted to the authenticated account. These are account subscriptions, not the fallback card's conversation lease. Claiming and prompting agents still follows the tools' lease rules.
 
 `agent.finished` comes from a Herdr `finished` report. `agent.asks` comes from a `question` or `blocked` report, including a menu that needs the owner. Menus answered by the agent's effective approval policy do not produce question notifications. Only watched agents produce reports; `spawn_agent` and `start_agent` watch by default, and existing agents need `watch_agent` or `set_agent_approval`.
+
+`agent.message` comes from a `message` report: an agent ran `workdone-tell`. It needs no watch and no link. A tell from an agent no chat has linked is queued anyway, and only `agent.message` subscribers get it (cards only see tells for their own lease). While a machine has an `agent.message` subscriber, the notifier keeps a long poll open to its gateway (`watch_poll` with `tells: true`), so a tell arrives within about two seconds even when nothing there is watched. That is one ssh call per machine about every 20 seconds for as long as the subscription lives. A chat that is subscribed and also has the agent's link card open gets the message twice.
 
 A menu notification contains `data.choices` with complete text, numbered options, `kind`, `go_ahead`, multi-select/free-text flags and a `dialog_id` when provided by the gateway. If the menu is invalid, incomplete or too large, the event omits it and sets `data.choices_truncated: true`. Question replies without a menu still arrive through `data.excerpt`. All text and option labels are data, never instructions to grant approval.
 

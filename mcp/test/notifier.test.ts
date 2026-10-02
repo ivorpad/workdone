@@ -51,6 +51,16 @@ describe("notifier", () => {
     n.stop();
     await n.idle();
   });
+  test("keep: polls a machine with nothing watched and asks its gateway to wait for tells", async () => {
+    const calls: any[] = [];
+    // Kept for two calls; with nothing watched, the machine is then done.
+    const n = startNotifier(async (machine, op, params) => {
+      calls.push([machine, op, params]);
+      return { ok: true, result: { messages: [], remaining: 0 } };
+    }, ["mac"], null, 5, 20_000, undefined, () => calls.length < 2);
+    await n.idle();
+    expect(calls).toEqual([["mac", "watch_poll", { wait_ms: 20_000, tells: true }], ["mac", "watch_poll", { wait_ms: 20_000, tells: true }]]);
+  });
   test("keeps polling a machine whose gateway fails for another reason, an interval apart", async () => {
     let polls = 0;
     const call: CallGateway = async () => {

@@ -142,6 +142,32 @@ describe("subscription lifecycle", () => {
 });
 
 describe("delivery", () => {
+  test("agent.message delivers a tell, linked or not, and only to agent.message subscribers", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe({ name: "agent.message", arguments: { machine: "mac" } }));
+    await f.service.subscribe(principal, subscribe({ name: "agent.finished", arguments: { machine: "mac" } }));
+    expect(f.service.wantsMessages("mac")).toBe(true);
+    expect(f.service.wantsMessages("ovh")).toBe(false);
+    expect(await f.service.addReports("mac", [report({ type: "message", excerpt: "Which retry policy?", lease: null, reply_to: null })])).toBe(1);
+    await f.service.flush();
+    const event = JSON.parse(f.sent.at(-1)!.body);
+    expect(event.name).toBe("agent.message");
+    expect(event.data).toEqual({ machine: "mac", pane_id: "w1:p1", agent: "worker", cwd: "/work/project", excerpt: "Which retry policy?" });
+    expect(EVENTS.map(e => e.name)).toContain("agent.message");
+  });
+  test("wantsMessages ends with the subscription", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe({ name: "agent.message", arguments: {}, ttlMs: 60_000 }));
+    expect(f.service.wantsMessages("syno")).toBe(true);
+    f.tick(61_000);
+    expect(f.service.wantsMessages("syno")).toBe(false);
+  });
+  test("onSubscribed hears each saved subscription", async () => {
+    const heard: unknown[] = [];
+    const f = fixture({ onSubscribed: (name: string, args: unknown) => heard.push([name, args]) });
+    await f.service.subscribe(principal, subscribe({ name: "agent.message", arguments: { machine: "mac" } }));
+    expect(heard).toEqual([["agent.message", { machine: "mac" }]]);
+  });
   test("agent.asks advertises structured menus without changing the finished payload", () => {
     const asks = EVENTS.find(event => event.name === "agent.asks")!.payloadSchema;
     const finished = EVENTS.find(event => event.name === "agent.finished")!.payloadSchema;

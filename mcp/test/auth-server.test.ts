@@ -126,7 +126,7 @@ describe("authenticated MCP endpoint", () => {
     const legacy = await rpc("initialize", { protocolVersion: "2025-11-25", clientInfo: { name: "test", version: "1" }, capabilities: {} }, bearer, false);
     expect((await legacy.json() as any).result.capabilities.events).toBeUndefined();
     const listed = await rpc("events/list");
-    expect((await listed.json() as any).result.events.map((event: any) => event.name)).toEqual(["agent.finished", "agent.asks"]);
+    expect((await listed.json() as any).result.events.map((event: any) => event.name)).toEqual(["agent.finished", "agent.asks", "agent.message"]);
   });
 
   test("same endpoint verifies and stores a subscription, then dispatches a scoped report", async () => {

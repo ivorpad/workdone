@@ -27,7 +27,9 @@ export interface Notifier {
 
 // Both native Events and fallback cards consume these reports. Await durable
 // enqueue before taking another gateway pass; phone delivery stays independent.
-export function startNotifier(call: CallGateway, machines: string[], via: string | null, intervalMs: number, waitMs = WAIT_MS, onReports?: (machine: string, reports: Report[]) => void | Promise<void>): Notifier {
+// keep(machine): poll that machine even with nothing watched, and have its gateway wait
+// for tells too. True while a chat is subscribed to agent.message there.
+export function startNotifier(call: CallGateway, machines: string[], via: string | null, intervalMs: number, waitMs = WAIT_MS, onReports?: (machine: string, reports: Report[]) => void | Promise<void>, keep: (machine: string) => boolean = () => false): Notifier {
   const pending = new Set<string>();
   const failing = new Map<string, string>();
   const loops = new Map<string, Promise<void>>();
@@ -58,7 +60,8 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
       catch { return "rest"; }
     }
     const started = Date.now();
-    const res = await call(machine, "watch_poll", { wait_ms: waitMs });
+    const tells = keep(machine);
+    const res = await call(machine, "watch_poll", tells ? { wait_ms: waitMs, tells: true } : { wait_ms: waitMs });
     if (!res.ok) {
       // Only a gateway older than watch_poll fails the same way every time. Anything
       // else is retried: watches last for days, and dropping the machine would leave
@@ -94,7 +97,7 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
       if (!sent.ok) console.error(JSON.stringify({ event: "notify_failed", machine, message, error: sent.error }));
     }
     if (retryReports.has(machine)) return "rest";
-    if (remaining === 0) return "done";
+    if (remaining === 0 && !keep(machine)) return "done";
     return messages.length > 0 || Date.now() - started >= waitMs / 2 ? "now" : "rest";
   }
 

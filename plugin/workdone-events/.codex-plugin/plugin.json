@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "WorkDone Events",
     "shortDescription": "Get told in chat when a Herdr agent finishes or asks something.",
-    "longDescription": "Subscribes a ChatGPT chat to the agent.finished and agent.asks events of the Herdr agents on your Mac, OVH and Synology, so the chat is woken when an agent finishes a turn or needs an answer. It carries events only. To prompt or steer agents, use the WorkDone plugin.",
+    "longDescription": "Subscribes a ChatGPT chat to the agent.finished, agent.asks and agent.message events of the Herdr agents on your Mac, OVH and Synology, so the chat is woken when an agent finishes a turn or needs an answer. It carries events only. To prompt or steer agents, use the WorkDone plugin.",
     "developerName": "Ivor",
     "category": "Coding",
     "capabilities": [
