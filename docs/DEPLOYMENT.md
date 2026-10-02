@@ -1,152 +1,152 @@
-# Despliegue de WorkDone en máquinas nuevas
+# Deploying WorkDone on new machines
 
-Runbook para desplegar el puente Herdr ↔ ChatGPT (WorkDone) desde cero, en máquinas de otra persona. Está escrito para que lo siga un agente de código con acceso a este repositorio y a una terminal en la estación de trabajo, pidiendo al humano solo lo que exige su cuenta o su decisión.
+Runbook for deploying the Herdr ↔ ChatGPT bridge (WorkDone) from scratch, on someone else's machines. It is written for a coding agent with access to this repository and to a terminal on the workstation, which asks the human only for what needs their account or their decision.
 
 ```text
-ChatGPT → app MCP (conexión Tunnel) → OpenAI Secure MCP Tunnel
-  → tunnel-client en el servidor → MCP en 127.0.0.1:8787 del servidor
-  → OpenSSH sobre Tailscale → comando forzado (gateway) en la estación → socket de Herdr
-  → OpenSSH a 127.0.0.1    → gateway del propio servidor (opcional)
-  → OpenSSH sobre Tailscale → gateway de otras máquinas (opcional, scripts/add-machine.sh)
+ChatGPT → MCP app (Tunnel connection) → OpenAI Secure MCP Tunnel
+  → tunnel-client on the server → MCP on the server's 127.0.0.1:8787
+  → OpenSSH over Tailscale → forced command (gateway) on the workstation → Herdr socket
+  → OpenSSH to 127.0.0.1    → the server's own gateway (optional)
+  → OpenSSH over Tailscale → gateways on other machines (optional, scripts/add-machine.sh)
 ```
 
-Tres papeles:
+Three roles:
 
-- **Estación de trabajo** (macOS o Linux): donde corren Herdr y los agentes. Lleva el gateway. Desde aquí se lanzan los scripts.
-- **Servidor** (Linux con systemd, siempre encendido): el MCP, el túnel o túneles de OpenAI y, si se activan los Events nativos, el emisor OAuth.
-- **Máquinas extra** (opcional): cualquier equipo con Bun, Herdr y sshd en la tailnet.
+- **Workstation** (macOS or Linux): where Herdr and the agents run. It carries the gateway. The scripts are launched from here.
+- **Server** (Linux with systemd, always on): the MCP, the OpenAI tunnel or tunnels and, if native Events are turned on, the OAuth issuer.
+- **Extra machines** (optional): any computer with Bun, Herdr and sshd on the tailnet.
 
-Documentos relacionados, que este no repite:
+Related documents, which this one does not repeat:
 
-- `README.md`: herramientas, capacidades, alias de agentes, notificaciones, dónde están los controles de seguridad.
-- `docs/INSTALL_AND_SETUP.md`: el runbook original y sus restricciones de seguridad. Usa Node y algunos nombres antiguos; donde difiera, manda este documento y el código.
-- `docs/mcp-events.md` e `issuer/README.md`: Events nativos y emisor OAuth.
-- `docs/chatgpt-link.md`: la tarjeta de enlace, `tell`, las políticas de permisos y la tarjeta de aprobación.
-
----
-
-## Índice
-
-0. [Convenciones](#0-convenciones)
-1. [Valores a rellenar antes de empezar](#1-valores-a-rellenar-antes-de-empezar)
-2. [Requisitos por máquina](#2-requisitos-por-máquina)
-3. [Fase 1: gateway en la estación](#3-fase-1-gateway-en-la-estación)
-4. [Fase 2: base del servidor y clave del puente](#4-fase-2-base-del-servidor-y-clave-del-puente)
-5. [Fase 3: authorized_keys en la estación](#5-fase-3-authorized_keys-en-la-estación)
-6. [Fase 4: política de Tailscale](#6-fase-4-política-de-tailscale)
-7. [Fase 5: fijar la host key y pruebas negativas](#7-fase-5-fijar-la-host-key-y-pruebas-negativas)
-8. [Fase 6: servicio MCP en el servidor](#8-fase-6-servicio-mcp-en-el-servidor)
-9. [Fase 7: tunnel-client verificado](#9-fase-7-tunnel-client-verificado)
-10. [Fase 8: túnel y API key en OpenAI Platform](#10-fase-8-túnel-y-api-key-en-openai-platform)
-11. [Fase 9: configurar y arrancar el túnel](#11-fase-9-configurar-y-arrancar-el-túnel)
-12. [Fase 10: app y plugin en ChatGPT](#12-fase-10-app-y-plugin-en-chatgpt)
-13. [Fase 11: pruebas de aceptación](#13-fase-11-pruebas-de-aceptación)
-14. [Fase 12 (opcional): el servidor como máquina y avisos al móvil](#14-fase-12-opcional-el-servidor-como-máquina-y-avisos-al-móvil)
-15. [Fase 13 (opcional): máquinas extra](#15-fase-13-opcional-máquinas-extra)
-16. [Fase 14 (opcional): capacidades y alias de agentes](#16-fase-14-opcional-capacidades-y-alias-de-agentes)
-17. [Fase 15 (opcional, experimental): Events nativos y emisor OAuth](#17-fase-15-opcional-experimental-events-nativos-y-emisor-oauth)
-18. [Operación diaria y actualizaciones](#18-operación-diaria-y-actualizaciones)
-19. [Rotar la API key del túnel](#19-rotar-la-api-key-del-túnel)
-20. [Fallos conocidos y arreglos](#20-fallos-conocidos-y-arreglos)
-21. [Valores fijos en los scripts y cómo adaptarlos](#21-valores-fijos-en-los-scripts-y-cómo-adaptarlos)
-22. [Desinstalar](#22-desinstalar)
+- `README.md`: tools, capabilities, agent aliases, notifications, where the security checks live.
+- `docs/INSTALL_AND_SETUP.md`: the original runbook and its security constraints. It uses Node and some old names. Where it differs, this document and the code win.
+- `docs/mcp-events.md` and `issuer/README.md`: native Events and the OAuth issuer.
+- `docs/chatgpt-link.md`: the link card, `tell`, the permission policies and the approval card.
 
 ---
 
-## 0. Convenciones
+## Contents
 
-- **[AGENTE]**: lo ejecuta el agente.
-- **[HUMANO]**: lo hace la persona dueña de las cuentas. Son pasos en OpenAI Platform, en ChatGPT, en la consola de administración de Tailscale, en los ajustes del sistema, y cualquier paso que toque un secreto. El agente le dice exactamente qué hacer y espera a que confirme.
-- Si el clasificador de permisos del agente bloquea un paso (escribir `known_hosts` remotos, copiar el repo al servidor, arrancar el túnel, desplegar), no se rodea: se le da el comando al humano para que lo ejecute él.
-- Los comandos marcados "en la estación" se ejecutan desde la raíz del repo clonado (`<REPO_DIR>`). Los marcados "en el servidor" se ejecutan tras `ssh <SERVER_SSH_ALIAS>`.
-- Antes de editar cualquier fichero existente, se hace una copia `.bak-AAAAMMDDhhmmss`. Los scripts del repo ya lo hacen con lo que tocan.
-
-### Secretos
-
-Hay tres: la API key de runtime del túnel (`sk-…`), la contraseña del emisor OAuth (solo en la fase 15) y las claves privadas SSH. Reglas:
-
-- El agente nunca imprime, lee, copia ni pega un secreto. Tampoco lee el portapapeles, ni siquiera para comprobar un prefijo.
-- Las claves privadas SSH se generan en la máquina que las usa y no salen de ella. Solo viaja la clave pública.
-- La API key entra en el servidor por un prompt oculto o por una tubería desde el portapapeles que ejecuta el humano en su propia terminal (fase 9). Llega a `tunnel-client` por entorno, nunca por argumentos visibles en `ps`.
-- En el chat con el agente no se pega nunca un secreto.
+0. [Conventions](#0-conventions)
+1. [Values to fill in before starting](#1-values-to-fill-in-before-starting)
+2. [Requirements per machine](#2-requirements-per-machine)
+3. [Phase 1: gateway on the workstation](#3-phase-1-gateway-on-the-workstation)
+4. [Phase 2: server base and bridge key](#4-phase-2-server-base-and-bridge-key)
+5. [Phase 3: authorized_keys on the workstation](#5-phase-3-authorized_keys-on-the-workstation)
+6. [Phase 4: Tailscale policy](#6-phase-4-tailscale-policy)
+7. [Phase 5: pin the host key and negative tests](#7-phase-5-pin-the-host-key-and-negative-tests)
+8. [Phase 6: MCP service on the server](#8-phase-6-mcp-service-on-the-server)
+9. [Phase 7: verified tunnel-client](#9-phase-7-verified-tunnel-client)
+10. [Phase 8: tunnel and API key in OpenAI Platform](#10-phase-8-tunnel-and-api-key-in-openai-platform)
+11. [Phase 9: configure and start the tunnel](#11-phase-9-configure-and-start-the-tunnel)
+12. [Phase 10: app and plugin in ChatGPT](#12-phase-10-app-and-plugin-in-chatgpt)
+13. [Phase 11: acceptance tests](#13-phase-11-acceptance-tests)
+14. [Phase 12 (optional): the server as a machine, and phone notifications](#14-phase-12-optional-the-server-as-a-machine-and-phone-notifications)
+15. [Phase 13 (optional): extra machines](#15-phase-13-optional-extra-machines)
+16. [Phase 14 (optional): capabilities and agent aliases](#16-phase-14-optional-capabilities-and-agent-aliases)
+17. [Phase 15 (optional, experimental): native Events and OAuth issuer](#17-phase-15-optional-experimental-native-events-and-oauth-issuer)
+18. [Daily operation and updates](#18-daily-operation-and-updates)
+19. [Rotate the tunnel API key](#19-rotate-the-tunnel-api-key)
+20. [Known failures and fixes](#20-known-failures-and-fixes)
+21. [Hardcoded values in the scripts and how to adapt them](#21-hardcoded-values-in-the-scripts-and-how-to-adapt-them)
+22. [Uninstall](#22-uninstall)
 
 ---
 
-## 1. Valores a rellenar antes de empezar
+## 0. Conventions
 
-El agente rellena esta tabla primero (en sus notas, no en el repo) y la usa en todo el documento. Ninguno de estos valores es secreto, pero tampoco se commitean.
+- **[AGENT]**: the agent runs it.
+- **[HUMAN]**: the person who owns the accounts does it. These are steps in OpenAI Platform, in ChatGPT, in the Tailscale admin console, in system settings, and any step that touches a secret. The agent tells them exactly what to do and waits for them to confirm.
+- If the agent's permission classifier blocks a step (writing remote `known_hosts`, copying the repo to the server, starting the tunnel, deploying), do not work around it: give the command to the human to run.
+- Commands marked "on the workstation" run from the root of the cloned repo (`<REPO_DIR>`). Commands marked "on the server" run after `ssh <SERVER_SSH_ALIAS>`.
+- Before editing any existing file, make a `.bak-YYYYMMDDhhmmss` copy. The repo scripts already do this for what they touch.
 
-| Marcador | Qué es | Cómo obtenerlo |
+### Secrets
+
+There are three: the tunnel runtime API key (`sk-…`), the OAuth issuer password (phase 15 only) and the SSH private keys. Rules:
+
+- The agent never prints, reads, copies or pastes a secret. It does not read the clipboard either, not even to check a prefix.
+- SSH private keys are generated on the machine that uses them and never leave it. Only the public key travels.
+- The API key reaches the server through a hidden prompt or through a pipe from the clipboard that the human runs in their own terminal (phase 9). It reaches `tunnel-client` through the environment, never through arguments visible in `ps`.
+- Never paste a secret into the chat with the agent.
+
+---
+
+## 1. Values to fill in before starting
+
+The agent fills in this table first (in its notes, not in the repo) and uses it throughout the document. None of these values is secret, but they are not committed either.
+
+| Placeholder | What it is | How to get it |
 | --- | --- | --- |
-| `<REPO_DIR>` | Ruta del repo clonado en la estación | `pwd` en la raíz del clon |
-| `<WORKSTATION_OS>` | `macos` o `linux` | `uname -s` (`Darwin` = macOS) |
-| `<WORKSTATION_USER>` | Usuario de la estación | `whoami` |
-| `<WORKSTATION_HOME>` | Home absoluto de la estación | `printf '%s\n' "$HOME"` |
-| `<WORKSTATION_TAILNET_HOST>` | Nombre MagicDNS de la estación | `tailscale status --json \| jq -r .Self.DNSName \| sed 's/\.$//'` |
-| `<WORKSTATION_TAILSCALE_IP>` | IP Tailscale de la estación | `tailscale ip -4` |
-| `<WORKSTATION_MACHINE>` | Nombre de la estación para ChatGPT (el parámetro `machine`) | Elección. `mac` encaja con la skill y los ejemplos actuales; en Linux puede ser otro (ver §12.2) |
-| `<HERDR_SOCKET>` | Socket de Herdr en la estación | `herdr status server` (normalmente `~/.config/herdr/herdr.sock`) |
-| `<BUN_VERSION>` | Versión de Bun de la estación | `bun --version` |
-| `<SERVER_SSH_ALIAS>` | Alias SSH del servidor en `~/.ssh/config` de la estación | `grep -i '^Host ' ~/.ssh/config`, y comprobar con `ssh <alias> true` |
-| `<SERVER_USER>` | Usuario con el que la estación entra al servidor | `ssh <SERVER_SSH_ALIAS> whoami` |
-| `<SERVER_TAILSCALE_IP>` | IP Tailscale del servidor | `ssh <SERVER_SSH_ALIAS> tailscale ip -4` |
-| `<SERVER_ARCH>` | `amd64` o `arm64` | `ssh <SERVER_SSH_ALIAS> uname -m` (`x86_64` = amd64, `aarch64` = arm64) |
-| `<ALLOWED_ROOT>` | Carpeta de proyectos que ChatGPT podrá ver en la estación | Preguntar al humano. Ni `/` ni `~` (el gateway las rechaza) |
-| `<TUNNEL_CLIENT_VERSION>` | Release de `openai/tunnel-client` | `gh release list -R openai/tunnel-client --limit 3` |
-| `<TUNNEL_ID>` | ID del túnel (`tunnel_` + 32 hex) | Lo da OpenAI Platform en la fase 8 [HUMANO] |
-| `<APP_ID>` | ID de la app en ChatGPT (`asdk_app_…`) | URL de ajustes de la app en la fase 10, sin el prefijo `plugin_` |
+| `<REPO_DIR>` | Path of the cloned repo on the workstation | `pwd` at the root of the clone |
+| `<WORKSTATION_OS>` | `macos` or `linux` | `uname -s` (`Darwin` = macOS) |
+| `<WORKSTATION_USER>` | Workstation user | `whoami` |
+| `<WORKSTATION_HOME>` | Absolute home directory on the workstation | `printf '%s\n' "$HOME"` |
+| `<WORKSTATION_TAILNET_HOST>` | MagicDNS name of the workstation | `tailscale status --json \| jq -r .Self.DNSName \| sed 's/\.$//'` |
+| `<WORKSTATION_TAILSCALE_IP>` | Tailscale IP of the workstation | `tailscale ip -4` |
+| `<WORKSTATION_MACHINE>` | Workstation name for ChatGPT (the `machine` parameter) | Your choice. `mac` fits the skill and the current examples. On Linux it can be something else (see §12.2) |
+| `<HERDR_SOCKET>` | Herdr socket on the workstation | `herdr status server` (usually `~/.config/herdr/herdr.sock`) |
+| `<BUN_VERSION>` | Bun version on the workstation | `bun --version` |
+| `<SERVER_SSH_ALIAS>` | SSH alias of the server in the workstation's `~/.ssh/config` | `grep -i '^Host ' ~/.ssh/config`, then check with `ssh <alias> true` |
+| `<SERVER_USER>` | User the workstation logs into the server as | `ssh <SERVER_SSH_ALIAS> whoami` |
+| `<SERVER_TAILSCALE_IP>` | Tailscale IP of the server | `ssh <SERVER_SSH_ALIAS> tailscale ip -4` |
+| `<SERVER_ARCH>` | `amd64` or `arm64` | `ssh <SERVER_SSH_ALIAS> uname -m` (`x86_64` = amd64, `aarch64` = arm64) |
+| `<ALLOWED_ROOT>` | Projects folder on the workstation that ChatGPT will be able to see | Ask the human. Neither `/` nor `~` (the gateway rejects them) |
+| `<TUNNEL_CLIENT_VERSION>` | `openai/tunnel-client` release | `gh release list -R openai/tunnel-client --limit 3` |
+| `<TUNNEL_ID>` | Tunnel ID (`tunnel_` + 32 hex) | OpenAI Platform gives it in phase 8 [HUMAN] |
+| `<APP_ID>` | App ID in ChatGPT (`asdk_app_…`) | App settings URL in phase 10, without the `plugin_` prefix |
 
-Solo para la fase 15 (Events):
+Only for phase 15 (Events):
 
-| Marcador | Qué es | Cómo obtenerlo |
+| Placeholder | What it is | How to get it |
 | --- | --- | --- |
-| `<AUTH_PORT>` | Puerto loopback del listener OAuth del MCP | Uno libre en el servidor: `ss -ltn`. Los scripts actuales usan `8789` |
-| `<ISSUER_HOST>` | Nombre DNS público del servidor para el emisor | DNS del humano apuntando a la IP pública del servidor |
-| `<MCP_RESOURCE>` | URL canónica del recurso MCP con OAuth | `https://<ISSUER_HOST>/mcp` si se usa la ruta pública de §17 |
+| `<AUTH_PORT>` | Loopback port of the MCP's OAuth listener | A free one on the server: `ss -ltn`. The current scripts use `8789` |
+| `<ISSUER_HOST>` | Public DNS name of the server for the issuer | The human's DNS pointing at the server's public IP |
+| `<MCP_RESOURCE>` | Canonical URL of the OAuth-protected MCP resource | `https://<ISSUER_HOST>/mcp` if you use the public route from §17 |
 
-Comprobación de conectividad antes de seguir (en el servidor):
+Connectivity check before going on (on the server):
 
 ```bash
 tailscale ping -c 1 <WORKSTATION_TAILSCALE_IP>
 nc -z -w 3 <WORKSTATION_TAILSCALE_IP> 22 && echo ssh-ok
 ```
 
-Esperado: `pong from …` y `ssh-ok`. Si no, no se sigue.
+Expected: `pong from …` and `ssh-ok`. If not, stop here.
 
 ---
 
-## 2. Requisitos por máquina
+## 2. Requirements per machine
 
-### Estación
+### Workstation
 
-- Herdr instalado y su servidor en marcha. `herdr --version` y `herdr status server` responden.
-- Bun en `~/.bun/bin/bun` (o en otra ruta, que se pasa con `BUN=`).
-- `jq`, `git`, `ssh`, `zip`, `gh` (para verificar `tunnel-client`).
-- Tailscale conectado.
-- sshd del sistema escuchando en el puerto 22 de la tailnet, **no Tailscale SSH**. Con Tailscale SSH, el servidor SSH de Tailscale atiende el puerto 22 y las restricciones de `authorized_keys` (comando forzado, `from=`) no se aplican.
+- Herdr installed and its server running. `herdr --version` and `herdr status server` respond.
+- Bun at `~/.bun/bin/bun` (or at another path, passed with `BUN=`).
+- `jq`, `git`, `ssh`, `zip`, `gh` (to verify `tunnel-client`).
+- Tailscale connected.
+- The system sshd listening on port 22 of the tailnet, **not Tailscale SSH**. With Tailscale SSH, Tailscale's SSH server answers port 22 and the `authorized_keys` restrictions (forced command, `from=`) are not applied.
 
   ```bash
   tailscale debug prefs | grep RunSSH
   ```
 
-  Esperado: `"RunSSH": false`. Si sale `true`, **[HUMANO]** decide: desactivarlo o usar otro puerto con un sshd normal (ver `docs/INSTALL_AND_SETUP.md`, fase 0). No se desactiva sin permiso.
+  Expected: `"RunSSH": false`. If it shows `true`, **[HUMAN]** decides: turn it off, or use another port with a normal sshd (see `docs/INSTALL_AND_SETUP.md`, phase 0). Do not turn it off without permission.
 
-- macOS: "Sesión remota" activada **[HUMANO]** (Ajustes del Sistema > General > Compartir > Sesión remota). `launchctl` puede mostrar `com.openssh.sshd` como "not running": es normal, launchd arranca sshd por conexión.
-- macOS, opcional: para que el gateway lea `~/Downloads`, `~/Documents` o `~/Desktop`, **[HUMANO]** activa "Permitir acceso total al disco para usuarios remotos" en el mismo panel. Afecta a todas las sesiones SSH, no solo al puente.
+- macOS: "Remote Login" turned on **[HUMAN]** (System Settings > General > Sharing > Remote Login). `launchctl` may show `com.openssh.sshd` as "not running": that is normal, launchd starts sshd per connection.
+- macOS, optional: for the gateway to read `~/Downloads`, `~/Documents` or `~/Desktop`, **[HUMAN]** turns on "Allow full disk access for remote users" in the same panel. It affects every SSH session, not just the bridge.
 
-### Servidor
+### Server
 
-- Linux con systemd (probado en Debian 12). `sudo` sin contraseña para `<SERVER_USER>`: `scripts/deploy-ovh.sh`, `scripts/add-machine.sh` y `scripts/deploy-issuer.sh` ejecutan `sudo` en sesiones sin terminal.
-- Tailscale conectado, en modo TUN (el normal). En modo userspace sshd no ve la IP tailnet del cliente y `from=` deja de servir.
-- `curl`, `jq`, `ssh`, `python3` o `unzip`, `ss`.
-- Bun `<BUN_VERSION>` en `/usr/local/bin/bun`, la misma versión que la estación (ver fase 2).
-- Solo si el servidor va a ser también una máquina de trabajo (fase 12): Herdr con su servidor en marcha para `<SERVER_USER>`, sshd escuchando en `127.0.0.1:22` y `~/.ssh/authorized_keys` existente.
-- Solo para la fase 15: Node 24 en `/usr/bin/node`, puertos 80 y 443 públicos y un proxy TLS (Caddy).
-- Nada de lo que instala este runbook escucha en una interfaz pública, salvo el emisor y la ruta `/mcp` de la fase 15.
+- Linux with systemd (tested on Debian 12). Passwordless `sudo` for `<SERVER_USER>`: `scripts/deploy-ovh.sh`, `scripts/add-machine.sh` and `scripts/deploy-issuer.sh` run `sudo` in sessions without a terminal.
+- Tailscale connected, in TUN mode (the normal one). In userspace mode sshd does not see the client's tailnet IP and `from=` stops working.
+- `curl`, `jq`, `ssh`, `python3` or `unzip`, `ss`.
+- Bun `<BUN_VERSION>` at `/usr/local/bin/bun`, the same version as the workstation (see phase 2).
+- Only if the server will also be a working machine (phase 12): Herdr with its server running for `<SERVER_USER>`, sshd listening on `127.0.0.1:22`, and an existing `~/.ssh/authorized_keys`.
+- Only for phase 15: Node 24 at `/usr/bin/node`, public ports 80 and 443, and a TLS proxy (Caddy).
+- Nothing this runbook installs listens on a public interface, except the issuer and the `/mcp` route from phase 15.
 
-### Verificación
+### Verification
 
-En la estación:
+On the workstation:
 
 ```bash
 herdr --version && herdr status server
@@ -154,55 +154,55 @@ herdr --version && herdr status server
 tailscale debug prefs | grep RunSSH
 ```
 
-En el servidor:
+On the server:
 
 ```bash
 cat /etc/os-release | head -3; systemctl --version | head -1
 sudo -n true && echo sudo-ok
-ss -ltn | grep -E ':(8787|8080|8081|8789|8790)\b' || echo puertos-libres
+ss -ltn | grep -E ':(8787|8080|8081|8789|8790)\b' || echo ports-free
 ```
 
-Esperado: versiones impresas, `"RunSSH": false`, `sudo-ok`, `puertos-libres`. Si algún puerto está ocupado, se anota y se adapta (ver §21).
+Expected: versions printed, `"RunSSH": false`, `sudo-ok`, `ports-free`. If a port is taken, note it and adapt (see §21).
 
 ---
 
-## 3. Fase 1: gateway en la estación
+## 3. Phase 1: gateway on the workstation
 
-El gateway es el comando forzado de la clave del puente: lee una petición JSON por línea en stdin y responde una línea en stdout. Hace las comprobaciones de seguridad (raíces permitidas, IDs, capacidades) en la propia estación. Detalle en `README.md`, "Where the security checks live".
+The gateway is the forced command of the bridge key: it reads one JSON request per line on stdin and answers with one line on stdout. It runs the security checks (allowed roots, IDs, capabilities) on the workstation itself. Details in `README.md`, "Where the security checks live".
 
-**[AGENTE]** En la estación:
+**[AGENT]** On the workstation:
 
 ```bash
 cd <REPO_DIR>
 bun install && (cd mcp && bun install)
-bun run check                 # tsc + todos los tests
-scripts/install-gateway.sh    # BUN=/ruta/a/bun si no está en ~/.bun/bin/bun
+bun run check                 # tsc + all the tests
+scripts/install-gateway.sh    # BUN=/path/to/bun if it is not at ~/.bun/bin/bun
 ```
 
-`install-gateway.sh` copia `gateway/*.ts` y el lanzador a `~/.local/libexec/herdr-chatgpt/` (700/600), escribe `bun-path`, instala `workdone-tell` en `~/.local/bin` y, si no existe, crea `~/.config/herdr-chatgpt/gateway.json` desde `config/mac-gateway.example.json`. Nunca sobrescribe un `gateway.json` existente.
+`install-gateway.sh` copies `gateway/*.ts` and the launcher to `~/.local/libexec/herdr-chatgpt/` (700/600), writes `bun-path`, installs `workdone-tell` in `~/.local/bin` and, if it does not exist, creates `~/.config/herdr-chatgpt/gateway.json` from `config/mac-gateway.example.json`. It never overwrites an existing `gateway.json`.
 
-### Editar `gateway.json`
+### Edit `gateway.json`
 
-Copia de seguridad primero. Cambios mínimos sobre el ejemplo:
+Backup first. Minimal changes to the example:
 
-- `allowedRoots`: `["<ALLOWED_ROOT>"]`. Cada raíz tiene que existir. Se rechazan `/` y `~`.
-- `repos`: `{}` o los repos reales dentro de las raíces. Un repo fuera de las raíces hace fallar la carga.
-- `herdrSocketPath`: `<HERDR_SOCKET>` si no es el de por defecto.
-- `agentAliases`: el ejemplo apunta a `~/.config/herdr-chatgpt/agent-aliases.json`. **Si ese fichero no existe, el gateway no arranca.** O se borra la clave por ahora, o se genera el fichero (§16.2).
-- `agentKinds`: solo las CLI instaladas en la estación (`claude`, `codex`, `cursor`, `pi`).
-- En Linux: `shell` (por ejemplo `/usr/bin/zsh` o `/bin/bash`) y `extraPath` (quitar `/opt/homebrew/bin`).
-- Todas las capacidades `allow*` se quedan en `false` en la instalación inicial.
+- `allowedRoots`: `["<ALLOWED_ROOT>"]`. Each root must exist. `/` and `~` are rejected.
+- `repos`: `{}` or the real repos inside the roots. A repo outside the roots makes loading fail.
+- `herdrSocketPath`: `<HERDR_SOCKET>` if it is not the default one.
+- `agentAliases`: the example points at `~/.config/herdr-chatgpt/agent-aliases.json`. **If that file does not exist, the gateway does not start.** Either delete the key for now, or generate the file (§16.2).
+- `agentKinds`: only the CLIs installed on the workstation (`claude`, `codex`, `cursor`, `pi`).
+- On Linux: `shell` (for example `/usr/bin/zsh` or `/bin/bash`) and `extraPath` (remove `/opt/homebrew/bin`).
+- All `allow*` capabilities stay `false` in the initial install.
 
 ```bash
 cp -p ~/.config/herdr-chatgpt/gateway.json ~/.config/herdr-chatgpt/gateway.json.bak-$(date +%Y%m%d%H%M%S)
-# editar con jq o con el editor; ejemplo mínimo:
+# edit with jq or with the editor; minimal example:
 jq --arg root '<ALLOWED_ROOT>' '.allowedRoots = [$root] | .repos = {} | del(.agentAliases)' \
   ~/.config/herdr-chatgpt/gateway.json > /tmp/gw.json && install -m 600 /tmp/gw.json ~/.config/herdr-chatgpt/gateway.json && rm /tmp/gw.json
 ```
 
-El gateway relee `gateway.json` en cada llamada: no hay nada que reiniciar.
+The gateway rereads `gateway.json` on every call, so there is nothing to restart.
 
-### Verificación
+### Verification
 
 ```bash
 L=~/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
@@ -216,25 +216,25 @@ printf '%s\n' \
   'not json' | env -i HOME="$HOME" "$L" | jq -c '{id, ok, code: .error.code}'
 ```
 
-Esperado:
+Expected:
 
-- 1 y 2 con `ok: true`. La respuesta completa de 1 trae `herdr_version` y `allowed_roots`.
+- 1 and 2 with `ok: true`. The full response to 1 includes `herdr_version` and `allowed_roots`.
 - 3 `invalid_params`.
-- 4 y 5 `capability_disabled`.
+- 4 and 5 `capability_disabled`.
 - 6 `unknown_operation`.
-- la última `invalid_json`.
+- the last one `invalid_json`.
 
-Además, `overview` no debe listar agentes cuyo directorio quede fuera de `<ALLOWED_ROOT>`: aparecen como "not found". Cada llamada queda en `~/.local/state/herdr-chatgpt/audit.jsonl`.
+Also, `overview` must not list agents whose directory is outside `<ALLOWED_ROOT>`: they show up as "not found". Every call is logged in `~/.local/state/herdr-chatgpt/audit.jsonl`.
 
 ---
 
-## 4. Fase 2: base del servidor y clave del puente
+## 4. Phase 2: server base and bridge key
 
-### Bun con la misma versión que la estación
+### Bun with the same version as the workstation
 
-El lockfile lo escribe la versión de Bun de la estación. Con otra versión, `bun install --frozen-lockfile` falla con `UnknownLockfileVersion`. Se instala el release oficial en `/usr/local/bin`, verificado, sin tocar un Bun de usuario que ya exista.
+The lockfile is written by the workstation's Bun version. With another version, `bun install --frozen-lockfile` fails with `UnknownLockfileVersion`. Install the official release in `/usr/local/bin`, verified, without touching a user Bun that may already exist.
 
-**[AGENTE]** En el servidor (`bun-linux-x64.zip` para amd64, `bun-linux-aarch64.zip` para arm64):
+**[AGENT]** On the server (`bun-linux-x64.zip` for amd64, `bun-linux-aarch64.zip` for arm64):
 
 ```bash
 V=<BUN_VERSION>; A=bun-linux-x64
@@ -247,9 +247,9 @@ sudo install -m 755 -o root -g root "$A/bun" /usr/local/bin/bun
 /usr/local/bin/bun --version
 ```
 
-Esperado: `…zip: OK` y la misma versión que `<BUN_VERSION>`.
+Expected: `…zip: OK` and the same version as `<BUN_VERSION>`.
 
-### Usuario de servicio, directorios y clave
+### Service user, directories and key
 
 ```bash
 id herdr-mcp 2>/dev/null || sudo useradd --system --home /var/lib/herdr-mcp --create-home --shell /usr/sbin/nologin herdr-mcp
@@ -259,30 +259,30 @@ sudo test -e /etc/herdr-mcp/ssh/id_ed25519 || \
   sudo -u herdr-mcp ssh-keygen -q -t ed25519 -a 100 -N "" -C herdr-chatgpt-bridge -f /etc/herdr-mcp/ssh/id_ed25519
 ```
 
-La clave privada no sale del servidor. Es una clave dedicada: no se usa ninguna clave personal.
+The private key never leaves the server. It is a dedicated key: no personal key is used.
 
-### Verificación
+### Verification
 
 ```bash
 sudo ls -l /etc/herdr-mcp/ssh/
 sudo ssh-keygen -lf /etc/herdr-mcp/ssh/id_ed25519.pub
 ```
 
-Esperado: `id_ed25519` con `-rw------- herdr-mcp`, y una huella `SHA256:… herdr-chatgpt-bridge (ED25519)`.
+Expected: `id_ed25519` with `-rw------- herdr-mcp`, and a fingerprint `SHA256:… herdr-chatgpt-bridge (ED25519)`.
 
 ---
 
-## 5. Fase 3: authorized_keys en la estación
+## 5. Phase 3: authorized_keys on the workstation
 
-La línea queda así:
+The line ends up like this:
 
 ```text
 from="<SERVER_TAILSCALE_IP>",restrict,command="<WORKSTATION_HOME>/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh" ssh-ed25519 AAAA… herdr-chatgpt-bridge
 ```
 
-`from=` acepta la clave solo desde la IP Tailscale del servidor, `restrict` quita PTY, reenvíos y agente, y `command=` fuerza el gateway. El lanzador ignora `SSH_ORIGINAL_COMMAND` y lo audita como `ssh_command_ignored`.
+`from=` accepts the key only from the server's Tailscale IP, `restrict` removes PTY, forwarding and agent forwarding, and `command=` forces the gateway. The launcher ignores `SSH_ORIGINAL_COMMAND` and audits it as `ssh_command_ignored`.
 
-**[AGENTE]** En la estación:
+**[AGENT]** On the workstation:
 
 ```bash
 install -d -m 700 ~/.ssh
@@ -294,65 +294,65 @@ rm /tmp/bridge.pub
 chmod 600 ~/.ssh/authorized_keys
 ```
 
-La ruta del lanzador no puede tener espacios ni comillas (el script lo rechaza).
+The launcher path cannot contain spaces or quotes (the script rejects them).
 
-### Verificación
+### Verification
 
 ```bash
 tail -1 ~/.ssh/authorized_keys | cut -c1-120
-diff <(sed '$d' ~/.ssh/authorized_keys) "$(ls -t ~/.ssh/authorized_keys.bak-* | head -1)" && echo claves-previas-intactas
+diff <(sed '$d' ~/.ssh/authorized_keys) "$(ls -t ~/.ssh/authorized_keys.bak-* | head -1)" && echo previous-keys-intact
 ```
 
-Esperado: la línea empieza por `from="<SERVER_TAILSCALE_IP>",restrict,command="/…/herdr-gateway-launcher.sh"`, y `claves-previas-intactas` (si había un fichero previo).
+Expected: the line starts with `from="<SERVER_TAILSCALE_IP>",restrict,command="/…/herdr-gateway-launcher.sh"`, and `previous-keys-intact` (if there was a previous file).
 
 ---
 
-## 6. Fase 4: política de Tailscale
+## 6. Phase 4: Tailscale policy
 
-**[HUMANO]** Abrir la política de la tailnet en la consola de administración de Tailscale (Access controls) y leerla. No se reemplaza.
+**[HUMAN]** Open the tailnet policy in the Tailscale admin console (Access controls) and read it. Do not replace it.
 
-- Si es la política por defecto (`"src": ["*"], "dst": ["*:*"]`), cualquier dispositivo llega a cualquier puerto. Añadir una regla concreta no restringe nada mientras exista esa. Restringir de verdad exige quitar el "accept all", y eso afecta a todos los dispositivos de la tailnet: es decisión del humano, no del agente.
-- Si ya hay reglas concretas, se añade la mínima: el servidor llega al puerto 22 de la estación (y de cada máquina extra). Con etiquetas o con selectores existentes, lo que no amplíe otros accesos. Ejemplo en `docs/INSTALL_AND_SETUP.md`, fase 3.
+- If it is the default policy (`"src": ["*"], "dst": ["*:*"]`), any device reaches any port. Adding a specific rule restricts nothing while that one exists. Restricting for real means removing the "accept all", and that affects every device on the tailnet: it is the human's decision, not the agent's.
+- If there are already specific rules, add the minimal one: the server reaches port 22 on the workstation (and on each extra machine). Use tags or existing selectors, whatever does not widen other access. Example in `docs/INSTALL_AND_SETUP.md`, phase 3.
 
-Aunque la política sea abierta, el acceso queda limitado por `from=` en la clave, el comando forzado y el MCP escuchando solo en loopback.
+Even with an open policy, access stays limited by `from=` on the key, the forced command, and the MCP listening only on loopback.
 
-### Verificación
+### Verification
 
-En el servidor:
+On the server:
 
 ```bash
 nc -z -w 3 <WORKSTATION_TAILSCALE_IP> 22 && echo ssh-ok
 ```
 
-Esperado: `ssh-ok`.
+Expected: `ssh-ok`.
 
 ---
 
-## 7. Fase 5: fijar la host key y pruebas negativas
+## 7. Phase 5: pin the host key and negative tests
 
-No se usa nunca `StrictHostKeyChecking=no`. La host key de la estación se toma por una vía local de confianza (leyéndola en la propia estación) y se compara con la que ve el servidor por la red.
+Never use `StrictHostKeyChecking=no`. Take the workstation's host key through a trusted local path (reading it on the workstation itself) and compare it with the one the server sees over the network.
 
-**[AGENTE]** En la estación:
+**[AGENT]** On the workstation:
 
 ```bash
 ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
 ssh <SERVER_SSH_ALIAS> 'ssh-keyscan -t ed25519 <WORKSTATION_TAILNET_HOST> 2>/dev/null | ssh-keygen -lf -'
 ```
 
-Las dos huellas tienen que ser iguales. Si no lo son, se para y se avisa al humano.
+The two fingerprints must match. If they do not, stop and tell the human.
 
-Con las huellas iguales, se escribe `known_hosts` en el servidor con el nombre MagicDNS y la IP:
+With matching fingerprints, write `known_hosts` on the server with the MagicDNS name and the IP:
 
 ```bash
 echo "<WORKSTATION_TAILNET_HOST>,<WORKSTATION_TAILSCALE_IP> $(awk '{print $1" "$2}' /etc/ssh/ssh_host_ed25519_key.pub)" \
   | ssh <SERVER_SSH_ALIAS> 'sudo -u herdr-mcp tee /etc/herdr-mcp/ssh/known_hosts >/dev/null && sudo chmod 644 /etc/herdr-mcp/ssh/known_hosts'
 ```
 
-Este paso lo puede bloquear el clasificador de permisos del agente. En ese caso lo ejecuta el humano.
+The agent's permission classifier may block this step. In that case the human runs it.
 
-### Pruebas desde el servidor como `herdr-mcp`
+### Tests from the server as `herdr-mcp`
 
-En el servidor. Son las mismas opciones de `ssh` que usa el servicio:
+On the server. These are the same `ssh` options the service uses:
 
 ```bash
 s() { sudo -u herdr-mcp /usr/bin/ssh -F /dev/null -i /etc/herdr-mcp/ssh/id_ed25519 \
@@ -375,35 +375,35 @@ sudo -u herdr-mcp /usr/bin/ssh -F /dev/null -i /etc/herdr-mcp/ssh/id_ed25519 -o 
   sleep 2; nc -w 2 127.0.0.1 12345 </dev/null; wait) 2>&1 | grep -i prohibited             # 8
 ```
 
-| # | Esperado |
+| # | Expected |
 | --- | --- |
 | 1 | `{"ok":true,"herdr":"…"}` |
-| 2 | `{"ok":true}`: se ejecuta el gateway y el comando pedido se ignora. En la estación, `audit.jsonl` tiene una entrada `ssh_command_ignored` |
+| 2 | `{"ok":true}`: the gateway runs and the requested command is ignored. On the workstation, `audit.jsonl` has a `ssh_command_ignored` entry |
 | 3 | error `empty_input`, `exit 65` |
 | 4 | `"invalid_json"` |
 | 5 | `"unknown_operation"` |
 | 6 | `"capability_disabled"` |
 | 7 | `PTY allocation request failed on channel 0` |
-| 8 | el reenvío falla (`administratively prohibited`) y `nc` no conecta |
+| 8 | the forward fails (`administratively prohibited`) and `nc` does not connect |
 
-Antes de fijar la host key, cualquier llamada falla con `Host key verification failed.`: es el comportamiento correcto.
+Before the host key is pinned, every call fails with `Host key verification failed.`: that is the correct behavior.
 
 ---
 
-## 8. Fase 6: servicio MCP en el servidor
+## 8. Phase 6: MCP service on the server
 
-### Copiar el código
+### Copy the code
 
-El servidor puede no tener `rsync`. Se copia con `tar` sobre `ssh`, igual que hacen los scripts.
+The server may not have `rsync`. Copy with `tar` over `ssh`, as the scripts do.
 
-**[AGENTE]** En la estación:
+**[AGENT]** On the workstation:
 
 ```bash
 COPYFILE_DISABLE=1 tar -C <REPO_DIR> --no-xattrs --exclude=node_modules --exclude=.git --exclude=dist -czf - . |
   ssh <SERVER_SSH_ALIAS> 'rm -rf ~/herdr-chatgpt-bridge-staging && mkdir -m 700 ~/herdr-chatgpt-bridge-staging && tar -C ~/herdr-chatgpt-bridge-staging -xzf -'
 ```
 
-En el servidor:
+On the server:
 
 ```bash
 sudo rm -rf /opt/herdr-chatgpt-bridge
@@ -414,11 +414,11 @@ sudo /usr/local/bin/bun install --frozen-lockfile
 sudo /usr/local/bin/bun test 2>&1 | tail -3
 ```
 
-Sin `--production`: los tests del MCP usan una dependencia de desarrollo. Esperado: los tests terminan con `0 fail`.
+No `--production`: the MCP tests use a dev dependency. Expected: the tests end with `0 fail`.
 
-### Configuración `/etc/herdr-mcp/ovh.json`
+### Configuration `/etc/herdr-mcp/ovh.json`
 
-El nombre del fichero es fijo (lo usan la unidad y los scripts). La clave dentro de `machines` es el nombre que ChatGPT pasa como `machine`.
+The file name is fixed (the unit and the scripts use it). The key inside `machines` is the name ChatGPT passes as `machine`.
 
 ```bash
 sudo tee /etc/herdr-mcp/ovh.json >/dev/null <<'EOF'
@@ -443,9 +443,9 @@ sudo chown root:herdr-mcp /etc/herdr-mcp/ovh.json
 sudo chmod 640 /etc/herdr-mcp/ovh.json
 ```
 
-La carga falla si `listen.host` no es loopback o si `user`/`host` empiezan por `-` o llevan caracteres raros. `notify` se añade en la fase 12.
+Loading fails if `listen.host` is not loopback or if `user`/`host` start with `-` or contain odd characters. `notify` is added in phase 12.
 
-### Unidades
+### Units
 
 ```bash
 sudo install -m 644 /opt/herdr-chatgpt-bridge/deploy/systemd/herdr-mcp.service /etc/systemd/system/
@@ -454,11 +454,11 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now herdr-mcp.service
 ```
 
-La unidad del túnel se instala ahora pero no se habilita: lo hace el script de la fase 9. `herdr-mcp.service` corre como `herdr-mcp`, con `ProtectSystem=strict` y `IPAddressDeny=any` más `IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48`: solo habla con loopback y la tailnet.
+The tunnel unit is installed now but not enabled: the phase 9 script does that. `herdr-mcp.service` runs as `herdr-mcp`, with `ProtectSystem=strict` and `IPAddressDeny=any` plus `IPAddressAllow=localhost 100.64.0.0/10 fd7a:115c:a1e0::/48`: it only talks to loopback and the tailnet.
 
-### Verificación
+### Verification
 
-En el servidor:
+On the server:
 
 ```bash
 systemctl is-active herdr-mcp
@@ -471,34 +471,34 @@ mcp '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"bridge_stat
   jq -r '.result.content[0].text' | jq -c 'to_entries[] | {machine: .key, herdr: .value.herdr_version, error: .value.error.code}'
 ```
 
-En la estación:
+On the workstation:
 
 ```bash
-nc -z -w 3 <SERVER_TAILSCALE_IP> 8787 && echo ABIERTO || echo cerrado
+nc -z -w 3 <SERVER_TAILSCALE_IP> 8787 && echo OPEN || echo closed
 ```
 
-Esperado:
+Expected:
 
 - `active`
 - `{"ok":true,"service":"herdr-mcp"}`
-- el listener es `127.0.0.1:8787`, nunca `0.0.0.0` ni `[::]`
-- un número de herramientas mayor que cero (cambia con la versión)
-- una línea por máquina con `herdr` y `error: null`
-- `cerrado` desde la estación
+- the listener is `127.0.0.1:8787`, never `0.0.0.0` or `[::]`
+- a number of tools greater than zero (it changes with the version)
+- one line per machine with `herdr` and `error: null`
+- `closed` from the workstation
 
-Si `bridge_status` devuelve `error`, revisar `sudo journalctl -u herdr-mcp -n 50 --no-pager` y repetir las pruebas de la fase 5.
+If `bridge_status` returns `error`, check `sudo journalctl -u herdr-mcp -n 50 --no-pager` and repeat the phase 5 tests.
 
 ---
 
-## 9. Fase 7: tunnel-client verificado
+## 9. Phase 7: verified tunnel-client
 
-Solo el binario oficial de `openai/tunnel-client`, con checksum y procedencia verificados. Se descarga y verifica en la estación (tiene `gh`) y se copia al servidor.
+Only the official `openai/tunnel-client` binary, with checksum and provenance verified. Download and verify it on the workstation (it has `gh`) and copy it to the server.
 
-**[AGENTE]** En la estación, en un directorio temporal:
+**[AGENT]** On the workstation, in a temporary directory:
 
 ```bash
 V=<TUNNEL_CLIENT_VERSION>; ARCH=<SERVER_ARCH>
-gh release view $V -R openai/tunnel-client --json assets --jq '.assets[].name'   # comprobar nombres
+gh release view $V -R openai/tunnel-client --json assets --jq '.assets[].name'   # check the names
 gh release download $V -R openai/tunnel-client \
   -p "tunnel-client-$V-linux-$ARCH.zip" -p SHA256SUMS.txt -p "tunnel-client-$V-provenance.sigstore.json"
 SHA=$(gh api repos/openai/tunnel-client/git/ref/tags/$V --jq .object.sha)
@@ -512,12 +512,12 @@ gh attestation verify "tunnel-client-$V-linux-$ARCH.zip" \
 scp "tunnel-client-$V-linux-$ARCH.zip" <SERVER_SSH_ALIAS>:/tmp/
 ```
 
-Si `SHA256SUMS.txt` lista más de un zip para esa arquitectura (por ejemplo una variante `runtime`), el `grep` tiene que quedarse solo con el que se descargó.
+If `SHA256SUMS.txt` lists more than one zip for that architecture (for example a `runtime` variant), the `grep` must keep only the one you downloaded.
 
-En el servidor:
+On the server:
 
 ```bash
-cd /tmp && sha256sum tunnel-client-<TUNNEL_CLIENT_VERSION>-linux-<SERVER_ARCH>.zip   # igual que en la estación
+cd /tmp && sha256sum tunnel-client-<TUNNEL_CLIENT_VERSION>-linux-<SERVER_ARCH>.zip   # same as on the workstation
 rm -rf tc-x && python3 -c 'import sys, zipfile; zipfile.ZipFile(sys.argv[1]).extractall("tc-x")' tunnel-client-<TUNNEL_CLIENT_VERSION>-linux-<SERVER_ARCH>.zip
 sudo install -d -m 755 /opt/tunnel-client
 sudo cp -r tc-x/. /opt/tunnel-client/
@@ -526,78 +526,78 @@ sudo chmod 755 /opt/tunnel-client/tunnel-client
 /opt/tunnel-client/tunnel-client --version
 ```
 
-El zip trae también `cloudflared`. No se usa salvo con opciones `--cloudflared.*`, que este despliegue no activa.
+The zip also contains `cloudflared`. It is not used unless you pass `--cloudflared.*` options, which this deployment does not turn on.
 
-### Verificación
+### Verification
 
-Esperado: `…zip: OK`, `gh attestation verify` con salida 0, el mismo sha256 en las dos máquinas y `tunnel-client --version` con la versión y el commit del tag.
+Expected: `…zip: OK`, `gh attestation verify` exiting 0, the same sha256 on both machines, and `tunnel-client --version` showing the version and the tag's commit.
 
 ---
 
-## 10. Fase 8: túnel y API key en OpenAI Platform
+## 10. Phase 8: tunnel and API key in OpenAI Platform
 
-Todo **[HUMANO]**. El agente le da estas instrucciones y espera los dos valores no secretos: `<TUNNEL_ID>` y la confirmación de que la key está creada y copiada.
+All **[HUMAN]**. The agent gives these instructions and waits for the two non-secret values: `<TUNNEL_ID>` and confirmation that the key has been created and copied.
 
-### Túnel
+### Tunnel
 
-En `https://platform.openai.com/settings/organization/tunnels` → "Create tunnel":
+At `https://platform.openai.com/settings/organization/tunnels` → "Create tunnel":
 
-| Campo | Valor |
+| Field | Value |
 | --- | --- |
-| Name | Uno descriptivo, por ejemplo `workdone-mcp` |
-| Description | Opcional, por ejemplo "Herdr MCP on my server (127.0.0.1:8787)" |
-| Organizations | La organización de la API key |
-| ChatGPT workspaces | **El mismo workspace o cuenta de ChatGPT en el que se usará WorkDone** |
+| Name | A descriptive one, for example `workdone-mcp` |
+| Description | Optional, for example "Herdr MCP on my server (127.0.0.1:8787)" |
+| Organizations | The organization of the API key |
+| ChatGPT workspaces | **The same ChatGPT workspace or account WorkDone will be used in** |
 
-Si la lista no se refresca tras "Create", recargar la página. Anotar `<TUNNEL_ID>`.
+If the list does not refresh after "Create", reload the page. Write down `<TUNNEL_ID>`.
 
-Si la persona tiene varias cuentas de ChatGPT (personal y de empresa), hay que marcar la que usa de verdad. Si el túnel queda en otra, ChatGPT dirá "No tunnels yet". Tras guardar un cambio de workspace, ChatGPT tarda unos 30 segundos en ofrecer el túnel.
+If the person has several ChatGPT accounts (personal and work), tick the one they actually use. If the tunnel ends up in another one, ChatGPT will say "No tunnels yet". After saving a workspace change, ChatGPT takes about 30 seconds to offer the tunnel.
 
-### API key de runtime
+### Runtime API key
 
-En `https://platform.openai.com/settings/organization/api-keys` → "Create new secret key":
+At `https://platform.openai.com/settings/organization/api-keys` → "Create new secret key":
 
-| Campo | Valor |
+| Field | Value |
 | --- | --- |
-| Name | Por ejemplo `workdone-tunnel-runtime` |
+| Name | For example `workdone-tunnel-runtime` |
 | Permissions | **Restricted** |
-| Permiso concedido | **Tunnels: Read + Use** |
-| Resto de permisos | None |
-| Expiration | Decisión del humano. Sin caducidad, el puente no se rompe cada mes; con caducidad, hay que rotarla (§19) antes de que expire |
+| Permission granted | **Tunnels: Read + Use** |
+| Other permissions | None |
+| Expiration | The human's decision. With no expiration, the bridge does not break every month. With an expiration, it has to be rotated (§19) before it expires |
 
-Nunca una key "All" ni una admin key para el demonio.
+Never an "All" key or an admin key for the daemon.
 
-El humano pulsa "Copy" él mismo. Un clic desde una automatización de navegador puede no llegar al portapapeles del sistema, y entonces se pega otra cosa. La key no se pega en el chat.
+The human clicks "Copy" themselves. A click from browser automation may not reach the system clipboard, and then something else gets pasted. Do not paste the key into the chat.
 
 ---
 
-## 11. Fase 9: configurar y arrancar el túnel
+## 11. Phase 9: configure and start the tunnel
 
-`scripts/ovh-setup-tunnel.sh` (ya copiado en `/opt/herdr-chatgpt-bridge/scripts/`):
+`scripts/ovh-setup-tunnel.sh` (already copied to `/opt/herdr-chatgpt-bridge/scripts/`):
 
-1. lee la key de un prompt oculto o de stdin;
-2. comprueba su forma sin imprimirla (empieza por `sk-`, sin espacios ni comillas) y, si no cuadra, sale con "nothing written";
-3. respalda el `tunnel.env` anterior y escribe `/etc/herdr-mcp/tunnel.env` (600, `herdr-mcp`);
-4. ejecuta como `herdr-mcp` `tunnel-client init --sample sample_mcp_remote_no_auth --profile herdr-mcp …` y `doctor`;
-5. habilita y reinicia `openai-herdr-tunnel.service` y muestra `/readyz`.
+1. reads the key from a hidden prompt or from stdin;
+2. checks its shape without printing it (starts with `sk-`, no spaces or quotes) and, if it does not match, exits with "nothing written";
+3. backs up the previous `tunnel.env` and writes `/etc/herdr-mcp/tunnel.env` (600, `herdr-mcp`);
+4. runs `tunnel-client init --sample sample_mcp_remote_no_auth --profile herdr-mcp …` and `doctor` as `herdr-mcp`;
+5. enables and restarts `openai-herdr-tunnel.service` and shows `/readyz`.
 
-**[HUMANO]** en su propia terminal de la estación, con una de estas dos formas:
+**[HUMAN]** in their own terminal on the workstation, in one of these two ways:
 
 ```bash
-# A) prompt oculto: pegar la key cuando lo pida
+# A) hidden prompt: paste the key when asked
 ssh -t <SERVER_SSH_ALIAS> 'sudo sh /opt/herdr-chatgpt-bridge/scripts/ovh-setup-tunnel.sh <TUNNEL_ID>'
 
-# B) desde el portapapeles (macOS), y vaciarlo después
+# B) from the clipboard (macOS), and clear it afterwards
 pbpaste | ssh <SERVER_SSH_ALIAS> 'sudo sh /opt/herdr-chatgpt-bridge/scripts/ovh-setup-tunnel.sh <TUNNEL_ID>'; pbcopy </dev/null
 ```
 
-En Linux, la forma B es `wl-paste | ssh …; wl-copy --clear` (Wayland) o `xclip -selection clipboard -o | ssh …` (X11). La forma B necesita `sudo` sin contraseña en el servidor, porque stdin lleva la key.
+On Linux, form B is `wl-paste | ssh …; wl-copy --clear` (Wayland) or `xclip -selection clipboard -o | ssh …` (X11). Form B needs passwordless `sudo` on the server, because stdin carries the key.
 
-El agente no ejecuta ninguna de las dos: leer el portapapeles o recibir la key es materializar una credencial.
+The agent runs neither of them: reading the clipboard or receiving the key means materializing a credential.
 
-### Verificación
+### Verification
 
-**[AGENTE]** en el servidor:
+**[AGENT]** on the server:
 
 ```bash
 systemctl is-active openai-herdr-tunnel
@@ -606,46 +606,46 @@ curl -s 127.0.0.1:8080/api/status | jq .
 sudo journalctl -u openai-herdr-tunnel -n 30 --no-pager -o cat | grep -E 'started|initialized|error' | tail -5
 ```
 
-Esperado: `active`, `ready`, el canal `main` con `"enabled": true` y una línea `tunnel-client started` en el journal. Si `journalctl` muestra `control plane API key is malformed` con reinicios cada 5 s, la key que entró no era la buena: repetir la fase 9 con la key copiada a mano.
+Expected: `active`, `ready`, the `main` channel with `"enabled": true`, and a `tunnel-client started` line in the journal. If `journalctl` shows `control plane API key is malformed` with restarts every 5 s, the key that went in was not the right one: repeat phase 9 with the key copied by hand.
 
-El perfil queda en `/etc/herdr-mcp/tunnel-client/herdr-mcp.yaml` y no contiene la key (`api_key: "env:CONTROL_PLANE_API_KEY"`).
+The profile is at `/etc/herdr-mcp/tunnel-client/herdr-mcp.yaml` and does not contain the key (`api_key: "env:CONTROL_PLANE_API_KEY"`).
 
 ---
 
-## 12. Fase 10: app y plugin en ChatGPT
+## 12. Phase 10: app and plugin in ChatGPT
 
-En ChatGPT hay dos objetos distintos y hacen falta los dos:
+ChatGPT has two separate objects and you need both:
 
-| Objeto | Qué es |
+| Object | What it is |
 | --- | --- |
-| **App** (`asdk_app_…`) | La conexión por el túnel y las herramientas MCP |
-| **Plugin** | La skill `herdr-remote` y el enlace a la app. Es lo que se invoca con `@` |
+| **App** (`asdk_app_…`) | The connection through the tunnel and the MCP tools |
+| **Plugin** | The `herdr-remote` skill and the link to the app. It is what you invoke with `@` |
 
-**No se borra la app aunque parezca un duplicado del plugin.** Sin ella, el plugin dice "No app tools available yet" y ChatGPT responde "No tool was defined".
+**Do not delete the app even if it looks like a duplicate of the plugin.** Without it, the plugin says "No app tools available yet" and ChatGPT answers "No tool was defined".
 
-### 12.1 Crear la app [HUMANO]
+### 12.1 Create the app [HUMAN]
 
-En `https://chatgpt.com/plugins` → "+" → "Create app" → en el diálogo, "Create MCP App". Si no aparece la opción, puede hacer falta activar el modo desarrollador en los ajustes de ChatGPT.
+At `https://chatgpt.com/plugins` → "+" → "Create app" → in the dialog, "Create MCP App". If the option does not appear, you may need to turn on developer mode in ChatGPT settings.
 
-| Campo | Valor |
+| Field | Value |
 | --- | --- |
-| Name | Por ejemplo `WorkDone Tunnel` (distinto del plugin, para no confundirlos) |
-| Description | Por ejemplo "Connection used by the WorkDone plugin. Use the plugin, not this app." |
+| Name | For example `WorkDone Tunnel` (different from the plugin, so they are not confused) |
+| Description | For example "Connection used by the WorkDone plugin. Use the plugin, not this app." |
 | Connection | **Tunnel** |
-| Available tunnels | El de `<TUNNEL_ID>` |
-| Authentication | **No Auth** (este MCP no tiene OAuth en el puerto 8787; por defecto viene "OAuth") |
-| "I understand and want to continue" | Marcado |
+| Available tunnels | The one for `<TUNNEL_ID>` |
+| Authentication | **No Auth** (this MCP has no OAuth on port 8787; the default is "OAuth") |
+| "I understand and want to continue" | Ticked |
 
-Tras "Create", ChatGPT muestra "… is now connected". El ID aparece en la URL de ajustes de la app como `plugin_asdk_app_…`. **El ID de la app es la parte `asdk_app_…`, sin el prefijo `plugin_`.** Ese es `<APP_ID>`.
+After "Create", ChatGPT shows "… is now connected". The ID appears in the app settings URL as `plugin_asdk_app_…`. **The app ID is the `asdk_app_…` part, without the `plugin_` prefix.** That is `<APP_ID>`.
 
-### 12.2 Adaptar y empaquetar el plugin [AGENTE]
+### 12.2 Adapt and package the plugin [AGENT]
 
-El plugin del repo describe el despliegue original. Antes de empaquetarlo, el agente revisa con el humano:
+The plugin in the repo describes the original deployment. Before packaging it, the agent reviews with the human:
 
-- `plugin/herdr-remote/.codex-plugin/plugin.json`: `description`, `interface.shortDescription`, `longDescription`, `developerName`, `author.name` y `defaultPrompt` nombran máquinas y repos concretos. Se cambian por los de este despliegue.
-- `plugin/herdr-remote/skills/herdr-remote/SKILL.md`: nombra las máquinas `mac`, `ovh` y una tercera, usa un repo de ejemplo concreto, y tiene una sección sobre un navegador remoto que solo vale si hay un navegador configurado en el gateway (`browser` en `gateway.json`). Se ajustan los nombres de máquina a los de `ovh.json` y se quita esa sección si no aplica.
+- `plugin/herdr-remote/.codex-plugin/plugin.json`: `description`, `interface.shortDescription`, `longDescription`, `developerName`, `author.name` and `defaultPrompt` name specific machines and repos. Replace them with the ones for this deployment.
+- `plugin/herdr-remote/skills/herdr-remote/SKILL.md`: names the machines `mac`, `ovh` and a third one, uses a specific example repo, and has a section about a remote browser that only applies if a browser is configured in the gateway (`browser` in `gateway.json`). Adjust the machine names to the ones in `ovh.json` and remove that section if it does not apply.
 
-Después:
+Then:
 
 ```bash
 cd <REPO_DIR>
@@ -657,174 +657,174 @@ mkdir -p dist
 unzip -l dist/herdr-remote-plugin.zip
 ```
 
-`.app.json` está ignorado por git: el ID es de esa cuenta y no se commitea. Esperado en `unzip -l`: `.codex-plugin/plugin.json`, `.app.json` y `skills/herdr-remote/SKILL.md`.
+`.app.json` is ignored by git: the ID belongs to that account and is not committed. Expected in `unzip -l`: `.codex-plugin/plugin.json`, `.app.json` and `skills/herdr-remote/SKILL.md`.
 
-### 12.3 Subir e instalar el plugin [HUMANO]
+### 12.3 Upload and install the plugin [HUMAN]
 
-- Primera vez: `https://chatgpt.com/plugins` → "+" → "Upload plugin" → `dist/herdr-remote-plugin.zip`. Esperado: "Import successful".
-- Si el error dice `apps.herdr-remote.id must begin with asdk_app_, connector_, or templated_apps_`, el ID lleva el prefijo `plugin_`: quitarlo y volver a empaquetar.
-- En la página del plugin, "Install plugin".
-- Versiones siguientes: en la página del plugin, menú "…" → **Upload new version**. "Add → Upload plugin archive" desde la lista crea un plugin nuevo, y con el mismo zip falla ("Couldn't add plugin").
+- First time: `https://chatgpt.com/plugins` → "+" → "Upload plugin" → `dist/herdr-remote-plugin.zip`. Expected: "Import successful".
+- If the error says `apps.herdr-remote.id must begin with asdk_app_, connector_, or templated_apps_`, the ID has the `plugin_` prefix: remove it and package again.
+- On the plugin page, "Install plugin".
+- Later versions: on the plugin page, "…" menu → **Upload new version**. "Add → Upload plugin archive" from the list creates a new plugin, and with the same zip it fails ("Couldn't add plugin").
 
-### Verificación
+### Verification
 
-**[HUMANO]** En un chat nuevo: `@<nombre del plugin> what are my Herdr agents doing right now?`.
+**[HUMAN]** In a new chat: `@<plugin name> what are my Herdr agents doing right now?`.
 
-**[AGENTE]** En la estación:
+**[AGENT]** On the workstation:
 
 ```bash
 tail -n 5 ~/.local/state/herdr-chatgpt/audit.jsonl | jq -c '{op, ok, client}'
 ```
 
-Esperado: ChatGPT responde con la lista de agentes y el audit tiene entradas nuevas (`overview` u otras) con `client` igual a `<SERVER_TAILSCALE_IP>`.
+Expected: ChatGPT answers with the list of agents and the audit log has new entries (`overview` or others) with `client` equal to `<SERVER_TAILSCALE_IP>`.
 
 ---
 
-## 13. Fase 11: pruebas de aceptación
+## 13. Phase 11: acceptance tests
 
-Desde un chat nuevo con el plugin. El agente comprueba cada una en `audit.jsonl` o en el journal del servidor.
+From a new chat with the plugin. The agent checks each one in `audit.jsonl` or in the server journal.
 
-| # | Prueba | Esperado |
+| # | Test | Expected |
 | --- | --- | --- |
-| 1 | `bridge_status` | responde con la versión de Herdr y las raíces |
-| 2 | `overview` | solo agentes dentro de las raíces permitidas |
-| 3 | Leer un agente (`read_agent`) | texto de la pantalla o de la última respuesta |
-| 4 | Arrancar un agente de prueba en una carpeta desechable dentro de la raíz (`spawn_agent`) y pedirle algo inocuo | responde; el primer prompt espera a que esté `idle` |
+| 1 | `bridge_status` | answers with the Herdr version and the roots |
+| 2 | `overview` | only agents inside the allowed roots |
+| 3 | Read an agent (`read_agent`) | screen text or the last response |
+| 4 | Start a test agent in a throwaway folder inside the root (`spawn_agent`) and ask it for something harmless | it answers; the first prompt waits until it is `idle` |
 | 5 | `run_command_in_pane` | `capability_disabled` |
 | 6 | `remove_worktree` | `capability_disabled` |
-| 7 | **[HUMANO]** lo pide; **[AGENTE]** para el túnel: `sudo systemctl stop openai-herdr-tunnel` | ChatGPT pierde el acceso; ningún puerto nuevo abierto (`ss -ltn` igual que antes) |
-| 8 | `sudo systemctl start openai-herdr-tunnel` | `/readyz` vuelve a `ready` y ChatGPT recupera el acceso |
-| 9 | `sudo systemctl restart herdr-mcp` | el túnel se reinicia con él (`Requires=`), espera al `/healthz` del MCP (`ExecStartPre`) y el canal vuelve con `"enabled": true` |
+| 7 | **[HUMAN]** asks for it; **[AGENT]** stops the tunnel: `sudo systemctl stop openai-herdr-tunnel` | ChatGPT loses access; no new port open (`ss -ltn` same as before) |
+| 8 | `sudo systemctl start openai-herdr-tunnel` | `/readyz` returns to `ready` and ChatGPT regains access |
+| 9 | `sudo systemctl restart herdr-mcp` | the tunnel restarts with it (`Requires=`), waits for the MCP's `/healthz` (`ExecStartPre`) and the channel comes back with `"enabled": true` |
 
-Al terminar, cerrar el agente de prueba y borrar la carpeta desechable.
+When done, close the test agent and delete the throwaway folder.
 
 ---
 
-## 14. Fase 12 (opcional): el servidor como máquina y avisos al móvil
+## 14. Phase 12 (optional): the server as a machine, and phone notifications
 
-### 14.1 Gateway del servidor
+### 14.1 Server gateway
 
-Con esto ChatGPT también controla los agentes de Herdr del servidor, que sigue encendido cuando la estación duerme. Lo hace `scripts/deploy-ovh.sh`, desde la estación:
+With this, ChatGPT also controls the Herdr agents on the server, which stays on while the workstation sleeps. `scripts/deploy-ovh.sh` does it, from the workstation:
 
-- copia el repo al servidor e instala el gateway para `<SERVER_USER>` con `config/ovh-gateway.example.json` (raíz `~/src`, capacidades apagadas);
-- crea `/etc/herdr-mcp/ssh/id_ed25519_ovh` y la añade a `~/.ssh/authorized_keys` de `<SERVER_USER>` con `from="127.0.0.1"` y el comando forzado;
-- fija la host key del servidor para `127.0.0.1`;
-- prueba `bridge_status` por esa clave;
-- despliega el MCP en `/opt/herdr-chatgpt-bridge` (la versión anterior queda en `/opt/herdr-chatgpt-bridge.old-<fecha>`);
-- añade `machines.ovh` y `notify: {machine: "ovh"}` a `ovh.json` si faltan, y reinicia `herdr-mcp`.
+- copies the repo to the server and installs the gateway for `<SERVER_USER>` with `config/ovh-gateway.example.json` (root `~/src`, capabilities off);
+- creates `/etc/herdr-mcp/ssh/id_ed25519_ovh` and adds it to `<SERVER_USER>`'s `~/.ssh/authorized_keys` with `from="127.0.0.1"` and the forced command;
+- pins the server's host key for `127.0.0.1`;
+- tests `bridge_status` through that key;
+- deploys the MCP to `/opt/herdr-chatgpt-bridge` (the previous version stays at `/opt/herdr-chatgpt-bridge.old-<date>`);
+- adds `machines.ovh` and `notify: {machine: "ovh"}` to `ovh.json` if missing, and restarts `herdr-mcp`.
 
-Requisitos previos en el servidor: Herdr en marcha para `<SERVER_USER>`, `~/.ssh/authorized_keys` existente (`touch` y `chmod 600` si no), sshd escuchando en `127.0.0.1:22`, `jq` y `sudo` sin contraseña. **El nombre de máquina queda fijo como `ovh`** (ver §21).
+Prerequisites on the server: Herdr running for `<SERVER_USER>`, an existing `~/.ssh/authorized_keys` (`touch` and `chmod 600` if not), sshd listening on `127.0.0.1:22`, `jq`, and passwordless `sudo`. **The machine name is fixed as `ovh`** (see §21).
 
-Antes de ejecutarlo, revisar `~/.config/herdr-chatgpt/gateway.json` en el servidor si ya existe; si no, el script lo crea desde el ejemplo, que trae una sección `browser` y una raíz `~/src` que hay que ajustar (y `~/src` tiene que existir).
+Before running it, check `~/.config/herdr-chatgpt/gateway.json` on the server if it already exists. If not, the script creates it from the example, which has a `browser` section and a `~/src` root that you need to adjust (and `~/src` must exist).
 
-**[AGENTE]** en la estación (si el clasificador lo bloquea, lo ejecuta el humano):
+**[AGENT]** on the workstation (if the classifier blocks it, the human runs it):
 
 ```bash
 scripts/deploy-ovh.sh <SERVER_SSH_ALIAS>
 ```
 
-Verificación: la salida termina con una línea por máquina, `{"machine":"<WORKSTATION_MACHINE>","herdr":"…",…}` y `{"machine":"ovh","herdr":"…",…}`, sin `error`, y con la orden de rollback.
+Verification: the output ends with one line per machine, `{"machine":"<WORKSTATION_MACHINE>","herdr":"…",…}` and `{"machine":"ovh","herdr":"…",…}`, with no `error`, and with the rollback command.
 
-### 14.2 Avisos al móvil
+### 14.2 Phone notifications
 
-El MCP lleva un notificador: vigila los agentes que tienen trabajo pendiente y manda un aviso al terminar o al pararse en una pregunta. Lo envía por el gateway de `notify.machine` en `ovh.json`, que ejecuta su `notifyCommand` con el mensaje como último argumento. Detalle en `README.md`, "Notifications and offline machines".
+The MCP has a notifier: it watches agents that have pending work and sends a notification when they finish or stop on a question. It sends it through the gateway of `notify.machine` in `ovh.json`, which runs its `notifyCommand` with the message as the last argument. Details in `README.md`, "Notifications and offline machines".
 
-- Conviene que `notify.machine` sea una máquina siempre encendida (el servidor). Si apunta a la estación, los avisos esperan a que despierte.
-- `deploy-ovh.sh` solo rellena `notifyCommand` si existe un script de notificaciones en una ruta concreta del autor. En otro caso, se pone a mano en el `gateway.json` de esa máquina. Cualquier comando que acepte el mensaje como último argumento vale, por ejemplo `["/usr/local/bin/mi-notificador", "--title", "WorkDone", "--message"]`. El canal (ntfy, Pushover, correo) lo decide el humano; sus credenciales las pone él.
-- Sin `notify` en `ovh.json`, no hay avisos al móvil.
-- No se instala `scripts/install-watcher.sh` (el watcher de launchd) junto al notificador del MCP: los dos trabajarían sobre la misma lista. El watcher solo sirve para un despliegue de una sola máquina sin servidor.
+- `notify.machine` should be a machine that is always on (the server). If it points at the workstation, notifications wait until it wakes up.
+- `deploy-ovh.sh` only fills in `notifyCommand` if a notification script exists at a specific path of the author's. Otherwise, set it by hand in that machine's `gateway.json`. Any command that takes the message as its last argument works, for example `["/usr/local/bin/my-notifier", "--title", "WorkDone", "--message"]`. The human decides the channel (ntfy, Pushover, email) and puts in its credentials themselves.
+- Without `notify` in `ovh.json`, there are no phone notifications.
+- Do not install `scripts/install-watcher.sh` (the launchd watcher) alongside the MCP notifier: both would work on the same list. The watcher is only for a single-machine deployment with no server.
 
-Verificación:
+Verification:
 
 ```bash
 printf '%s\n' '{"id":"1","op":"notify","params":{"message":"WorkDone test"}}' | ~/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
 ```
 
-ejecutado en la máquina de `notify.machine`. Esperado: `{"ok":true,…"exit_code":0}` y el aviso en el móvil. Avisar al humano antes: es un mensaje real.
+run on the `notify.machine` machine. Expected: `{"ok":true,…"exit_code":0}` and the notification on the phone. Warn the human first: it is a real message.
 
 ---
 
-## 15. Fase 13 (opcional): máquinas extra
+## 15. Phase 13 (optional): extra machines
 
-`scripts/add-machine.sh NOMBRE ALIAS_SSH '~/carpeta' ...` se ejecuta desde la estación y:
+`scripts/add-machine.sh NAME SSH_ALIAS '~/folder' ...` runs from the workstation and:
 
-- instala el gateway en la máquina (todas las capacidades apagadas, la config solo se crea si no existe);
-- crea en el servidor `/etc/herdr-mcp/ssh/id_ed25519_NOMBRE` y añade en la máquina la línea de `authorized_keys` con `from=<SERVER_TAILSCALE_IP>` y el comando forzado;
-- fija en el servidor la host key de la máquina, comparando la que lee en la máquina con la que ve `ssh-keyscan` desde el servidor (si no coinciden, para);
-- añade `machines.NOMBRE` a `ovh.json` y termina con `scripts/deploy-ovh.sh`.
+- installs the gateway on the machine (all capabilities off, the config is only created if it does not exist);
+- creates `/etc/herdr-mcp/ssh/id_ed25519_NAME` on the server and adds the `authorized_keys` line on the machine with `from=<SERVER_TAILSCALE_IP>` and the forced command;
+- pins the machine's host key on the server, comparing the one it reads on the machine with the one `ssh-keyscan` sees from the server (if they do not match, it stops);
+- adds `machines.NAME` to `ovh.json` and finishes with `scripts/deploy-ovh.sh`.
 
-Requisitos en la máquina: Bun en `~/.bun/bin/bun`, servidor de Herdr en marcha, `/etc/ssh/ssh_host_ed25519_key.pub` legible, sshd normal (no Tailscale SSH). En la estación, `ALIAS_SSH` tiene que resolver a una dirección de la tailnet (`100.x` o `*.ts.net`) que el servidor también alcance, porque el script copia host, puerto y usuario de `ssh -G ALIAS_SSH`. `NOMBRE` cumple `^[a-z][a-z0-9-]{0,15}$`. Como termina con `deploy-ovh.sh`, también necesita lo de §14.1.
+Requirements on the machine: Bun at `~/.bun/bin/bun`, Herdr server running, readable `/etc/ssh/ssh_host_ed25519_key.pub`, normal sshd (not Tailscale SSH). On the workstation, `SSH_ALIAS` must resolve to a tailnet address (`100.x` or `*.ts.net`) that the server can also reach, because the script copies host, port and user from `ssh -G SSH_ALIAS`. `NAME` matches `^[a-z][a-z0-9-]{0,15}$`. Since it finishes with `deploy-ovh.sh`, it also needs what §14.1 needs.
 
-**[AGENTE]** en la estación:
+**[AGENT]** on the workstation:
 
 ```bash
-OVH_HOST=<SERVER_SSH_ALIAS> scripts/add-machine.sh <NOMBRE> <ALIAS_SSH> '~/src'
+OVH_HOST=<SERVER_SSH_ALIAS> scripts/add-machine.sh <NAME> <SSH_ALIAS> '~/src'
 ```
 
-Las raíces van entre comillas simples para que la estación no expanda `~`. Si el servidor no puede leer su propia IP Tailscale, se pasa `OVH_TAILNET_IP=<SERVER_TAILSCALE_IP>`.
+The roots go in single quotes so the workstation does not expand `~`. If the server cannot read its own Tailscale IP, pass `OVH_TAILNET_IP=<SERVER_TAILSCALE_IP>`.
 
-Verificación: la salida de `deploy-ovh.sh` al final incluye una línea con `"machine":"<NOMBRE>"` y su versión de Herdr. Las últimas líneas impresas dan el comando para activar capacidades en esa máquina. `machine` es texto libre en las herramientas, así que ChatGPT no necesita **Refresh tools** para ver una máquina nueva.
+Verification: the `deploy-ovh.sh` output at the end includes a line with `"machine":"<NAME>"` and its Herdr version. The last printed lines give the command to turn on capabilities on that machine. `machine` is free text in the tools, so ChatGPT does not need **Refresh tools** to see a new machine.
 
-### Herdr en una máquina Linux sin escritorio
+### Herdr on a headless Linux machine
 
-- Arranque manual: `setsid nohup herdr server >~/.local/state/herdr-server.log 2>&1 &`. El repo no trae unidad para arrancar Herdr tras un reinicio: hay que añadir una (unidad de usuario de systemd, `@reboot` de cron o el programador de tareas del sistema).
-- Si el servidor de Herdr arrancó con un `PATH` mínimo, los paneles no encuentran `claude`, `codex` ni `cursor-agent`. Arreglo sin reiniciar Herdr: en `~/.config/herdr/config.toml`, `[terminal] default_shell = "/ruta/a/la/shell"` y `shell_mode = "login"`, y luego `herdr server reload-config`. Los paneles nuevos leen el perfil de login.
-- En algunos NAS `scp` falla. Para copiar un fichero: `ssh ALIAS 'cat > ruta' < fichero`.
+- Manual start: `setsid nohup herdr server >~/.local/state/herdr-server.log 2>&1 &`. The repo has no unit to start Herdr after a reboot: you need to add one (a systemd user unit, a cron `@reboot`, or the system's task scheduler).
+- If the Herdr server started with a minimal `PATH`, panes do not find `claude`, `codex` or `cursor-agent`. Fix without restarting Herdr: in `~/.config/herdr/config.toml`, `[terminal] default_shell = "/path/to/shell"` and `shell_mode = "login"`, then `herdr server reload-config`. New panes read the login profile.
+- On some NAS devices `scp` fails. To copy a file: `ssh ALIAS 'cat > path' < file`.
 
 ---
 
-## 16. Fase 14 (opcional): capacidades y alias de agentes
+## 16. Phase 14 (optional): capabilities and agent aliases
 
-### 16.1 Capacidades
+### 16.1 Capabilities
 
-Todas empiezan apagadas. La tabla de qué abre cada una está en `README.md`. Las activa el humano, máquina por máquina, editando `gateway.json`; el agente puede preparar el comando, pero no lo ejecuta sin su decisión explícita. Con `allowExec`, las raíces dejan de ser un límite para todo salvo las herramientas de ficheros: un comando puede ir a cualquier sitio al que llegue el usuario.
+They all start off. The table of what each one opens is in `README.md`. The human turns them on, machine by machine, by editing `gateway.json`. The agent can prepare the command, but does not run it without their explicit decision. With `allowExec`, the roots stop being a limit for everything except the file tools: a command can go anywhere the user can reach.
 
 ```bash
 cd ~/.config/herdr-chatgpt && b=gateway.json.bak-$(date +%Y%m%d%H%M%S) && cp -p gateway.json "$b" &&
   jq '.allowFileRead = true' "$b" > gateway.json.new && install -m 600 gateway.json.new gateway.json && rm gateway.json.new
 ```
 
-Otros interruptores útiles:
+Other useful switches:
 
-- `"execInPane": true`: `exec` corre en una pestaña de Herdr dentro de la shell interactiva del usuario, con su `.zshrc`, su llavero y su ssh-agent. Sin esto, `exec` corre como el login SSH del gateway, y herramientas que guardan el token en el llavero de macOS (por ejemplo `gh`) fallan con 401.
-- `"autoApprove": false`: apaga la aprobación automática de menús.
-- `"leases": false`: apaga los leases por conversación (no recomendado con varios chats a la vez).
+- `"execInPane": true`: `exec` runs in a Herdr tab inside the user's interactive shell, with their `.zshrc`, their keychain and their ssh-agent. Without this, `exec` runs as the gateway's SSH login, and tools that keep their token in the macOS keychain (for example `gh`) fail with 401.
+- `"autoApprove": false`: turns off automatic approval of menus.
+- `"leases": false`: turns off per-conversation leases (not recommended with several chats at once).
 
-Verificación: `bridge_status` en esa máquina muestra la capacidad en `capabilities`.
+Verification: `bridge_status` on that machine shows the capability in `capabilities`.
 
-### 16.2 Alias de agentes
+### 16.2 Agent aliases
 
-ChatGPT arranca agentes por alias (aves, árboles, animales), nunca por CLI o modelo. En cada máquina:
+ChatGPT starts agents by alias (birds, trees, animals), never by CLI or model. On each machine:
 
 ```bash
-bun scripts/agent-aliases.ts        # escribe ~/.config/herdr-chatgpt/agent-aliases.json e imprime el mapa
+bun scripts/agent-aliases.ts        # writes ~/.config/herdr-chatgpt/agent-aliases.json and prints the map
 ```
 
-y en su `gateway.json`, `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`. En máquinas sin el repo, copiar el script o copiar el fichero generado en la estación, para que los nombres coincidan.
+and in its `gateway.json`, `"agentAliases": "~/.config/herdr-chatgpt/agent-aliases.json"`. On machines without the repo, copy the script or copy the file generated on the workstation, so the names match.
 
-**Aviso para el humano:** el script añade a cada alias las opciones de acceso total de cada CLI (`FULL_ACCESS` en el script): Claude Code arranca con `--dangerously-skip-permissions` y Codex con `--dangerously-bypass-approvals-and-sandbox`. Los agentes harán commits, pushes y borrados sin pedir permiso. Si no se quiere, editar `FULL_ACCESS` antes de generar el fichero. Lo que deba seguir siendo decisión del dueño necesita además una protección fuera del agente (por ejemplo, protección de rama en GitHub).
+**Warning for the human:** the script adds each CLI's full-access options to every alias (`FULL_ACCESS` in the script): Claude Code starts with `--dangerously-skip-permissions` and Codex with `--dangerously-bypass-approvals-and-sandbox`. The agents will commit, push and delete without asking. If you do not want that, edit `FULL_ACCESS` before generating the file. Anything that must stay the owner's decision also needs a protection outside the agent (for example, branch protection on GitHub).
 
-Cada CLI necesita su sesión iniciada en cada máquina (`claude`, `codex login`, `cursor-agent login`…), **[HUMANO]**. Las sesiones OAuth no se copian entre máquinas: compartir un refresh token puede cerrar la sesión en una de ellas.
+Each CLI needs its session logged in on each machine (`claude`, `codex login`, `cursor-agent login`…), **[HUMAN]**. OAuth sessions are not copied between machines: sharing a refresh token can log out the session on one of them.
 
-Verificación: `bridge_status` lista los alias en `agent_kinds`.
+Verification: `bridge_status` lists the aliases in `agent_kinds`.
 
 ---
 
-## 17. Fase 15 (opcional, experimental): Events nativos y emisor OAuth
+## 17. Phase 15 (optional, experimental): native Events and OAuth issuer
 
-Con Events, ChatGPT recibe `agent.finished` y `agent.asks` por webhook firmado, sin tarjeta abierta. Requiere una conexión OAuth real. El código está, pero **a la fecha de este documento no se ha completado una suscripción real desde ChatGPT**: en la última prueba registrada, la conexión OAuth quedó hecha y ChatGPT listó los eventos, pero nunca llamó a `events/subscribe`. Mantener la tarjeta de `watch_here` (`docs/chatgpt-link.md`) como camino principal.
+With Events, ChatGPT receives `agent.finished` and `agent.asks` through a signed webhook, without an open card. It requires a real OAuth connection. The code is there, but **as of this document's date, no real subscription from ChatGPT has been completed**: in the last recorded test, the OAuth connection was made and ChatGPT listed the events, but it never called `events/subscribe`. Keep the `watch_here` card (`docs/chatgpt-link.md`) as the main path.
 
-La referencia es `docs/mcp-events.md` (protocolo, grants, política de red, pruebas) e `issuer/README.md` (emisor). Aquí va el orden y lo que el despliegue registrado aprendió.
+The reference is `docs/mcp-events.md` (protocol, grants, network policy, tests) and `issuer/README.md` (issuer). This section covers the order and what the recorded deployment learned.
 
-### 17.1 Decisiones previas [HUMANO]
+### 17.1 Decisions up front [HUMAN]
 
-- Exponer en público el emisor y la ruta `/mcp` del listener OAuth (puertos 80 y 443). `/mcp` responde 401 sin un token válido, pero queda en Internet.
-- Un nombre DNS `<ISSUER_HOST>` apuntando al servidor.
-- La contraseña del dueño del emisor. Quien la tenga puede ejecutar comandos en las máquinas por ChatGPT: larga, en un gestor de contraseñas.
+- Expose the issuer and the OAuth listener's `/mcp` route publicly (ports 80 and 443). `/mcp` answers 401 without a valid token, but it is on the Internet.
+- A DNS name `<ISSUER_HOST>` pointing at the server.
+- The issuer owner's password. Whoever has it can run commands on the machines through ChatGPT: make it long, in a password manager.
 
-### 17.2 Listener OAuth en el MCP [AGENTE]
+### 17.2 OAuth listener in the MCP [AGENT]
 
-Se añade a `/etc/herdr-mcp/ovh.json` (copia antes), conservando `machines`, `defaultMachine` y `notify`:
+Add to `/etc/herdr-mcp/ovh.json` (copy it first), keeping `machines`, `defaultMachine` and `notify`:
 
 ```json
 "auth": {
@@ -842,25 +842,25 @@ Se añade a `/etc/herdr-mcp/ovh.json` (copia antes), conservando `machines`, `de
 }
 ```
 
-- Con `auth.listenPort`, el mismo proceso sirve el 8787 sin autenticación (la app de la fase 10 sigue funcionando) y `<AUTH_PORT>` con OAuth. Sin `listenPort`, el 8787 pasa a exigir token y la app No Auth deja de funcionar.
-- `callbackHosts` lleva al principio un nombre propio como marcador. El host real del callback de ChatGPT se lee del journal (`callback_host`) en la primera suscripción y se sustituye (`docs/mcp-events.md`, "Callback network policy").
-- `principal-grants.json`: `{"subjects": {"owner": {"scopes": ["workdone"], "machines": ["<WORKSTATION_MACHINE>"]}}}`, `root:herdr-mcp`, 640. `owner` es el `OWNER_SUBJECT` del emisor.
-- `issuer-jwks.json` se copia del emisor en 17.3.
+- With `auth.listenPort`, the same process serves 8787 without authentication (the phase 10 app keeps working) and `<AUTH_PORT>` with OAuth. Without `listenPort`, 8787 starts requiring a token and the No Auth app stops working.
+- `callbackHosts` starts out with your own name as a placeholder. The real host of ChatGPT's callback is read from the journal (`callback_host`) on the first subscription and swapped in (`docs/mcp-events.md`, "Callback network policy").
+- `principal-grants.json`: `{"subjects": {"owner": {"scopes": ["workdone"], "machines": ["<WORKSTATION_MACHINE>"]}}}`, `root:herdr-mcp`, 640. `owner` is the issuer's `OWNER_SUBJECT`.
+- `issuer-jwks.json` is copied from the issuer in 17.3.
 
-El MCP no arranca con `auth` sin el JWKS, así que este cambio se reinicia después de 17.3.
+The MCP does not start with `auth` without the JWKS, so restart after 17.3 for this change.
 
-### 17.3 Emisor [AGENTE + HUMANO]
+### 17.3 Issuer [AGENT + HUMAN]
 
-`scripts/deploy-issuer.sh` está hecho para un servidor concreto (Caddy dentro de un contenedor Docker, red puente de Docker, nombre por defecto fijo; ver §21). En otro servidor se hace a mano, con Caddy instalado en el sistema:
+`scripts/deploy-issuer.sh` is made for one specific server (Caddy inside a Docker container, Docker bridge network, fixed default name; see §21). On another server, do it by hand, with Caddy installed on the system:
 
 ```bash
-# en la estación: copiar el emisor
+# on the workstation: copy the issuer
 (cd <REPO_DIR> && tar -cf - --exclude node_modules issuer/src issuer/package.json issuer/bun.lock issuer/tsconfig.json) |
   ssh <SERVER_SSH_ALIAS> 'rm -rf /tmp/wd-issuer && mkdir /tmp/wd-issuer && tar -xf - -C /tmp/wd-issuer'
 ```
 
 ```bash
-# en el servidor
+# on the server
 node --version                                   # 24.x
 sudo rm -rf /opt/workdone-issuer && sudo mkdir /opt/workdone-issuer
 sudo cp -r /tmp/wd-issuer/issuer/. /opt/workdone-issuer/ && sudo chown -R root:root /opt/workdone-issuer
@@ -873,15 +873,15 @@ printf 'ISSUER_URL=https://%s\nMCP_RESOURCE=%s\nOWNER_SUBJECT=owner\n' '<ISSUER_
 sudo chown root:workdone-issuer /etc/workdone-issuer/env && sudo chmod 640 /etc/workdone-issuer/env
 ```
 
-Claves y contraseña, **[HUMANO]** en el servidor (la contraseña va por stdin y no queda en el historial):
+Keys and password, **[HUMAN]** on the server (the password goes through stdin and does not end up in the history):
 
 ```bash
 read -rs PW && printf '%s\n' "$PW" | sudo -u workdone-issuer /usr/local/bin/bun /opt/workdone-issuer/src/setup.ts /var/lib/workdone-issuer; unset PW
 ```
 
-`setup.ts` escribe `signing-key.json`, `cookie-keys.json`, `password-hash` (600) y `jwks.json` (público). Se niega a sustituir una clave de firma existente; `--rotate-password` cambia solo la contraseña.
+`setup.ts` writes `signing-key.json`, `cookie-keys.json`, `password-hash` (600) and `jwks.json` (public). It refuses to replace an existing signing key. `--rotate-password` changes only the password.
 
-Unidad: la del repo exige Docker (`Requires=docker.service`) porque el emisor original escuchaba en la red puente de Docker. Sin Docker, se instala sin esa dependencia y el emisor escucha en `127.0.0.1:8790` (valor por defecto):
+Unit: the one in the repo requires Docker (`Requires=docker.service`) because the original issuer listened on the Docker bridge network. Without Docker, install it without that dependency and the issuer listens on `127.0.0.1:8790` (the default):
 
 ```bash
 sed -e '/^Requires=docker.service/d' -e 's/ docker.service//' -e '/^# Listens on the Docker bridge/d' \
@@ -891,18 +891,18 @@ sudo systemctl daemon-reload && sudo systemctl enable --now workdone-issuer
 curl -fsS http://127.0.0.1:8790/healthz && echo
 ```
 
-JWKS y grants para el MCP, y reinicio:
+JWKS and grants for the MCP, and restart:
 
 ```bash
 sudo install -m 640 -o root -g herdr-mcp /var/lib/workdone-issuer/jwks.json /etc/herdr-mcp/issuer-jwks.json
-# escribir /etc/herdr-mcp/principal-grants.json (17.2), root:herdr-mcp 640
+# write /etc/herdr-mcp/principal-grants.json (17.2), root:herdr-mcp 640
 sudo systemctl restart herdr-mcp
 curl -s 127.0.0.1:<AUTH_PORT>/healthz; echo
 ```
 
-### 17.4 Ruta pública con Caddy [AGENTE, tras la decisión de 17.1]
+### 17.4 Public route with Caddy [AGENT, after the 17.1 decision]
 
-El MCP solo acepta cabeceras `Host` de loopback (protección contra DNS rebinding), así que Caddy la reescribe. Todo lo que no es `/mcp` va al emisor, que también sirve los metadatos del recurso protegido en su origen. Bloque para `/etc/caddy/Caddyfile` (adaptado de `deploy/Caddyfile.issuer`, que apunta a la red de Docker):
+The MCP only accepts loopback `Host` headers (protection against DNS rebinding), so Caddy rewrites it. Everything that is not `/mcp` goes to the issuer, which also serves the protected resource metadata at its origin. Block for `/etc/caddy/Caddyfile` (adapted from `deploy/Caddyfile.issuer`, which points at the Docker network):
 
 ```caddy
 <ISSUER_HOST> {
@@ -920,42 +920,42 @@ El MCP solo acepta cabeceras `Host` de loopback (protección contra DNS rebindin
 
 ```bash
 sudo cp -p /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak-$(date +%Y%m%d%H%M%S)
-# añadir el bloque
+# add the block
 sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy
 ```
 
-Con Caddy en el propio sistema no hacen falta `workdone-mcp-bridge.socket` ni `.service`: solo existen para que un Caddy en Docker llegue al loopback del servidor.
+With Caddy on the system itself you do not need `workdone-mcp-bridge.socket` or `.service`: they only exist so that a Caddy in Docker can reach the server's loopback.
 
-Verificación:
+Verification:
 
 ```bash
 curl -s https://<ISSUER_HOST>/.well-known/openid-configuration | jq -c '{code_challenge_methods_supported, client_id_metadata_document_supported}'
 curl -s -o /dev/null -w '%{http_code}\n' -X POST https://<ISSUER_HOST>/mcp -H 'content-type: application/json' -d '{}'
 ```
 
-Esperado: `{"code_challenge_methods_supported":["S256"],"client_id_metadata_document_supported":true}` y `401`.
+Expected: `{"code_challenge_methods_supported":["S256"],"client_id_metadata_document_supported":true}` and `401`.
 
-### 17.5 Conexión en ChatGPT [HUMANO]
+### 17.5 Connection in ChatGPT [HUMAN]
 
-- Crear una **segunda** app MCP (no tocar la de la fase 10): conexión **Server URL** con `<MCP_RESOURCE>`, autenticación **OAuth**. Iniciar sesión en la página del emisor con la contraseña y aprobar. La interacción de inicio de sesión caduca a los 10 minutos.
-- Opcional: empaquetar `plugin/workdone-events/` igual que en 12.2 (su `.app.json` con el ID de esta segunda app) y subirlo.
-- **Refresh tools** en los ajustes de la app y comprobar que aparecen `agent.finished` y `agent.asks`.
-- Esta app es el mismo MCP: un chat que la use tiene todas las herramientas de WorkDone, no solo eventos.
+- Create a **second** MCP app (do not touch the phase 10 one): **Server URL** connection with `<MCP_RESOURCE>`, **OAuth** authentication. Sign in on the issuer page with the password and approve. The sign-in interaction expires after 10 minutes.
+- Optional: package `plugin/workdone-events/` the same way as in 12.2 (its `.app.json` with the ID of this second app) and upload it.
+- **Refresh tools** in the app settings and check that `agent.finished` and `agent.asks` appear.
+- This app is the same MCP: a chat that uses it has all the WorkDone tools, not just events.
 
-Sobre el segundo túnel: `scripts/ovh-setup-events-tunnel.sh <TUNNEL_ID_2>` y `deploy/systemd/openai-herdr-events-tunnel.service` montan un túnel aparte hacia el listener OAuth. En el despliegue registrado, ChatGPT no consiguió descubrir el OAuth por el túnel ("Couldn't discover OAuth settings", "Couldn't create MCP app") y se pasó a la ruta pública de 17.4. Si se prueba, adaptar el puerto y `MCP_OAUTH_TRUSTED_ORIGINS` (§21).
+About the second tunnel: `scripts/ovh-setup-events-tunnel.sh <TUNNEL_ID_2>` and `deploy/systemd/openai-herdr-events-tunnel.service` set up a separate tunnel to the OAuth listener. In the recorded deployment, ChatGPT could not discover OAuth through the tunnel ("Couldn't discover OAuth settings", "Couldn't create MCP app") and it switched to the public route from 17.4. If you try it, adapt the port and `MCP_OAUTH_TRUSTED_ORIGINS` (§21).
 
-Lo que falta después (suscripción en un chat, leer `callback_host`, generar la política de salida con `scripts/events-egress-policy.ts`, entrega real, baja) está en `docs/mcp-events.md`, "Prove it in ChatGPT".
+What remains after that (subscription in a chat, reading `callback_host`, generating the egress policy with `scripts/events-egress-policy.ts`, real delivery, unsubscribe) is in `docs/mcp-events.md`, "Prove it in ChatGPT".
 
-### 17.6 Limpieza de secretos
+### 17.6 Secret cleanup
 
-- Si se generó la contraseña en un fichero, el humano la guarda en su gestor y borra el fichero.
-- Revocar: borrar el sujeto de `principal-grants.json` corta el acceso al momento. Borrar `/var/lib/workdone-issuer/oidc.sqlite` olvida todas las autorizaciones.
+- If the password was generated into a file, the human stores it in their password manager and deletes the file.
+- Revoke: deleting the subject from `principal-grants.json` cuts access immediately. Deleting `/var/lib/workdone-issuer/oidc.sqlite` forgets all authorizations.
 
 ---
 
-## 18. Operación diaria y actualizaciones
+## 18. Daily operation and updates
 
-Estado y logs (en el servidor):
+Status and logs (on the server):
 
 ```bash
 systemctl is-active herdr-mcp openai-herdr-tunnel
@@ -964,7 +964,7 @@ sudo journalctl -u herdr-mcp -n 50 --no-pager
 sudo journalctl -u openai-herdr-tunnel -n 50 --no-pager -o cat
 ```
 
-Diagnóstico del túnel (la key sale del `EnvironmentFile` y no se imprime):
+Tunnel diagnostics (the key comes from the `EnvironmentFile` and is not printed):
 
 ```bash
 sudo systemd-run --wait --pipe -p User=herdr-mcp -p EnvironmentFile=/etc/herdr-mcp/tunnel.env \
@@ -972,104 +972,104 @@ sudo systemd-run --wait --pipe -p User=herdr-mcp -p EnvironmentFile=/etc/herdr-m
   /opt/tunnel-client/tunnel-client doctor --profile herdr-mcp --explain
 ```
 
-Con el servicio en marcha, todo da PASS salvo `health_listener` ("address already in use"), porque el puerto 8080 lo tiene el propio servicio. Sin OAuth, `oauth_metadata` da PASS con "all candidates returned HTTP 404".
+With the service running, everything gives PASS except `health_listener` ("address already in use"), because the service itself holds port 8080. Without OAuth, `oauth_metadata` gives PASS with "all candidates returned HTTP 404".
 
-Auditoría en cada máquina: `tail -f ~/.local/state/herdr-chatgpt/audit.jsonl`.
+Audit log on each machine: `tail -f ~/.local/state/herdr-chatgpt/audit.jsonl`.
 
-Actualizar:
+Updating:
 
-| Qué | Cómo |
+| What | How |
 | --- | --- |
-| Gateway de la estación | `scripts/install-gateway.sh`. No toca `gateway.json` |
-| Gateway del servidor y MCP | `scripts/deploy-ovh.sh <SERVER_SSH_ALIAS>` (requiere §14.1). Sin gateway en el servidor: repetir la copia de §8 sobre `/opt/herdr-chatgpt-bridge.new`, cambiar los directorios y `sudo systemctl restart herdr-mcp` |
-| Máquinas extra | Volver a ejecutar `scripts/add-machine.sh` con los mismos argumentos (es idempotente y no toca su `gateway.json`) |
-| Plugin | Editar `plugin/herdr-remote/`, reempaquetar (12.2) y "Upload new version" (12.3) |
-| Herramientas nuevas o cambiadas | **[HUMANO]** ajustes de ChatGPT → Plugins → la app → **Manage app** → **Refresh tools**, y abrir un chat nuevo: los chats abiertos siguen con la lista vieja |
-| Repos y raíces | Editar `repos` y `allowedRoots` en `gateway.json`; vale desde la siguiente llamada |
+| Workstation gateway | `scripts/install-gateway.sh`. It does not touch `gateway.json` |
+| Server gateway and MCP | `scripts/deploy-ovh.sh <SERVER_SSH_ALIAS>` (requires §14.1). With no gateway on the server: repeat the copy from §8 into `/opt/herdr-chatgpt-bridge.new`, swap the directories and `sudo systemctl restart herdr-mcp` |
+| Extra machines | Run `scripts/add-machine.sh` again with the same arguments (it is idempotent and does not touch their `gateway.json`) |
+| Plugin | Edit `plugin/herdr-remote/`, repackage (12.2) and "Upload new version" (12.3) |
+| New or changed tools | **[HUMAN]** ChatGPT settings → Plugins → the app → **Manage app** → **Refresh tools**, and open a new chat: open chats keep the old list |
+| Repos and roots | Edit `repos` and `allowedRoots` in `gateway.json`; takes effect from the next call |
 
-Si una máquina duerme o sale de la tailnet, sus llamadas devuelven `machine_offline` durante 60 s y los listados no la esperan.
-
----
-
-## 19. Rotar la API key del túnel
-
-1. **[HUMANO]** Crear una key nueva con la configuración de la fase 8 (Restricted, solo Tunnels Read + Use) y pulsar "Copy" a mano.
-2. **[HUMANO]** Ejecutar la fase 9 con la key nueva.
-3. **[AGENTE]** Comprobar `curl -s 127.0.0.1:8080/readyz` → `ready`. Si hay túnel de Events, `sudo systemctl restart openai-herdr-events-tunnel` (lee el mismo `tunnel.env`) y comprobar su `/readyz` en el 8081.
-4. **[HUMANO]** Revocar la key anterior en la página de API keys.
+If a machine sleeps or leaves the tailnet, its calls return `machine_offline` for 60 s and listings do not wait for it.
 
 ---
 
-## 20. Fallos conocidos y arreglos
+## 19. Rotate the tunnel API key
 
-| Síntoma | Causa | Arreglo |
+1. **[HUMAN]** Create a new key with the phase 8 settings (Restricted, only Tunnels Read + Use) and click "Copy" by hand.
+2. **[HUMAN]** Run phase 9 with the new key.
+3. **[AGENT]** Check `curl -s 127.0.0.1:8080/readyz` → `ready`. If there is an Events tunnel, `sudo systemctl restart openai-herdr-events-tunnel` (it reads the same `tunnel.env`) and check its `/readyz` on 8081.
+4. **[HUMAN]** Revoke the old key on the API keys page.
+
+---
+
+## 20. Known failures and fixes
+
+| Symptom | Cause | Fix |
 | --- | --- | --- |
-| `bun install` en el servidor: `UnknownLockfileVersion` | Bun del servidor distinto del de la estación | Instalar en `/usr/local/bin/bun` la versión de la estación (fase 2) |
-| El gateway no arranca: error al leer `agent-aliases.json` | `gateway.json` del ejemplo apunta a un fichero de alias que no existe | Generarlo (§16.2) o quitar `agentAliases` |
-| `allowed root is too broad` o `repo … is outside allowedRoots` | Raíz `/` o `~`, o repo fuera de las raíces | Raíces concretas que existan; repos dentro |
-| `Host key verification failed` | `known_hosts` del servidor vacío o con otra clave | Repetir la fase 5 comparando huellas. Nunca `StrictHostKeyChecking=no` |
-| `Permission denied (publickey)` desde el servidor | Línea de `authorized_keys` ausente, `from=` con otra IP, o Tailscale SSH atendiendo el 22 | Revisar la línea y `RunSSH`. Si sshd ve `127.0.0.1` u otra IP en vez de la tailnet, Tailscale corre en modo userspace |
-| `tunnel-client init` falla justo tras escribir `tunnel.env` | `runuser` conserva el directorio actual y `herdr-mcp` no puede leerlo | El script ya hace `cd /tmp`; si se ejecuta a mano, igual |
-| El script dice "that does not look like an OpenAI API key" | El portapapeles no tenía la key (clic de "Copy" automatizado que no llegó) | El humano pulsa "Copy" y repite |
-| `control plane API key is malformed`, reinicio cada 5 s | `tunnel.env` con contenido que no es la key | Repetir la fase 9; si la key se llegó a exponer, rotarla |
-| Aviso `OAuth discovery failed … invalid character` en el túnel | Un 404 con cuerpo de texto en `/.well-known/…`; `tunnel-client` lo lee como JSON | El MCP actual responde 404 sin cuerpo. Si aparece, el código desplegado es antiguo |
-| ChatGPT: "No tunnels yet" | Túnel asociado a otro workspace de ChatGPT | Editar el túnel en Platform, marcar el workspace correcto, esperar unos 30 s |
-| Subida del plugin rechazada: `apps.herdr-remote.id must begin with asdk_app_…` | Se copió `plugin_asdk_app_…` de la URL | Quitar `plugin_`, reempaquetar |
-| "Couldn't add plugin" al subir una versión | Se usó "Add → Upload plugin archive", que crea otro plugin | Página del plugin → "…" → "Upload new version" |
-| ChatGPT: "No tool was defined"; el plugin dice "No app tools available yet" | Se borró la app pensando que era un duplicado | Recrear la app (fase 10.1), poner el ID nuevo en `.app.json`, "Upload new version" |
-| Herramientas nuevas no aparecen | ChatGPT guarda la lista de herramientas | **Refresh tools** y chat nuevo. Si se hace con automatización de navegador, el botón tiene que estar a la vista antes del clic |
-| Tras reiniciar `herdr-mcp`, ChatGPT pierde WorkDone varios minutos | `tunnel-client` prueba el MCP una sola vez al arrancar y deja el canal desactivado (`/api/status`: `"enabled": false`, `initial mcp probe failed`) | La unidad actual espera al `/healthz` en `ExecStartPre`. Reinstalar la unidad del repo si es antigua |
-| Primer prompt a un agente recién arrancado: `agent_not_ready` | El agente aún no está `idle` | Esperar `idle` (`wait_agent`); `spawn_agent` ya lo hace |
-| `list_dir ~/Downloads` en macOS: `permission_denied` | Carpetas protegidas por privacidad | "Acceso total al disco para usuarios remotos" (§2), o no usarlas |
-| `exec` de `gh` u otra CLI da 401, en un panel funciona | El login SSH del gateway no tiene llavero, ssh-agent ni `.zshrc` | `"execInPane": true` en esa máquina |
-| Los paneles de una máquina no encuentran `claude`/`codex` | Servidor de Herdr arrancado con `PATH` mínimo | `default_shell` y `shell_mode = "login"` en la config de Herdr y `herdr server reload-config` (§15) |
-| El primer carácter de un comando escrito en un panel nuevo se pierde | Un aviso interactivo de la shell (por ejemplo la actualización de oh-my-zsh) se come la tecla | Quitar el aviso, por ejemplo `zstyle ':omz:update' mode reminder` |
-| Un agente aparece como `agent: null` o "gone" aunque sigue vivo | Algo lo paró con SIGSTOP y, tras SIGCONT, quedó en segundo plano | `fg` en la shell del panel y `watch_agent` otra vez. No parar procesos de agentes desde fuera |
-| Codex falla al guardar la confianza de carpeta o en `account/read` | La CLI se actualizó a mitad de sesión y quedó desfasada de su app-server | Cerrar y reabrir el agente; misma versión de Codex en todas las máquinas |
-| `scp` falla contra una máquina | Algunos NAS no lo aceptan | `ssh ALIAS 'cat > ruta' < fichero` |
-| Puerto ocupado (8787, 8080, 8081, `<AUTH_PORT>`, 8790) | Otro servicio en el servidor | Elegir otro y cambiarlo en todas partes (§21) |
-| ChatGPT: "Couldn't discover OAuth settings" con conexión Tunnel + OAuth | Descubrimiento OAuth por el túnel no funcionó en la prueba registrada | Ruta pública con Caddy y conexión Server URL (§17.4) |
-| El intercambio de token OAuth falla por el método de autenticación del cliente | El documento de cliente de ChatGPT declara `private_key_jwt` y su petición de token llegó como cliente público | El emisor ya acepta `none` y `private_key_jwt`. Si el journal del emisor sigue mostrando `grant.error`, añadir en `/var/lib/workdone-issuer/clients.json` un cliente público estático con `client_id` `https://chatgpt.com/oauth/client.json` y las `redirect_uris` del error. No verificado fuera del despliegue original |
-| `invalid_token` en todas las llamadas OAuth | `ISSUER_URL` ≠ `auth.issuer` o `MCP_RESOURCE` ≠ `auth.resource` | Igualarlos y reconectar en ChatGPT |
-| El clasificador de permisos del agente bloquea un paso | Política automática del agente (escrituras remotas, despliegues, credenciales) | No se rodea: el humano ejecuta el comando |
+| `bun install` on the server: `UnknownLockfileVersion` | Server Bun differs from the workstation's | Install the workstation's version at `/usr/local/bin/bun` (phase 2) |
+| The gateway does not start: error reading `agent-aliases.json` | The example `gateway.json` points at an alias file that does not exist | Generate it (§16.2) or remove `agentAliases` |
+| `allowed root is too broad` or `repo … is outside allowedRoots` | Root `/` or `~`, or repo outside the roots | Specific roots that exist; repos inside them |
+| `Host key verification failed` | Server `known_hosts` empty or with a different key | Repeat phase 5 comparing fingerprints. Never `StrictHostKeyChecking=no` |
+| `Permission denied (publickey)` from the server | `authorized_keys` line missing, `from=` with a different IP, or Tailscale SSH answering on 22 | Check the line and `RunSSH`. If sshd sees `127.0.0.1` or another IP instead of the tailnet one, Tailscale is running in userspace mode |
+| `tunnel-client init` fails right after writing `tunnel.env` | `runuser` keeps the current directory and `herdr-mcp` cannot read it | The script already does `cd /tmp`; if run by hand, do the same |
+| The script says "that does not look like an OpenAI API key" | The clipboard did not have the key (an automated "Copy" click that did not land) | The human clicks "Copy" and repeats |
+| `control plane API key is malformed`, restart every 5 s | `tunnel.env` with content that is not the key | Repeat phase 9; if the key was exposed, rotate it |
+| `OAuth discovery failed … invalid character` warning in the tunnel | A 404 with a text body at `/.well-known/…`; `tunnel-client` parses it as JSON | The current MCP answers 404 with no body. If it shows up, the deployed code is old |
+| ChatGPT: "No tunnels yet" | Tunnel associated with another ChatGPT workspace | Edit the tunnel in Platform, tick the right workspace, wait about 30 s |
+| Plugin upload rejected: `apps.herdr-remote.id must begin with asdk_app_…` | `plugin_asdk_app_…` was copied from the URL | Remove `plugin_`, repackage |
+| "Couldn't add plugin" when uploading a version | "Add → Upload plugin archive" was used, which creates another plugin | Plugin page → "…" → "Upload new version" |
+| ChatGPT: "No tool was defined"; the plugin says "No app tools available yet" | The app was deleted on the assumption that it was a duplicate | Recreate the app (§12.1), put the new ID in `.app.json`, "Upload new version" |
+| New tools do not show up | ChatGPT caches the tool list | **Refresh tools** and a new chat. If done with browser automation, the button has to be in view before the click |
+| After restarting `herdr-mcp`, ChatGPT loses WorkDone for several minutes | `tunnel-client` probes the MCP only once at startup and leaves the channel disabled (`/api/status`: `"enabled": false`, `initial mcp probe failed`) | The current unit waits for `/healthz` in `ExecStartPre`. Reinstall the unit from the repo if it is old |
+| First prompt to a freshly started agent: `agent_not_ready` | The agent is not `idle` yet | Wait for `idle` (`wait_agent`); `spawn_agent` already does |
+| `list_dir ~/Downloads` on macOS: `permission_denied` | Folders protected by privacy settings | "Full disk access for remote users" (§2), or do not use them |
+| `exec` of `gh` or another CLI gives 401, but works in a pane | The gateway's SSH login has no keychain, ssh-agent or `.zshrc` | `"execInPane": true` on that machine |
+| A machine's panes do not find `claude`/`codex` | Herdr server started with a minimal `PATH` | `default_shell` and `shell_mode = "login"` in the Herdr config and `herdr server reload-config` (§15) |
+| The first character of a command typed into a new pane is lost | An interactive shell prompt (for example the oh-my-zsh update) eats the keystroke | Remove the prompt, for example `zstyle ':omz:update' mode reminder` |
+| An agent shows as `agent: null` or "gone" even though it is still alive | Something stopped it with SIGSTOP and, after SIGCONT, it was left in the background | `fg` in the pane's shell and `watch_agent` again. Do not stop agent processes from outside |
+| Codex fails to save folder trust or in `account/read` | The CLI was updated mid-session and got out of sync with its app-server | Close and reopen the agent; same Codex version on all machines |
+| `scp` fails against a machine | Some NAS devices do not accept it | `ssh ALIAS 'cat > path' < file` |
+| Port taken (8787, 8080, 8081, `<AUTH_PORT>`, 8790) | Another service on the server | Pick another one and change it everywhere (§21) |
+| ChatGPT: "Couldn't discover OAuth settings" with a Tunnel + OAuth connection | OAuth discovery through the tunnel did not work in the recorded test | Public route with Caddy and a Server URL connection (§17.4) |
+| The OAuth token exchange fails because of the client authentication method | ChatGPT's client document declares `private_key_jwt` and its token request arrived as a public client | The issuer already accepts `none` and `private_key_jwt`. If the issuer journal still shows `grant.error`, add to `/var/lib/workdone-issuer/clients.json` a static public client with `client_id` `https://chatgpt.com/oauth/client.json` and the `redirect_uris` from the error. Not verified outside the original deployment |
+| `invalid_token` on every OAuth call | `ISSUER_URL` ≠ `auth.issuer` or `MCP_RESOURCE` ≠ `auth.resource` | Make them equal and reconnect in ChatGPT |
+| The agent's permission classifier blocks a step | Automatic agent policy (remote writes, deploys, credentials) | Do not work around it: the human runs the command |
 
 ---
 
-## 21. Valores fijos en los scripts y cómo adaptarlos
+## 21. Hardcoded values in the scripts and how to adapt them
 
-Los scripts se escribieron para un despliegue concreto. Lo que lleva fijo:
+The scripts were written for one specific deployment. What they hardcode:
 
-| Fichero | Valor fijo | Cómo adaptarlo |
+| File | Hardcoded value | How to adapt it |
 | --- | --- | --- |
-| `scripts/deploy-ovh.sh` | Alias SSH por defecto `ovh` | Pasar `<SERVER_SSH_ALIAS>` como primer argumento, o crear `Host ovh` en `~/.ssh/config` |
-| `scripts/deploy-ovh.sh` | Nombre de máquina `ovh` en `machines.ovh`, `notify.machine` y la clave `id_ed25519_ovh` | Aceptarlo, o editar el script. Ese nombre lo ve ChatGPT |
-| `scripts/deploy-ovh.sh` | Gateway del servidor obligatorio (falla si `bridge_status` local no responde) | Sin Herdr en el servidor, actualizar a mano (§18) |
-| `scripts/deploy-ovh.sh` | `notifyCommand` solo si existe un script de notificaciones en una ruta del autor | Poner `notifyCommand` a mano (§14.2) |
-| `scripts/deploy-ovh.sh`, `scripts/add-machine.sh` | `sudo` sin contraseña, `/usr/local/bin/bun` en el servidor, `~/.bun/bin/bun` en las máquinas extra | Cumplir esos requisitos |
-| `scripts/add-machine.sh`, `scripts/deploy-issuer.sh` | Servidor `ovh` por defecto | `OVH_HOST=<SERVER_SSH_ALIAS>` |
-| `scripts/add-machine.sh` | `agentKinds: ["claude","codex"]` y `extraPath` con `~/.npm-global/bin` en la config nueva | Editar el `gateway.json` de la máquina después |
-| `scripts/install-gateway.sh` | Crea `gateway.json` desde `config/mac-gateway.example.json` también en Linux (`shell` `/bin/zsh`, `/opt/homebrew/bin`, alias que pueden no existir) | Editarlo (fase 1) |
-| `scripts/install-watcher.sh` y `deploy/launchd/*.plist` | Etiqueta de launchd con el prefijo del autor | Solo cosmético; normalmente no se instala (§14.2) |
-| `scripts/ovh-setup-tunnel.sh` | Puertos 8787 (MCP) y 8080 (salud del túnel) | Si cambian, editar el script, `ovh.json` y el `ExecStartPre` de `openai-herdr-tunnel.service` |
-| `scripts/ovh-setup-events-tunnel.sh` | Puerto OAuth `8789`, admin `8081`, sample `sample_mcp_with_dcr` | Editar si `<AUTH_PORT>` es otro. El sample no se ha visto funcionar con ChatGPT (§17.5) |
-| `deploy/systemd/openai-herdr-events-tunnel.service` | `MCP_OAUTH_TRUSTED_ORIGINS` con el nombre del emisor original y `ExecStartPre` contra `8789` | Poner `https://<ISSUER_HOST>` y `<AUTH_PORT>` |
-| `scripts/deploy-issuer.sh` | Nombre por defecto atado a la IP del servidor original, Caddy dentro de un contenedor Docker concreto (nombre de contenedor y ruta del Caddyfile fijos), emisor en `172.24.0.1:8790` | No usarlo tal cual: procedimiento manual de §17.3 y §17.4 |
-| `deploy/Caddyfile.issuer` | Nombre del emisor original y direcciones de la red Docker (`172.24.0.1:8790`, `:8792`) | Bloque de §17.4 |
-| `deploy/systemd/workdone-issuer.service` | `Requires=docker.service` | Quitarlo si no hay Docker (§17.3) |
-| `deploy/systemd/workdone-mcp-bridge.{socket,service}` | `172.24.0.1:8792` → `127.0.0.1:8789` | Solo hacen falta con Caddy en Docker |
-| `plugin/herdr-remote/` | Nombres de máquina, repos, sección de navegador y autor | Revisar antes de empaquetar (§12.2) |
-| `plugin/workdone-events/.codex-plugin/plugin.json` | Menciona las máquinas del autor | Ajustar el texto |
-| `config/ovh-gateway.example.json` | Sección `browser` con rutas de una herramienta del autor | Quitarla salvo que esa herramienta exista |
+| `scripts/deploy-ovh.sh` | Default SSH alias `ovh` | Pass `<SERVER_SSH_ALIAS>` as the first argument, or create `Host ovh` in `~/.ssh/config` |
+| `scripts/deploy-ovh.sh` | Machine name `ovh` in `machines.ovh`, `notify.machine` and the `id_ed25519_ovh` key | Accept it, or edit the script. ChatGPT sees that name |
+| `scripts/deploy-ovh.sh` | Server gateway required (fails if local `bridge_status` does not respond) | With no Herdr on the server, update by hand (§18) |
+| `scripts/deploy-ovh.sh` | `notifyCommand` only if a notification script exists at one of the author's paths | Set `notifyCommand` by hand (§14.2) |
+| `scripts/deploy-ovh.sh`, `scripts/add-machine.sh` | Passwordless `sudo`, `/usr/local/bin/bun` on the server, `~/.bun/bin/bun` on extra machines | Meet those requirements |
+| `scripts/add-machine.sh`, `scripts/deploy-issuer.sh` | Default server `ovh` | `OVH_HOST=<SERVER_SSH_ALIAS>` |
+| `scripts/add-machine.sh` | `agentKinds: ["claude","codex"]` and `extraPath` with `~/.npm-global/bin` in the new config | Edit the machine's `gateway.json` afterwards |
+| `scripts/install-gateway.sh` | Creates `gateway.json` from `config/mac-gateway.example.json` on Linux too (`shell` `/bin/zsh`, `/opt/homebrew/bin`, aliases that may not exist) | Edit it (phase 1) |
+| `scripts/install-watcher.sh` and `deploy/launchd/*.plist` | launchd label with the author's prefix | Cosmetic only; usually not installed (§14.2) |
+| `scripts/ovh-setup-tunnel.sh` | Ports 8787 (MCP) and 8080 (tunnel health) | If they change, edit the script, `ovh.json` and the `ExecStartPre` of `openai-herdr-tunnel.service` |
+| `scripts/ovh-setup-events-tunnel.sh` | OAuth port `8789`, admin `8081`, sample `sample_mcp_with_dcr` | Edit if `<AUTH_PORT>` is different. The sample has not been seen working with ChatGPT (§17.5) |
+| `deploy/systemd/openai-herdr-events-tunnel.service` | `MCP_OAUTH_TRUSTED_ORIGINS` with the original issuer's name and `ExecStartPre` against `8789` | Set `https://<ISSUER_HOST>` and `<AUTH_PORT>` |
+| `scripts/deploy-issuer.sh` | Default name tied to the original server's IP, Caddy inside a specific Docker container (fixed container name and Caddyfile path), issuer on `172.24.0.1:8790` | Do not use it as is: manual procedure from §17.3 and §17.4 |
+| `deploy/Caddyfile.issuer` | Original issuer's name and Docker network addresses (`172.24.0.1:8790`, `:8792`) | Block from §17.4 |
+| `deploy/systemd/workdone-issuer.service` | `Requires=docker.service` | Remove it if there is no Docker (§17.3) |
+| `deploy/systemd/workdone-mcp-bridge.{socket,service}` | `172.24.0.1:8792` → `127.0.0.1:8789` | Only needed with Caddy in Docker |
+| `plugin/herdr-remote/` | Machine names, repos, browser section and author | Review before packaging (§12.2) |
+| `plugin/workdone-events/.codex-plugin/plugin.json` | Mentions the author's machines | Adjust the text |
+| `config/ovh-gateway.example.json` | `browser` section with paths of one of the author's tools | Remove it unless that tool exists |
 
 ---
 
-## 22. Desinstalar
+## 22. Uninstall
 
-**[HUMANO]** En ChatGPT: desinstalar y borrar el plugin, y después borrar la app (y la de Events si existe).
+**[HUMAN]** In ChatGPT: uninstall and delete the plugin, then delete the app (and the Events one if it exists).
 
-**[HUMANO]** En OpenAI Platform: borrar el túnel o túneles y revocar la API key.
+**[HUMAN]** In OpenAI Platform: delete the tunnel or tunnels and revoke the API key.
 
-**[AGENTE]** En el servidor:
+**[AGENT]** On the server:
 
 ```bash
 sudo systemctl disable --now openai-herdr-events-tunnel workdone-issuer 2>/dev/null || true
@@ -1081,12 +1081,12 @@ sudo systemctl daemon-reload
 sudo rm -rf /etc/herdr-mcp /opt/herdr-chatgpt-bridge /opt/herdr-chatgpt-bridge.old-* /opt/tunnel-client /var/lib/herdr-mcp
 sudo rm -rf /etc/workdone-issuer /opt/workdone-issuer /var/lib/workdone-issuer
 sudo userdel herdr-mcp; sudo userdel workdone-issuer 2>/dev/null || true
-sudo rm /usr/local/bin/bun            # solo si nada más lo usa
+sudo rm /usr/local/bin/bun            # only if nothing else uses it
 ```
 
-Quitar también el bloque de Caddy si se añadió, y en el servidor la línea `herdr-chatgpt-ovh-local` de `~/.ssh/authorized_keys` y `~/.local/libexec/herdr-chatgpt`, `~/.config/herdr-chatgpt`, `~/.local/state/herdr-chatgpt` si se instaló su gateway.
+Also remove the Caddy block if you added it, and on the server the `herdr-chatgpt-ovh-local` line from `~/.ssh/authorized_keys` plus `~/.local/libexec/herdr-chatgpt`, `~/.config/herdr-chatgpt`, `~/.local/state/herdr-chatgpt` if its gateway was installed.
 
-**[AGENTE]** En la estación y en cada máquina extra:
+**[AGENT]** On the workstation and on each extra machine:
 
 ```bash
 cp -p ~/.ssh/authorized_keys ~/.ssh/authorized_keys.bak-uninstall
@@ -1094,4 +1094,4 @@ grep -v 'herdr-chatgpt' ~/.ssh/authorized_keys.bak-uninstall > ~/.ssh/authorized
 rm -rf ~/.local/libexec/herdr-chatgpt ~/.config/herdr-chatgpt ~/.local/state/herdr-chatgpt ~/.local/bin/workdone-tell
 ```
 
-El `grep -v` quita toda línea que mencione `herdr-chatgpt` (los comentarios de las claves del puente y la ruta del lanzador). Revisar el resultado con `diff` antes de cerrar la sesión SSH.
+The `grep -v` removes every line that mentions `herdr-chatgpt` (the bridge keys' comments and the launcher path). Check the result with `diff` before closing the SSH session.

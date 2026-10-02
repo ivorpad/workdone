@@ -59,7 +59,7 @@ The other direction, an agent telling ChatGPT something without being asked, dep
 | | |
 | --- | --- |
 | [docs/INSTALL_AND_SETUP.md](docs/INSTALL_AND_SETUP.md) | Install runbook, written for an agent to follow |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Step-by-step deployment in Spanish: placeholders, human steps, a check after each phase, known failures |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Step-by-step deployment: placeholders, human steps, a check after each phase, known failures |
 | [docs/chatgpt-link.md](docs/chatgpt-link.md) | The two-way link between a chat and an agent, approval policies, what ChatGPT does and doesn't do |
 | [docs/mcp-events.md](docs/mcp-events.md) | Native MCP Events, OAuth and the callback network policy |
 | [docs/loop-risks.md](docs/loop-risks.md) | Risks of letting a chat and its agents wake each other |
