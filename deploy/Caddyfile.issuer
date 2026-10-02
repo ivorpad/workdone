@@ -1,0 +1,20 @@
+# A site block for the OVH Caddy that already owns ports 80 and 443 (container
+# rustdesk-caddy, /opt/docker/rustdesk/Caddyfile). The issuer listens on the Docker
+# bridge address, which is how that Caddy reaches host services (see the relay block).
+# Replace issuer.example.com with the issuer's public name (deploy-issuer.sh does this);
+# <server-ip-with-dashes>.sslip.io works without a DNS record. Use the same name as ISSUER_URL.
+#
+# /mcp is the OAuth MCP listener (127.0.0.1:8789) through workdone-mcp-bridge.socket.
+# It is public, but the MCP answers 401 to anything without a valid issuer-signed token.
+issuer.example.com {
+	encode zstd gzip
+	handle /mcp* {
+		# The MCP only accepts loopback Host headers (DNS rebinding protection).
+		reverse_proxy 172.24.0.1:8792 {
+			header_up Host 127.0.0.1:8789
+		}
+	}
+	handle {
+		reverse_proxy 172.24.0.1:8790
+	}
+}

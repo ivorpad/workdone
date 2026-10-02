@@ -1,0 +1,19 @@
+{
+  "name": "workdone-issuer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "jose": "6.2.12",
+    "oidc-provider": "9.12.2"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "@types/oidc-provider": "9.12.1",
+    "typescript": "7.0.2"
+  }
+}

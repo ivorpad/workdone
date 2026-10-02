@@ -1,0 +1,40 @@
+[Unit]
+Description=WorkDone OAuth issuer (loopback only; Caddy terminates TLS)
+After=network-online.target docker.service
+Wants=network-online.target
+# Listens on the Docker bridge (172.24.0.1), which exists once Docker is up.
+Requires=docker.service
+
+[Service]
+Type=simple
+User=workdone-issuer
+Group=workdone-issuer
+WorkingDirectory=/opt/workdone-issuer
+# Node, not Bun: oidc-provider supports Node. Node 24 strips the types itself.
+ExecStart=/usr/bin/node --no-warnings src/server.ts
+Environment=ISSUER_DIR=/var/lib/workdone-issuer
+EnvironmentFile=/etc/workdone-issuer/env
+Restart=on-failure
+RestartSec=3
+StateDirectory=workdone-issuer
+StateDirectoryMode=0700
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# Outbound is open because the issuer fetches ChatGPT's client metadata document over
+# HTTPS. The code only fetches client_ids on ISSUER_CLIENT_HOSTS (chatgpt.com, openai.com).
+
+[Install]
+WantedBy=multi-user.target

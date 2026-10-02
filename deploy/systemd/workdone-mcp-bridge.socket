@@ -1,0 +1,11 @@
+[Unit]
+Description=Docker-bridge address for the OAuth MCP listener (Caddy reaches it here)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Socket]
+# 172.24.0.1 is the rustdesk-net gateway, as for the relay on 8791 and the issuer on 8790.
+ListenStream=172.24.0.1:8792
+
+[Install]
+WantedBy=sockets.target

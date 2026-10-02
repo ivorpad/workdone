@@ -1,0 +1,16 @@
+[Unit]
+Description=Forward the Docker-bridge socket to the OAuth MCP listener on loopback
+Requires=workdone-mcp-bridge.socket herdr-mcp.service
+After=workdone-mcp-bridge.socket herdr-mcp.service
+
+[Service]
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8789
+DynamicUser=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost 172.24.0.0/16
