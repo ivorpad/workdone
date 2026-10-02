@@ -1,0 +1,10 @@
+[Unit]
+Description=Weekly refresh of OpenAI's connector IP allowlist (WorkDone)
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -5,10 +5,14 @@
 # <server-ip-with-dashes>.sslip.io works without a DNS record. Use the same name as ISSUER_URL.
 #
 # /mcp is the OAuth MCP listener (127.0.0.1:8789) through workdone-mcp-bridge.socket.
-# It is public, but the MCP answers 401 to anything without a valid issuer-signed token.
+# Only OpenAI's connector egress may reach it (403 for everyone else), and the MCP still
+# answers 401 to anything without a valid issuer-signed token. Fill and refresh the
+# prefix list with scripts/openai-allowlist.sh; OpenAI changes it now and then.
 issuer.example.com {
 	encode zstd gzip
 	handle /mcp* {
+		@not_openai not remote_ip 192.0.2.0/24
+		respond @not_openai 403
 		# The MCP only accepts loopback Host headers (DNS rebinding protection).
 		reverse_proxy 172.24.0.1:8792 {
 			header_up Host 127.0.0.1:8789
