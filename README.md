@@ -10,7 +10,28 @@ I wanted to keep working with my agents while away from the keyboard: out walkin
 
 It is not a way around ChatGPT's or any agent's usage limits. The agents run on your own machines under your own accounts, exactly as they would if you typed to them.
 
-It is an MCP server, a small gateway per machine, a ChatGPT plugin with its skill, and a skill for the agents on the other end. One person built it for their own setup: a Mac that sleeps and an always-on Linux VPS (called `ovh` throughout), both on one tailnet.
+## Why not just ChatGPT Work or the Codex app
+
+Work and Codex (now one ChatGPT desktop app with Chat) run OpenAI's agent on OpenAI's models, in OpenAI's cloud or in that app on your computer. They need no setup and come with a sandbox. WorkDone is for when the agents you want to talk to already exist somewhere else:
+
+- **Any agent CLI, not one vendor's.** Claude Code, Codex CLI and Cursor (and through Cursor, Grok, Gemini, Kimi and others), each under its own subscription. ChatGPT is the voice and the coordinator, and it doesn't have to be the one writing the code.
+- **The same sessions you use at the desk.** Agents live in Herdr panes on your machines. Start one by voice in the car and it is sitting in a terminal when you get home, with its whole transcript. Nothing is handed off or synced.
+- **Your real environment.** The agents run in your checkouts with your shell, keychain, ssh-agent, `gh` login and local services, not in a fresh clone.
+- **Several machines at once.** A Mac that sleeps and an always-on VPS (and a NAS here) appear as one list. Work started on the VPS keeps going while the laptop is closed.
+- **Your rules.** Gated operations (push, merge, `rm -rf`, deploys) wait for the owner. Approval policies are set per agent, and every call goes to an audit log on the machine that ran it.
+
+The cost is that you run and secure all of it yourself: a VPS, an OpenAI tunnel, SSH keys, an OAuth issuer for Events, and screen parsing of each CLI's menus that a CLI update can break. If Work or Codex does the job, it is less to look after.
+
+## How it fits together
+
+WorkDone is built on the pieces OpenAI shipped for ChatGPT plugins in 2026:
+
+- **[Plugins](https://developers.openai.com/plugins).** A plugin bundles an MCP server, skills and optional UI, and runs in ChatGPT Chat, Work and Codex. WorkDone ships two: `plugin/herdr-remote` (the tools and the skill that tells ChatGPT how to use them) and `plugin/workdone-events` (the event subscriptions).
+- **Secure MCP Tunnel.** It lets ChatGPT reach an MCP server that only listens on the VPS's loopback, with no open port.
+- **MCP Apps.** Tools can return small HTML cards that render inside the chat. WorkDone uses them for the Approve card (a held command with Approve and Decline) and the link card, which can also wake the chat with a new message (`ui/message`). That is the only way to reach a regular Chat unprompted.
+- **[MCP Events](https://developers.openai.com/plugins/build/mcp-events)** (protocol `2026-07-28`). ChatGPT subscribes to an event and the server calls a signed webhook when it happens, which wakes the chat. WorkDone offers `agent.finished`, `agent.asks` and `agent.message`. It needs OAuth (the `issuer/` here) and, for now, a Work chat.
+
+Below ChatGPT, everything is this repo: the MCP server on the VPS, a forced-command gateway on each machine reached over ordinary OpenSSH on a tailnet, and Herdr's socket API on each machine. One person built it for their own setup, a Mac that sleeps and an always-on Linux VPS (called `ovh` throughout).
 
 ```text
 ChatGPT → OpenAI Secure MCP Tunnel → MCP server on the VPS (127.0.0.1:8787)
