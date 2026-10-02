@@ -1,0 +1,12 @@
+[Unit]
+Description=SSH only on loopback and the tailnet (WorkDone)
+After=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ssh-tailnet-only start
+ExecStop=/usr/local/sbin/ssh-tailnet-only stop
+
+[Install]
+WantedBy=multi-user.target

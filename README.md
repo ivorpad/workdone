@@ -142,6 +142,7 @@ The names in the table are what this generator produced on the author's Mac on 2
 
 ## Where the security checks live
 
+- **The VPS's sshd.** Port 22 answers only on loopback and `tailscale0` (`scripts/ssh-tailnet-only.sh`, run by `deploy/systemd/ssh-tailnet-only.service`). On the open internet, scanners filled sshd's `MaxStartups` and it dropped new connections at random, including the MCP server's own to the VPS gateway, so ChatGPT saw timeouts. Reach the VPS over the tailnet, and keep the provider's web console as the way in when Tailscale is down.
 - **Each gateway.** It hides every pane and agent whose `cwd` or `foreground_cwd` is outside `allowedRoots` and reports them as "not found". A tab or workspace counts as in scope when it holds an in-scope pane, and closing one needs all of its panes in scope.
   - File paths are resolved through symlinks before the root check, so a link inside a root cannot point the tools outside it.
   - Targets must match `^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$`, so a flag-shaped value never reaches Herdr.
