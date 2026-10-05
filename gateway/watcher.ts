@@ -300,7 +300,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     reports.push({ event_id: randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
   }
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
-  const resolved = new Map<string, string>();
+  const resolved = new Map<string, TurnResult>();
   for (const { paneId, w, agent, d, bg, menu, approved } of decided) {
     if (!applied.has(paneId)) continue;
     if (approved.length) events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(approved) }]);
@@ -328,14 +328,19 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       changed: cp?.changed ?? null, branch: cp?.branch ?? null, kind: w.launch?.kind ?? agent?.agent ?? w.kind ?? null,
       model: w.launch?.model ?? null, model_id: w.launch?.model_id ?? null, effort: w.launch?.effort ?? null,
     } : undefined;
-    if (result) resolved.set(paneId, result.result_id);
+    if (result) resolved.set(paneId, result);
     reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {
     store.updateWatched((fresh) => {
       // Delivered once, by ID: a write since this pass's read can't make it owed again.
-      for (const [id, rid] of resolved) if (fresh[id]?.result_request?.id === rid) delete fresh[id]!.result_request;
+      // The result stays readable (get_agent watch.last_result) in case the event is missed.
+      for (const [id, res] of resolved) {
+        if (!fresh[id]) continue;
+        if (fresh[id]!.result_request?.id === res.result_id) delete fresh[id]!.result_request;
+        fresh[id] = { ...fresh[id]!, last_result: res };
+      }
       for (const [id, e] of events) {
         if (!fresh[id] || fresh[id]!.rev !== watched[id]?.rev) continue;
         fresh[id] = { ...fresh[id], last_event: e };

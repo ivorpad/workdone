@@ -96,6 +96,20 @@ export interface EventsOptions {
   sender?: Sender; now?: () => number; random?: () => number; log?: (line: string) => void;
   // Called after a subscription is saved, so the notifier can start polling for it.
   onSubscribed?: (name: string, args: EventArguments) => void;
+  // When the chat holding a lease last called a WorkDone tool (see activity.ts).
+  lastActive?: (machine: string, lease: string) => number | undefined;
+}
+
+// ChatGPT drops an event that arrives while the subscribed chat's own turn is running,
+// after acknowledging it. A delivery for an agent a chat drives (the lease its turn is
+// owed to, or the one holding it) waits until that chat has made no tool call for
+// quietMs, and a reply: true result until afterRequestMs past its request (all that is
+// left after a restart). Never longer than maxMs after it was queued.
+export const HOLD = { quietMs: 30_000, afterRequestMs: 30_000, maxMs: 180_000 };
+export interface Hold { machine: string; lease: string; queued_at: number; requested_at?: number }
+export function holdUntil(hold: Hold, lastActive: number | undefined): number {
+  const want = Math.max(lastActive === undefined ? 0 : lastActive + HOLD.quietMs, hold.requested_at === undefined ? 0 : hold.requested_at + HOLD.afterRequestMs);
+  return Math.min(want, hold.queued_at + HOLD.maxMs);
 }
 const DAY = 24 * 3600_000;
 const VERIFY_MS = 5 * 60_000;
@@ -142,6 +156,8 @@ export class EventsService {
         PRIMARY KEY(subscription_id,event_id));
       CREATE INDEX IF NOT EXISTS due_deliveries ON deliveries(next_at);
       CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, at INTEGER NOT NULL);`);
+    // Added after the first release: stores from before it have no hold column.
+    if (!(this.db.query("PRAGMA table_info(deliveries)").all() as Array<{ name: string }>).some(c => c.name === "hold")) this.db.exec("ALTER TABLE deliveries ADD COLUMN hold TEXT");
     this.sender = options.sender ?? createWebhookSender({ allowedHosts: options.callbackHosts });
     this.now = options.now ?? Date.now;
     this.log = options.log ?? console.log;
@@ -275,9 +291,13 @@ export class EventsService {
         }
         const queued = (this.db.query("SELECT count(*) AS n FROM deliveries").get() as { n: number }).n;
         if (queued + matching.length > 10_000) throw new Error("Events delivery queue limit reached");
+        const lease = r.reply_to ?? r.lease;
+        const requested = r.result ? Date.parse(r.result.requested_at) : NaN;
+        const hold: Hold | null = lease ? { machine, lease, queued_at: this.now(), ...(Number.isFinite(requested) ? { requested_at: requested } : {}) } : null;
+        const firstTry = hold ? Math.max(this.now(), holdUntil(hold, this.options.lastActive?.(machine, lease!))) : this.now();
         this.db.transaction(() => {
           this.db.query("INSERT INTO seen(id,at) VALUES (?,?)").run(eventId, this.now());
-          for (const s of matching) this.db.query("INSERT OR IGNORE INTO deliveries(subscription_id,event_id,body,next_at) VALUES (?,?,?,?)").run(s.id, eventId, body, this.now());
+          for (const s of matching) this.db.query("INSERT OR IGNORE INTO deliveries(subscription_id,event_id,body,next_at,hold) VALUES (?,?,?,?,?)").run(s.id, eventId, body, firstTry, hold ? JSON.stringify(hold) : null);
         })();
         count += matching.length;
       }
@@ -295,7 +315,7 @@ export class EventsService {
         if (s.expires <= this.now() || s.principal.tokenExpiresAt <= this.now()) this.remove(s.id);
         else if (s.rotateUntil && s.rotateUntil <= this.now()) { delete s.previousSecret; delete s.rotateUntil; this.save(s); }
       }
-      return this.db.query("SELECT * FROM deliveries WHERE next_at<=? ORDER BY next_at LIMIT 32").all(this.now()) as Array<{ subscription_id: string; event_id: string; body: string; attempts: number }>;
+      return this.db.query("SELECT * FROM deliveries WHERE next_at<=? ORDER BY next_at LIMIT 32").all(this.now()) as Array<{ subscription_id: string; event_id: string; body: string; attempts: number; hold: string | null }>;
     });
     // Release the mutation lock between deliveries so unsubscribe/refresh do
     // not wait for a whole burst of unreachable callbacks.
@@ -303,6 +323,16 @@ export class EventsService {
       await this.exclusive(async () => {
         const s = this.get(d.subscription_id);
         if (!s || !this.db.query("SELECT event_id FROM deliveries WHERE subscription_id=? AND event_id=? AND next_at<=?").get(s.id, d.event_id, this.now())) return;
+        // The chat called a tool since this was queued: it may be mid-turn again.
+        if (d.hold && d.attempts === 0) {
+          const hold = JSON.parse(d.hold) as Hold;
+          const until = holdUntil(hold, this.options.lastActive?.(hold.machine, hold.lease));
+          if (until > this.now()) {
+            this.db.query("UPDATE deliveries SET next_at=? WHERE subscription_id=? AND event_id=?").run(until, s.id, d.event_id);
+            this.audit("events_delivery_held", { id: s.id, eventId: d.event_id, until: new Date(until).toISOString() });
+            return;
+          }
+        }
         const data = JSON.parse(d.body).data as EventResource;
         try {
           if (!await this.permitted(s, data)) { this.db.query("DELETE FROM deliveries WHERE subscription_id=? AND event_id=?").run(s.id, d.event_id); return; }

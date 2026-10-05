@@ -39,6 +39,7 @@ export function watchView(w: Watched | undefined) {
     ...(w.launch ? { launch: w.launch } : {}),
     ...(w.role === "reviewer" ? { role: w.role } : {}),
     ...(w.result_request ? { result_pending: w.result_request.id } : {}),
+    ...(w.last_result ? { last_result: w.last_result } : {}),
   };
 }
 

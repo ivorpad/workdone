@@ -4,6 +4,7 @@
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import type { TurnResult } from "./watcher.ts";
 import { resolve } from "node:path";
 
 export type CreatedKind = "panes" | "tabs" | "workspaces";
@@ -48,6 +49,8 @@ export interface Watched {
   // A caller asked for this agent's next final result (reply: true). Resolved once, by
   // the first finished turn or the agent's exit; a question or menu leaves it pending.
   result_request?: ResultRequest;
+  // The last result delivered for this agent, for a caller whose event never showed.
+  last_result?: TurnResult;
 }
 
 export interface ResultRequest {
@@ -298,8 +301,9 @@ export class StateStore {
         launch: info.launch ?? cur?.launch,
         role: info.role ?? cur?.role,
         result_request: cur?.result_request,
+        last_result: cur?.last_result,
       };
-      for (const k of ["launch", "role", "result_request", "reply_to", "last_event", "dialog_id", "prompted_at"] as const) if (entry[k] === undefined) delete entry[k];
+      for (const k of ["launch", "role", "result_request", "last_result", "reply_to", "last_event", "dialog_id", "prompted_at"] as const) if (entry[k] === undefined) delete entry[k];
       w[paneId] = entry;
       return entry;
     });

@@ -4,6 +4,7 @@
 import { createMcpHandler, hostHeaderValidationResponse, isLegacyRequest, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { parseConfig, type OvhConfig } from "./config.ts";
 import { AuthenticationError, AuthService } from "./auth.ts";
+import { leaseActivity } from "./activity.ts";
 import { EventsService, type EventPrincipal, type EventsOptions } from "./events.ts";
 import { sshGateway, type CallGateway } from "./gateway-client.ts";
 import { inbox } from "./inbox.ts";
@@ -54,6 +55,7 @@ export function createEventService(cfg: OvhConfig, call: CallGateway, auth: Auth
   const unavailable = new Set(["machine_offline", "gateway_unreachable", "herdr_unavailable", "herdr_timeout", "herdr_closed"]);
   return new EventsService({
     ...cfg.events,
+    lastActive: (machine, lease) => leaseActivity.lastActive(machine, lease),
     ...options,
     authorize: async (principal, args, report) => {
       const machines = await auth.allowedMachines(principal);

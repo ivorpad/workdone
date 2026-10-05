@@ -41,6 +41,9 @@ describe("reply: true", () => {
       commit: t.git("rev-parse", "HEAD"), tree: t.git("rev-parse", "HEAD^{tree}"), clean: true, changed: 0, branch: "main", kind: "cursor",
     });
     expect(t.watched()["w1:p1"].result_request).toBeUndefined();
+    // Still readable after delivery, for a chat whose event never showed.
+    expect(t.watched()["w1:p1"].last_result).toMatchObject({ result_id: res.result_request.result_id, summary: "retry fix landed in a.txt" });
+    expect(((await t.gw.handle("get_agent", { target: "w1:p1" })) as any).watch.last_result.result_id).toBe(res.result_request.result_id);
     // The next turn is nobody's result.
     t.finish("Another answer.\nRESULT: again");
     const next = await t.poll();

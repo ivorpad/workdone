@@ -5,6 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { holdIfGated, pendingCalls, registerConfirm } from "./confirm.ts";
+import { leaseActivity } from "./activity.ts";
 import { registerEvents, type EventsService, type EventPrincipal } from "./events.ts";
 import type { CallGateway } from "./gateway-client.ts";
 import { render } from "./render.ts";
@@ -29,7 +30,7 @@ const agentKind = z.string().describe("The agent CLI, one of bridge_status agent
 const model = z.string().optional().describe("Model family for that CLI, one of bridge_status agents[kind].models (e.g. opus, sol, grok), always its newest version. Omit for agents[kind].default_model, or the CLI's own default when there is none.");
 const effort = z.string().optional().describe("Reasoning effort, one of that model's efforts in bridge_status (default: the model's effort). Needs a model or a default_model.");
 const reply = z.boolean().optional().describe(
-  "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id.",
+  "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id. WorkDone holds the event until this chat has made no WorkDone call for 30 s, since ChatGPT drops events that arrive mid-turn; get_agent watch.last_result has the last delivered result if it still never showed.",
 );
 const role = z.enum(["worker", "reviewer"]).optional().describe("worker (default) or reviewer. supervisor_status hands a stalled reviewer back to you instead of nudging it; never spawn another reviewer to review a reviewer.");
 const watch = z.boolean().optional().describe("Watch the agent for completion, questions and manual permission notifications, and answer recognized menus according to its approval policy (default true).");
@@ -446,7 +447,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.8.1" },
+    { name: "herdr-remote", version: "0.8.2" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
@@ -495,7 +496,12 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
           const allowed = inbox.allowMessage(target, lease);
           if (!allowed.ok) return render({ ok: false, error: { code: "one_message_per_wake", message: allowed.message } });
         }
+        if (lease) leaseActivity.touch(target, lease);
         const res = holdIfGated(pendingCalls, target, name, params, await call(target, name, params));
+        // After the call too: a long one (wait: true) is still this chat's turn. spawn_agent
+        // without a lease returns the one it made.
+        const used = lease ?? (res.ok && typeof (res.result as any)?.lease === "string" ? (res.result as any).lease as string : null);
+        if (used) leaseActivity.touch(target, used);
         if (TO_AGENT.has(name) && lease && res.ok) inbox.noteMessage(target, lease);
         if (WATCHES.has(name)) onWatch?.(target);
         return render(res);
