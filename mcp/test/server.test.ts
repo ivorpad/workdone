@@ -157,6 +157,8 @@ describe("2026-07-28", () => {
     expect(client.getNegotiatedProtocolVersion()).toBe("2026-07-28");
     expect(client.getServerVersion()?.name).toBe("herdr-remote");
     expect(client.getInstructions()).toContain("claim_agents");
+    // Without it a chat that is offered no subscribe action looks for a WorkDone tool.
+    expect(client.getInstructions()).toMatch(/only in a Work chat.*no tool to subscribe.*never moves a subscription/);
     expect((client.getServerCapabilities() as any)?.events).toBeUndefined();
     await client.close();
   });

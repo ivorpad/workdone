@@ -4,6 +4,8 @@ Use `agent.finished` and `agent.asks` for ChatGPT completion and question notifi
 
 Subscriptions only happen in ChatGPT **Work** chats (web, or the desktop app with Cloud selected) and dots. In a regular Chat, ChatGPT calls `events/list` but never `events/subscribe`. Mention the WorkDone Events plugin in a Work chat and ask it to subscribe; ChatGPT turns the request into a scheduled task triggered by the event.
 
+Subscribing is a protocol call that ChatGPT makes with its own callback URL and signing secret, so no WorkDone tool can do it for a chat. Subscriptions belong to the account principal and callback, not to a lease: taking over an objective or an agent's lease neither creates nor moves one. A chat that took over still needs its own subscribe, in a Work chat. Until then a `reply: true` result goes to the chats that are subscribed and shows in `get_agent` as `watch.last_result`. Seen on 2026-10-05: a supervisor chat with no subscription of its own had its `reply: true` result delivered (200) to an earlier chat's subscription.
+
 Verified on 2026-10-02 in a Work chat: `events/subscribe` with callback host `connectors.api.openai.com`, a passing callback challenge, `events_delivered` with status 200, and the chat posting about the finished agent on its own. Not yet checked: `agent.asks`, refresh past `refreshBefore`, unsubscribe from ChatGPT's side after a delivery, and a restart with deliveries pending (steps 5 to 7 below). Keep `watch_here` / `watch_next` for regular Chats. Phone notifications continue separately. `tell` messages still need the card because these two event types do not cover them.
 
 ## Subscription behavior
