@@ -30,7 +30,7 @@ const agentKind = z.string().describe("The agent CLI, one of bridge_status agent
 const model = z.string().optional().describe("Model family for that CLI, one of bridge_status agents[kind].models (e.g. opus, sol, grok), always its newest version. Omit for agents[kind].default_model, or the CLI's own default when there is none.");
 const effort = z.string().optional().describe("Reasoning effort, one of that model's efforts in bridge_status (default: the model's effort). Needs a model or a default_model.");
 const reply = z.boolean().optional().describe(
-  "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id. WorkDone holds the event until this chat has made no WorkDone call for 30 s, since ChatGPT drops events that arrive mid-turn; get_agent watch.last_result has the last delivered result if it still never showed.",
+  "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id. WorkDone holds the event until this chat has made no WorkDone call for 90 s, since ChatGPT drops events that arrive mid-turn; get_agent watch.last_result has the last delivered result if it still never showed.",
 );
 const role = z.enum(["worker", "reviewer"]).optional().describe("worker (default) or reviewer. supervisor_status hands a stalled reviewer back to you instead of nudging it; never spawn another reviewer to review a reviewer.");
 const watch = z.boolean().optional().describe("Watch the agent for completion, questions and manual permission notifications, and answer recognized menus according to its approval policy (default true).");
@@ -447,7 +447,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.8.2" },
+    { name: "herdr-remote", version: "0.8.3" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

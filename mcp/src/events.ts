@@ -105,7 +105,9 @@ export interface EventsOptions {
 // owed to, or the one holding it) waits until that chat has made no tool call for
 // quietMs, and a reply: true result until afterRequestMs past its request (all that is
 // left after a restart). Never longer than maxMs after it was queued.
-export const HOLD = { quietMs: 30_000, afterRequestMs: 30_000, maxMs: 180_000 };
+// 30 s was measured too short on 2026-10-05: a chat finished writing its answer 33 s
+// after its last tool call and the held event, sent at 30 s, was still dropped.
+export const HOLD = { quietMs: 90_000, afterRequestMs: 60_000, maxMs: 300_000 };
 export interface Hold { machine: string; lease: string; queued_at: number; requested_at?: number }
 export function holdUntil(hold: Hold, lastActive: number | undefined): number {
   const want = Math.max(lastActive === undefined ? 0 : lastActive + HOLD.quietMs, hold.requested_at === undefined ? 0 : hold.requested_at + HOLD.afterRequestMs);
