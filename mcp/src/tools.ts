@@ -42,14 +42,14 @@ const lease = z
   .optional()
   .describe("This conversation's lease from claim_agents. Required to act on an agent or on a pane that holds one.");
 // Tools that act on an agent or pane: they take the thread's lease.
-const LEASED = ["prompt_agent", "steer_agent", "send_agent_keys", "answer_agent", "set_agent_approval", "watch_agent", "start_agent", "spawn_agent", "send_pane_input", "run_command_in_pane", "move_pane", "rename", "close"];
+const LEASED = ["prompt_agent", "steer_agent", "supervisor_nudge", "send_agent_keys", "answer_agent", "set_agent_approval", "watch_agent", "start_agent", "spawn_agent", "send_pane_input", "run_command_in_pane", "move_pane", "rename", "close"];
 const confirm = z
   .boolean()
   .optional()
   .describe("With the user's authorization in this chat, including an existing instruction covering this operation: lets a git push, commit, merge, rebase, reset --hard, branch delete, clean, GitHub write, rm -rf or deploy go ahead. Do not ask again for authorization already given. Otherwise needs_confirmation offers a pending id for an approval card.");
 const SHELL = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
 // Messages to an agent: in a linked chat, one per delivered wake (inbox.allowMessage).
-const TO_AGENT = new Set(["prompt_agent", "steer_agent"]);
+const TO_AGENT = new Set(["prompt_agent", "steer_agent", "supervisor_nudge"]);
 
 interface ToolDef {
   title: string;
@@ -95,9 +95,15 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   supervisor_status: {
     title: "Supervisor status",
-    description: "Read-only orchestration advice for current watched and managed agents, with reasons and evidence. Diagnoses visible progress, questions/dialogs and settled checkpoints. Missing checkpoint history is reported as unknown, never as a time-based stall. Recommendations do not prompt, approve, stop, restart or create reviewers.",
+    description: "Read-only orchestration advice for watched agents, from evidence: the commit, tree and diff digest recorded at each finished turn, the live git state, and status and turn progression. state is progressing, stalled (two finished turns with no new commit or diff), repetitive_loop (the same answer too), blocked, checkpoint_ready, landed or unknown; each recommendation has reasons and evidence. Actions: continue; nudge_ship_slice (call supervisor_nudge, once per agent session); after that nudge, handoff or lower_or_change_model_effort, never a second nudge; prune_close only when a commit beyond the agent's start landed and its tree is clean (then prunable_agents and close); ask_owner; verify_checkpoint. A reviewer's stall is a handoff back to you: never spawn a reviewer for a reviewer, and don't retry the same failing operation. Elapsed time alone is never a stall. This tool changes nothing.",
     input: {},
     annotations: READ,
+  },
+  supervisor_nudge: {
+    title: "Nudge a stalled agent",
+    description: "Send the one supervisor nudge for this agent session: a fixed message asking it to finish the smallest verifiable slice or state its blocker, ending with a RESULT: line. Refused with nudge_not_recommended unless supervisor_status recommends nudge_ship_slice for it right now, and with nudge_limit when this session already had its nudge; then hand off or change model or effort instead. reply: true delivers the nudged turn's result once.",
+    input: { target, reply },
+    annotations: WRITE,
   },
   prunable_agents: {
     title: "Agents that are done",
@@ -435,7 +441,7 @@ export const TOOLS: Record<string, ToolDef> = {
 for (const name of LEASED) TOOLS[name]!.input = { ...TOOLS[name]!.input, lease };
 
 // Tools that can put an agent or a browser run on its machine's watch list.
-const WATCHES = new Set(["prompt_agent", "spawn_agent", "start_agent", "watch_agent", "set_agent_approval", "browse"]);
+const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "start_agent", "watch_agent", "set_agent_approval", "browse"]);
 
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {

@@ -1,15 +1,18 @@
-import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
-import { supervise, type SupervisorObservation } from "../gateway/supervisor.ts";
+import { SUPERVISOR_ACTIONS, supervise, type SupervisorObservation } from "../gateway/supervisor.ts";
 import { FANOUT, TOOLS } from "../mcp/src/tools.ts";
+import { SESSION, gitAgent } from "./git-agent.ts";
 
+const at = (turn: string) => `2026-10-05T12:0${turn}:00.000Z`;
 const sample = (turn: string, extra: Partial<SupervisorObservation> = {}): SupervisorObservation =>
-  ({ status: "working", session: "s1", turn, commit: "abc", diff: "digest", activity: "review", ...extra });
+  ({ status: "working", session: "s1", turn, at: at(turn), commit: "abc", diff: "digest", activity: "review", ...extra });
 const action = (d: ReturnType<typeof supervise>) => d.recommendations[0]!.action;
+const nudgedAfter = (turn: string) => [{ at: `2026-10-05T12:0${turn}:30.000Z`, session: "s1", after_turn: turn }];
 
 describe("supervisor policy", () => {
   test("time and repeated polls alone never establish a stall", () => {
@@ -24,21 +27,48 @@ describe("supervisor policy", () => {
       expect(action(d)).toBe("continue");
     }
   });
+  test("a working agent whose files changed since its last turn is progressing, whatever its history", () => {
+    const d = supervise({ status: "working", session: "s1", commit: "abc", diff: "moved" }, [sample("1"), sample("2"), sample("3")]);
+    expect(d.state).toBe("progressing");
+    expect(d.recommendations[0]!.evidence).toEqual(["diff: digest -> moved"]);
+  });
   test("status, sequence and turn progression count without git evidence", () => {
     const previous = { status: "working", session: "s1", seq: 1, turn: "1" };
     for (const current of [{ ...previous, seq: 2 }, { ...previous, status: "unknown" }, { ...previous, turn: "2" }]) {
       expect(action(supervise(current, [previous]))).toBe("continue");
     }
   });
-  test("three distinct turns with unchanged checkpoint establish a loop", () => {
+  test("two no-progress turns with the same answer are a loop; the first advice is the one nudge", () => {
     const d = supervise(sample("3"), [sample("1"), sample("2")]);
     expect(d.state).toBe("repetitive_loop");
-    expect(action(d)).toBe("lower_or_change_model_effort");
+    expect(action(d)).toBe("nudge_ship_slice");
+    expect(d.recommendations[0]!.evidence).toContain("repeated answer digest=review");
   });
-  test("three turns without a meaningful checkpoint suggest shipping a slice", () => {
+  test("two no-progress turns with different answers are a stall; the first advice is the one nudge", () => {
     const d = supervise(sample("3", { activity: "test" }), [sample("1"), sample("2", { activity: "edit" })]);
     expect(d.state).toBe("stalled");
     expect(action(d)).toBe("nudge_ship_slice");
+  });
+  test("exactly one nudge per session: wait for its turn, then hand off or change model, never nudge again", () => {
+    const stalled = [sample("1", { activity: "a" }), sample("2", { activity: "b" })];
+    // Nudged after turn 2 and nothing finished since: wait.
+    expect(action(supervise(sample("2", { activity: "b" }), stalled.concat(sample("3", { activity: "c", at: "2026-10-05T12:01:59.000Z" })), { nudges: nudgedAfter("2") }))).not.toBe("nudge_ship_slice");
+    const waiting = supervise({ status: "working", session: "s1", commit: "abc", diff: "digest" }, [...stalled, sample("3", { activity: "c" })], { nudges: [{ at: "2026-10-05T12:03:30.000Z", session: "s1" }] });
+    expect(action(waiting)).toBe("continue");
+    expect(waiting.state).toBe("stalled");
+    // The nudged turn ended without progress: a stall hands off, a loop changes model or effort.
+    const handoff = supervise(sample("4", { activity: "d" }), [...stalled, sample("3", { activity: "c" })], { nudges: nudgedAfter("3") });
+    expect([handoff.state, action(handoff)]).toEqual(["stalled", "handoff"]);
+    const loop = supervise(sample("4"), [sample("2"), sample("3")], { nudges: nudgedAfter("3") });
+    expect([loop.state, action(loop)]).toEqual(["repetitive_loop", "lower_or_change_model_effort"]);
+    // A nudge in another session (a restart) does not count against this one.
+    expect(action(supervise(sample("4"), [sample("2"), sample("3")], { nudges: [{ ...nudgedAfter("3")[0]!, session: "s0" }] }))).toBe("nudge_ship_slice");
+  });
+  test("the nudged turn landing a commit is progress, and a later stall in that session is never nudged again", () => {
+    const history = [sample("1"), sample("2"), sample("3")];
+    expect(action(supervise(sample("4", { commit: "def" }), history, { nudges: nudgedAfter("3") }))).toBe("continue");
+    const later = [sample("4", { commit: "def" }), sample("5", { commit: "def" })];
+    expect(action(supervise(sample("6", { commit: "def" }), later, { nudges: nudgedAfter("3") }))).toBe("lower_or_change_model_effort");
   });
   test("unknown artifacts, session changes and short histories do not establish stalls", () => {
     for (const current of [sample("3", { diff: undefined }), sample("3", { commit: undefined }), sample("3", { session: "s2" }), sample("3", { session: undefined })]) {
@@ -46,10 +76,11 @@ describe("supervisor policy", () => {
     }
     expect(supervise(sample("2"), [sample("1")]).state).toBe("progressing");
   });
-  test("review churn goes back to the coordinator", () => {
+  test("review churn goes back to the coordinator, and no advice ever creates a reviewer or retries", () => {
     for (const activity of ["review", "different review"]) {
-      expect(action(supervise(sample("3", { activity }), [sample("1"), sample("2")], "reviewer"))).toBe("handoff");
+      expect(action(supervise(sample("3", { activity }), [sample("1"), sample("2")], { role: "reviewer" }))).toBe("handoff");
     }
+    expect(SUPERVISOR_ACTIONS.some((a) => /review|spawn|retry|restart/.test(a))).toBe(false);
   });
   test("ask_owner requires explicit owner necessity, not a generic question", () => {
     expect(action(supervise(sample("3", { attention: "question" })))).toBe("handoff");
@@ -61,6 +92,24 @@ describe("supervisor policy", () => {
       expect(supervise({ status }).state).toBe("checkpoint_ready");
       expect(action(supervise({ status }))).toBe("verify_checkpoint");
       expect(supervise({ status, prompt_running: true }).state).toBe("unknown");
+    }
+  });
+  test("prune_close only once a commit beyond the start landed, the tree is clean and no result is owed", () => {
+    const settled = (extra: Partial<SupervisorObservation> = {}) => ({ status: "idle", session: "s1", commit: "def", clean: true, ...extra });
+    const baseline = { commit: "abc" };
+    const landed = supervise(settled(), [], { baseline });
+    expect([landed.state, action(landed)]).toEqual(["landed", "prune_close"]);
+    for (const [obs, opts, why] of [
+      [settled({ commit: "abc" }), { baseline }, "no commit beyond the start"],
+      [settled({ clean: false }), { baseline }, "uncommitted changes"],
+      [settled(), { baseline, result_pending: true }, "result is still owed"],
+      [settled(), {}, "no baseline"],
+      [settled({ status: "working" }), { baseline }, null],
+      [settled({ prompt_running: true }), { baseline }, null],
+    ] as const) {
+      const d = supervise(obs, [], opts);
+      expect(action(d)).not.toBe("prune_close");
+      if (why) expect(d.recommendations[0]!.reasons[0]).toContain(why);
     }
   });
   test("every recommendation carries evidence and reasons, without changing inputs", () => {
@@ -109,4 +158,78 @@ test("supervisor_status is scoped, read-only, lease-free and available through M
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+describe("supervisor on real turn evidence", () => {
+  const dirs: string[] = [];
+  afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+  const setup = (extra: Record<string, unknown> = {}) => {
+    const t = gitAgent(extra);
+    dirs.push(t.root);
+    return t;
+  };
+  const status = async (t: ReturnType<typeof setup>) => ((await t.gw.handle("supervisor_status", {})) as any).agents[0];
+  const turn = async (t: ReturnType<typeof setup>, answer: string) => { t.finish(answer); await t.poll(); };
+
+  test("two finished turns with no new commit or diff: one nudge, refused the second time, then a handoff", async () => {
+    const t = setup();
+    await t.gw.handle("watch_agent", { target: "w1:p1" });
+    await turn(t, "Looking into it.");
+    expect((await status(t)).state).toBe("checkpoint_ready");
+    await turn(t, "Still reading the code.");
+    await turn(t, "Considering options.");
+    const stalled = await status(t);
+    expect([stalled.state, stalled.recommendations[0].action]).toEqual(["stalled", "nudge_ship_slice"]);
+    expect(stalled.evidence.turns).toHaveLength(3);
+    expect(stalled.recommendations[0].evidence.some((e: string) => e.startsWith(`unchanged commit=${t.git("rev-parse", "HEAD").slice(0, 12)}`))).toBe(true);
+
+    const nudged: any = await t.gw.handle("supervisor_nudge", { target: "w1:p1" });
+    expect(nudged).toMatchObject({ nudged: true, via: "prompt_agent", state: "stalled" });
+    const prompts = t.sent.filter(([m]) => m === "agent.prompt").map(([, p]) => p.text);
+    expect(prompts).toEqual([expect.stringContaining("RESULT:")]);
+    // Its turn has not ended: no second nudge, and nothing else to do yet.
+    await expect(t.gw.handle("supervisor_nudge", { target: "w1:p1" })).rejects.toMatchObject({ code: "nudge_not_recommended" });
+    await turn(t, "I am not sure what to do.");
+    const after = await status(t);
+    expect([after.state, after.recommendations[0].action]).toEqual(["stalled", "handoff"]);
+    await expect(t.gw.handle("supervisor_nudge", { target: "w1:p1" })).rejects.toMatchObject({ code: "nudge_not_recommended" });
+    expect(t.sent.filter(([m]) => m === "agent.prompt")).toHaveLength(1);
+    // The store itself refuses a second nudge for the session, whatever the caller saw.
+    expect(t.gw.state.recordNudge("w1:p1", SESSION)).toBe(false);
+  });
+
+  test("an edit is progress; a landed commit with a clean tree is a prune recommendation", async () => {
+    const t = setup();
+    await t.gw.handle("watch_agent", { target: "w1:p1" });
+    await turn(t, "Reading.");
+    writeFileSync(join(t.repo, "a.txt"), "edited\n");
+    await turn(t, "Edited a.txt.");
+    t.agent.agent_status = "working";
+    writeFileSync(join(t.repo, "a.txt"), "edited again\n");
+    expect((await status(t)).state).toBe("progressing");
+    t.git("commit", "-qam", "landed");
+    await turn(t, "Committed.\nRESULT: landed");
+    const landed = await status(t);
+    expect([landed.state, landed.recommendations[0].action]).toEqual(["landed", "prune_close"]);
+    expect(landed.recommendations[0].evidence).toContain("clean=true");
+    // A dirty tree after the commit is not prunable.
+    writeFileSync(join(t.repo, "b.txt"), "new\n");
+    expect((await status(t)).recommendations[0].action).toBe("verify_checkpoint");
+  });
+
+  test("a reviewer's stall goes back to the coordinator and is never nudged", async () => {
+    const t = setup();
+    await t.gw.handle("watch_agent", { target: "w1:p1" });
+    t.gw.state.updateWatched((w) => { w["w1:p1"]!.role = "reviewer"; });
+    for (const a of ["Nit one.", "Nit two.", "Nit three."]) await turn(t, a);
+    expect((await status(t)).recommendations[0].action).toBe("handoff");
+    await expect(t.gw.handle("supervisor_nudge", { target: "w1:p1" })).rejects.toMatchObject({ code: "nudge_not_recommended" });
+  });
+
+  test("supervisor_nudge acts on an agent, so it needs this thread's lease and spends its one message per wake", async () => {
+    const t = setup({ leases: true });
+    await expect(t.gw.request("supervisor_nudge", { target: "w1:p1" })).rejects.toMatchObject({ code: "needs_lease" });
+    expect(TOOLS.supervisor_nudge!.input.lease).toBeDefined();
+    expect(TOOLS.supervisor_nudge!.annotations.readOnlyHint).toBe(false);
+  });
 });

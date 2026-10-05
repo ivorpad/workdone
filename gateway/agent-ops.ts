@@ -3,6 +3,7 @@
 // and what each agent needs from its owner.
 
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
+import { checkpoint } from "./checkpoint.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -12,7 +13,7 @@ import type { Gateway } from "./gateway.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { childProcesses, gitSummary } from "./process.ts";
 import { showDone, showWatched } from "./sidebar.ts";
-import type { Watched } from "./state.ts";
+import type { Supervision, Watched } from "./state.ts";
 import { supervise, type SupervisorObservation } from "./supervisor.ts";
 import { agentReply, type Reply } from "./transcript.ts";
 import { pollJobs } from "./jobs.ts";
@@ -163,32 +164,74 @@ async function waitAgents(g: Gateway, params: Params) {
   return { timed_out: timedOut, ready: views.filter((v) => v.ready).map((v) => v.name ?? v.pane_id), agents: views, ...(views.length === 1 ? { agent: views[0] } : {}) };
 }
 
+const NUDGE_TEXT = "WorkDone supervisor: your last turns left the commit and the working tree unchanged. Finish the smallest complete slice you can verify (run its checks, and commit if this task commits), or stop and say exactly what blocks you. End your answer with one line starting RESULT:.";
+const NUDGE_POLICY = "At most one supervisor_nudge per agent session, only when recommended. After it: handoff or lower_or_change_model_effort, never a second nudge, a retry of the same error or a new reviewer. prune_close only after a commit beyond the start landed with a clean tree.";
+
+// One agent's supervisor view: live git state against the watcher's turn records.
+async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, sup: Record<string, Supervision>) {
+  const w = watched[a.pane_id]!;
+  const s = sup[a.pane_id];
+  const reply = a.agent ? await agentReply(g.cfg, a).catch(() => null) : null;
+  const life = a.agent ? await lifecycle(g, a, watched, { reply }) : { attention: null };
+  const cp = await checkpoint(g.cfg, a.foreground_cwd ?? a.cwd ?? w.cwd);
+  const observation: SupervisorObservation = {
+    status: a.agent_status ?? "unknown", session: a.agent_session?.value,
+    seq: a.state_change_seq, attention: life.attention,
+    prompt_running: !!reply?.in_progress,
+    ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, ahead: cp.ahead, upstream: cp.upstream } : {}),
+  };
+  const turns: SupervisorObservation[] = (s?.turns ?? []).map((t) => ({ ...t, session: t.session ?? undefined }));
+  // The watch's last look comes after the turn records: status and seq progression.
+  const history = [...turns, { status: w.last_status ?? "unknown", session: w.session, seq: w.seq }];
+  const diagnosis = supervise(observation, history, { role: w.role, nudges: s?.nudges ?? [], baseline: s?.baseline ?? null, result_pending: !!w.result_request });
+  return {
+    ...agentView(a), watch: watchView(w), observation,
+    evidence: {
+      baseline: s?.baseline ?? null,
+      turns: (s?.turns ?? []).slice(-3).map((t) => ({ turn: t.turn, at: t.at, status: t.status, commit: t.commit ?? null, diff: t.diff ?? null, clean: t.clean ?? null })),
+      nudges: s?.nudges ?? [],
+    },
+    ...diagnosis,
+    ...("choices" in life ? { choices: life.choices } : {}),
+  };
+}
+
 export function agentOps(g: Gateway): Record<string, Op> {
   return {
-    // Advisory only. The watch baseline supplies status progression, not checkpoint
-    // history, so this first slice does not infer stalls or loops from poll age.
+    // Advisory only: reads the watcher's turn records and the live git state, writes nothing.
     async supervisor_status() {
       const watched = g.state.watched();
+      const sup = g.state.supervision();
       const { agents: active, panes } = await agentsAndPanes(g);
       const seen = new Set(active.map((a: any) => a.pane_id));
       const background = panes.filter((p: any) => !seen.has(p.pane_id) && watched[p.pane_id])
         .map((p: any) => ({ ...p, agent_status: watched[p.pane_id]!.last_status === "background" || watched[p.pane_id]!.last_status === "stopped" ? watched[p.pane_id]!.last_status : "unknown" }));
       const agents = [...active, ...background]
         .filter((a: any) => watched[a.pane_id] && paneInScope(a, g.cfg.allowedRoots));
-      const items = await Promise.all(agents.map(async (a: any) => {
-        const w = watched[a.pane_id]!;
-        const reply = a.agent ? await agentReply(g.cfg, a).catch(() => null) : null;
-        const life = a.agent ? await lifecycle(g, a, watched, { reply }) : { attention: null };
-        const observation: SupervisorObservation = {
-          status: a.agent_status ?? "unknown", session: a.agent_session?.value,
-          seq: a.state_change_seq, attention: life.attention,
-          prompt_running: !!reply?.in_progress,
-        };
-        return { ...agentView(a), watch: watchView(w), observation,
-          ...supervise(observation, [{ status: w.last_status ?? "unknown", session: w.session, seq: w.seq }]),
-          ...("choices" in life ? { choices: life.choices } : {}) };
-      }));
-      return { agents: items, evidence_limit: "Watch baselines contain status progression only; stall and loop diagnoses require comparable checkpoint and completed-turn history." };
+      const items = await Promise.all(agents.map((a: any) => diagnose(g, a, watched, sup)));
+      return { agents: items, nudge_policy: NUDGE_POLICY };
+    },
+
+    // The one nudge a stalled worker gets per agent session, sent only when
+    // supervisor_status recommends it right now. A second one is refused: after it the
+    // advice is a handoff or a model/effort change.
+    async supervisor_nudge(params) {
+      const agent = await g.scopedAgent(str(params, "target", TARGET_RE));
+      const watched = g.state.watched();
+      if (!watched[agent.pane_id]) throw new GatewayError("not_watched", "the supervisor only has evidence for watched agents: watch_agent first");
+      const view = await diagnose(g, agent, watched, g.state.supervision());
+      const rec = view.recommendations[0]!;
+      if (rec.action !== "nudge_ship_slice") {
+        throw new GatewayError("nudge_not_recommended", `supervisor recommends ${rec.action} (${view.state}): ${rec.reasons.join(" ")}`);
+      }
+      const session = agent.agent_session?.value ?? null;
+      if (!g.state.recordNudge(agent.pane_id, session)) {
+        throw new GatewayError("nudge_limit", "this agent session already had its one nudge: hand the task off or change model or effort instead");
+      }
+      const via = agent.agent_status === "working" ? "steer_agent" : "prompt_agent";
+      const sent = await g.handle(via, { target: agent.pane_id, text: NUDGE_TEXT, reply: params.reply, lease: params.lease });
+      g.state.audit({ op: "supervisor_nudge", ok: true, args: { target: agent.pane_id, session, state: view.state, evidence: rec.evidence } });
+      return { nudged: true, via, text: NUDGE_TEXT, state: view.state, evidence: rec.evidence, sent };
     },
 
     // Internal, run by an agent on its own machine: a message to the ChatGPT thread whose

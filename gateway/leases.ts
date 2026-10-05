@@ -23,6 +23,7 @@ type Where = { param: string; as: "agent" | "pane" } | ((p: Params) => { param: 
 const GUARDED: Record<string, Where> = {
   prompt_agent: { param: "target", as: "agent" },
   steer_agent: { param: "target", as: "agent" },
+  supervisor_nudge: { param: "target", as: "agent" },
   send_agent_keys: { param: "target", as: "agent" },
   answer_agent: { param: "target", as: "agent" },
   set_agent_approval: { param: "target", as: "agent" },
