@@ -16,7 +16,9 @@ export function gitAgent(extra: Record<string, unknown> = {}) {
   const repo = join(root, "repo");
   const state = join(root, "state");
   mkdirSync(repo, { recursive: true });
-  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" }).trim();
+  // Without GIT_DIR and friends from a calling hook, so git -C really means this repo.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("GIT_")));
+  const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8", env }).trim();
   git("init", "-q", "-b", "main");
   git("config", "user.email", "t@example.com");
   git("config", "user.name", "t");
