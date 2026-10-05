@@ -1,28 +1,38 @@
 #!/bin/sh
-# Report this agent's coordination task to WorkDone, from the agent's own Herdr pane
-# ($HERDR_PANE_ID). The task itself (owner, deps, acceptance) is the supervisor's; this
-# only changes your slice: status, evidence, artifacts, blocker, next_action, result, and
-# exclusive resources (acquire / release). With no argument it prints your task and the
-# status of what it depends on.
+# Report this agent's coordination task to WorkDone (docs/coordination.md). The --token
+# from the task slice in your prompt is the authorization: it names one task binding and
+# works from any shell, including Claude Code and Codex shell tools that don't pass
+# HERDR_PANE_ID on. Without a token, HERDR_PANE_ID works only for a task nobody bound.
+# With no JSON it prints your task and the status of what it depends on.
 #
-# usage: workdone-task                                   (show my task)
-#        workdone-task '{"status":"waiting_dependency","blocker":"needs #772 accepted"}'
-#        workdone-task '{"result":{"summary":"rate limits shipped","commit":"cc2245e3"}}'
-#        workdone-task '{"acquire":["e2e"]}'
+# usage: workdone-task --token wdt_... '{"status":"waiting_dependency","blocker":"needs #772","blocker_kind":"dependency"}'
+#        workdone-task --token wdt_... '{"result":{"summary":"rate limits shipped","commit":"cc2245e3"},"report_id":"r1"}'
+#        workdone-task --token wdt_...            (show my task)
+#        WORKDONE_TASK_TOKEN=wdt_... workdone-task '{"acquire":["e2e"]}'
 set -eu
-usage='usage: workdone-task [JSON]   (no argument: show my task; JSON: status, evidence, artifacts, blocker, next_action, result {summary, commit}, acquire, release, task, objective)'
-case "${1:-}" in -h|--help|help) echo "$usage"; exit 0 ;; esac
-[ -n "${HERDR_PANE_ID:-}" ] || { echo "task: not in a Herdr pane (HERDR_PANE_ID is unset)" >&2; exit 2; }
+usage='usage: workdone-task [--token wdt_...] [JSON]   (JSON: status, evidence, artifacts, blocker, blocker_kind, wait_for, next_action, result {summary, commit}, acquire, release, report_id)'
+token=${WORKDONE_TASK_TOKEN:-}
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help|help) echo "$usage"; exit 0 ;;
+    --token) [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }; token=$2; shift 2 ;;
+    --token=*) token=${1#--token=}; shift ;;
+    *) break ;;
+  esac
+done
 [ $# -le 1 ] || { echo "$usage" >&2; exit 2; }
+[ -n "$token" ] || [ -n "${HERDR_PANE_ID:-}" ] || { echo "task: pass --token from your task slice (HERDR_PANE_ID is unset here too)" >&2; exit 2; }
 launcher=${HERDR_GATEWAY_LAUNCHER:-$HOME/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh}
 bun=$(cat "$(dirname "$launcher")/bun-path" 2>/dev/null || command -v bun)
-msg=$("$bun" -e '
+msg=$(WORKDONE_TOKEN_ARG="$token" "$bun" -e '
 const raw = process.argv[1] ?? "";
 let delta = {};
 if (raw.trim()) {
   try { delta = JSON.parse(raw); } catch { console.error("task: the argument must be JSON, e.g. {\"status\":\"executing\"}"); process.exit(2); }
   if (!delta || typeof delta !== "object" || Array.isArray(delta)) { console.error("task: the argument must be a JSON object"); process.exit(2); }
 }
-process.stdout.write(JSON.stringify({ id: "task", op: "coord_report", params: { ...delta, pane_id: process.env.HERDR_PANE_ID } }) + "\n");
+const { token: _t, pane_id: _p, ...rest } = delta;
+const who = process.env.WORKDONE_TOKEN_ARG ? { token: process.env.WORKDONE_TOKEN_ARG } : { pane_id: process.env.HERDR_PANE_ID };
+process.stdout.write(JSON.stringify({ id: "task", op: "coord_report", params: { ...rest, ...who } }) + "\n");
 ' "${1:-}")
 printf '%s\n' "$msg" | "$launcher"

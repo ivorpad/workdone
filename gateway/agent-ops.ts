@@ -4,7 +4,7 @@
 
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
-import { paneTask } from "./coord-ops.ts";
+import { bindAndSlice, paneTask } from "./coord-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -181,10 +181,11 @@ async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, su
     prompt_running: !!reply?.in_progress,
     ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, ahead: cp.ahead, upstream: cp.upstream } : {}),
   };
+  const task = paneTask(g, a.pane_id, a.name ?? null);
+  if (task) observation.task_version = task.version;
   const turns: SupervisorObservation[] = (s?.turns ?? []).map((t) => ({ ...t, session: t.session ?? undefined }));
   // The watch's last look comes after the turn records: status and seq progression.
   const history = [...turns, { status: w.last_status ?? "unknown", session: w.session, seq: w.seq }];
-  const task = paneTask(g, a.pane_id, a.name ?? null);
   const diagnosis = supervise(observation, history, { role: w.role, nudges: s?.nudges ?? [], baseline: s?.baseline ?? null, result_pending: !!w.result_request, task: task ?? undefined });
   return {
     ...agentView(a), watch: watchView(w), observation, ...(task ? { task } : {}),
@@ -490,7 +491,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           // its name (pi, behind its update notices): retry that for a few seconds.
           for (let attempt = 0; ; attempt++) {
             try {
-              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease });
+              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease, task: params.task });
               break;
             } catch (err) {
               if (!(err instanceof GatewayError && err.code === "agent_not_ready") || attempt >= 30 || left() < 5000) throw err;
@@ -502,6 +503,11 @@ export function agentOps(g: Gateway): Record<string, Op> {
           if (!(err instanceof GatewayError && err.code === "agent_blocked")) throw err;
           Object.assign(out, { status: "blocked", note: `${err.message}; the prompt was not sent: prompt_agent once it is answered` });
         }
+      }
+      // Bound with no prompt sent: the slice comes with the first prompt.
+      if (params.task && !out.prompt) {
+        bindAndSlice(g, { ...started, pane_id: paneId, name }, params, false);
+        out.task_bound = params.task;
       }
       const sent = out.prompt as { result_request?: unknown } | undefined;
       if (sent?.result_request) out.result_request = sent.result_request;

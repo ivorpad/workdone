@@ -9,7 +9,7 @@ import {
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
-import { coordOps, paneTask } from "./coord-ops.ts";
+import { bindAndSlice, coordOps, paneTask } from "./coord-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
@@ -282,13 +282,17 @@ export class Gateway {
             );
           }
         }
+        // The opt-in turn contract: a bound task's current slice, read now. An unbound
+        // agent's prompt goes in exactly as written.
+        const slice = bindAndSlice(this, agent, params);
+        const sent = slice ? `${text}\n\n${slice}` : text;
         // reply: true, asked before the prompt goes in so a quick turn can't end unclaimed.
         const asked = this.askResult(agent.pane_id, agent, params);
         let res: any;
         try {
           res = await this.herdr(
             "agent.prompt",
-            { target: agent.pane_id, text, wait: wait ? { timeout_ms: Math.max(1000, deadline - Date.now()) } : null },
+            { target: agent.pane_id, text: sent, wait: wait ? { timeout_ms: Math.max(1000, deadline - Date.now()) } : null },
             wait ? timeout + 10_000 : undefined,
           );
         } catch (err) {
@@ -321,10 +325,10 @@ export class Gateway {
         const settled = wait && SETTLED.has(status);
         this.state.prompted(agent.pane_id, watchInfo(agent), res?.agent ?? { agent_status: status }, settled);
         clearNote(this.herdr, agent.pane_id);
-        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res };
+        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(slice ? { task_slice: true } : {}) };
         if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
-          const reply = await agentReply(cfg, agent, { freshFor: text });
+          const reply = await agentReply(cfg, agent, { freshFor: sent });
           if (reply) out.reply = reply;
           // The turn ended inside this call: its answer is the result, so nothing is owed.
           if (asked) {

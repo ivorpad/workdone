@@ -107,17 +107,17 @@ Agents are started by CLI, model and effort. `bridge_status` `agent_kinds` lists
 - Steer it with `prompt_agent` like any agent. `read_agent` with `source: "reply"` returns its last answer.
 - In a folder it has not been trusted with, an agent can first show a folder trust menu, which Herdr may report as `idle`. Startup and prompt operations answer trust and routine notices when the effective policy allows them. Under `ask`, show them to the owner like other manual permissions.
 
-## Canonical coordination state
+## Canonical coordination state (opt-in)
 
-For work split across several agents, keep ownership, dependencies, acceptance and scarce resources in WorkDone, not in prose. `coord_update` (with this conversation's `lease`) creates an objective and its tasks. Each task has an `id` like `#772`, a `title`, an `owner` (the agent's name), `deps` (task ids, no cycles), `acceptance`, and a `status`: `queued`, `executing`, `waiting_dependency`, `verifying`, `blocked` or `complete`. `resources` maps an exclusive resource such as `e2e` or `browser` to the task holding it.
+Ordinary one-off work needs none of this: prompt agents as usual.
 
-Tell each worker its objective and task id, and that it reports with `workdone-task` from its pane:
-- `workdone-task` with no argument shows its slice and the status of its dependencies.
-- `workdone-task '{"status":"waiting_dependency","blocker":"..."}'` reports that it is waiting.
-- `workdone-task '{"result":{"summary":"...","commit":"..."}}'` publishes its result; then the worker stops.
-- `{"acquire":["e2e"]}` takes a resource exclusively.
-
-A worker can only change its own task. It never marks it `complete`. `coord_snapshot` is your one read: tasks, unmet deps, ready tasks, the `critical_path` and resource holders. Check a `verifying` task's evidence against its acceptance, then merge `complete` with `coord_update`; that frees its resources. A `waiting_dependency` agent is waiting, not working: don't report it as working, and the supervisor won't nudge it. Pass `expected_version` from the snapshot so a stale merge is refused.
+For multi-agent work with dependencies, acceptance or scarce resources, keep the state in WorkDone instead of prose (docs/coordination.md).
+- `coord_update`, with this conversation's `lease`, plans an objective's tasks: `id`, `title`, `owner`, `deps`, `acceptance`, `next_action`, `blocker_kind`. Its `resources` field reserves shared things like `e2e` or a browser, machine-wide.
+- Bind a task to a worker by passing `task: {objective, id}` on `spawn_agent` or `prompt_agent`. Every prompt that worker gets from WorkDone then carries a bounded slice with its acceptance, dependencies, resources, latest evidence, next action and the exact `workdone-task --token …` command. Never copy tokens into other prompts or chats.
+- Workers report their own task with that command: status, evidence, a `result` (which moves the task to `verifying`), waits typed as `dependency` / `resource` / `defect` (with a `next_action`) / `human`, `acquire` and `release`. A worker never marks a task `complete`, and a finished worker is not an accepted task or a pushed commit.
+- `coord_snapshot` with `view: "resume"` is your bounded read after any wake or reconnect: pending transitions (ready, needs_acceptance, blocked_human, missing_report, worker_gone, resource_stale), what needs acceptance, waits, ready work and stale resources.
+- Check a `verifying` task's evidence against its acceptance, merge `complete` with `coord_update`, and pass `ack_seq` for the transitions you handled. A tell about a transition is only a hint; the snapshot is the truth.
+- A `waiting_dependency` agent is waiting, not working. A gone worker's resource stays stale until you free it with `null`, once that process is surely stopped.
 
 ## Supervising workers
 

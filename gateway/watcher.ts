@@ -16,6 +16,8 @@ import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-op
 import { parseDialog, type Dialog } from "./dialog.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
 import { activityDigest, checkpoint } from "./checkpoint.ts";
+import { runEnded } from "./coord.ts";
+import { notifyTransitions } from "./coord-ops.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import { herdrSocket } from "./herdr-socket.ts";
@@ -314,9 +316,18 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     const ended = note.type === "finished" || note.type === "question";
     const resolves = !!w.result_request && (note.type === "finished" || note.type === "gone");
     const cp = (ended && w.managed) || resolves ? await checkpoint(cfg, agent?.foreground_cwd ?? agent?.cwd ?? w.cwd).catch(() => null) : null;
+    // A bound coordination run that ended its turn without reporting, or went away, is
+    // recoverable protocol state, never complete (coord.ts runEnded).
+    if (note.type === "finished" || note.type === "gone") {
+      const how = note.type === "finished" ? "finished" : "gone";
+      const ran = store.updateCoord((c) => ({ changes: runEnded(c, paneId, how, new Date(now).toISOString()), store: c }));
+      if (ran.changes.length) notifyTransitions(store, ran.store, ran.changes);
+    }
     if (ended && w.managed) {
+      const bound = Object.values(store.coord().objectives).flatMap((o) => Object.values(o.tasks)).find((t) => t.binding?.pane_id === paneId && t.status !== "complete");
       store.recordTurn(paneId, {
         turn: eventId, at: new Date(now).toISOString(), session: seenState(agent).session ?? null, status: note.type,
+        ...(bound ? { task_version: bound.version } : {}),
         ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, changed: cp.changed, ahead: cp.ahead, upstream: cp.upstream } : {}),
         activity: activityDigest(note.text ?? note.excerpt),
       });

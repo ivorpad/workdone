@@ -20,6 +20,8 @@ export interface SupervisorObservation {
   ahead?: number | null;
   upstream?: string | null;
   activity?: string;
+  // A bound worker's coordination task version (coord.ts): its own progress.
+  task_version?: number;
   attention?: "question" | "dialog" | null;
   owner_required?: boolean;
   prompt_running?: boolean;
@@ -34,7 +36,7 @@ export interface SupervisorOptions {
   // A reply: true result has not been delivered yet.
   result_pending?: boolean;
   // The coordination task this agent owns (coord.ts), if any.
-  task?: { id: string; status: string; blocker: string | null; unmet_deps: string[] };
+  task?: { id: string; status: string; version?: number; blocker: string | null; unmet_deps: string[] };
 }
 
 export const SUPERVISOR_ACTIONS = ["continue", "nudge_ship_slice", "lower_or_change_model_effort", "handoff", "verify_checkpoint", "ask_owner", "prune_close"] as const;
@@ -46,7 +48,7 @@ export interface SupervisorDiagnosis {
 }
 
 const SETTLED = new Set(["idle", "done"]);
-const short = (s: string | undefined) => (s && /^[a-f0-9]{40,64}$/.test(s) ? s.slice(0, 12) : s ?? "unknown");
+const short = (s: string | number | undefined) => (typeof s === "string" && /^[a-f0-9]{40,64}$/.test(s) ? s.slice(0, 12) : String(s ?? "unknown"));
 
 export function supervise(current: SupervisorObservation, history: readonly SupervisorObservation[] = [], opts: SupervisorOptions = {}): SupervisorDiagnosis {
   const role = opts.role ?? "worker";
@@ -73,9 +75,13 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
   // The current observation can itself be a turn record (the one that just ended).
   const turns = current.turn !== undefined && current.turn !== last?.turn ? [...recorded, current] : recorded;
   const nudge = current.session ? opts.nudges?.filter((n) => n.session === current.session).at(-1) : undefined;
-  const known = (o: SupervisorObservation) => o.commit !== undefined && o.diff !== undefined;
+  // A bound worker shares its repo with others, so HEAD and the tree move for all of them:
+  // its own task version is the evidence. Everyone else keeps commit and diff.
+  const keys = opts.task ? (["task_version"] as const) : (["commit", "diff"] as const);
+  const known = (o: SupervisorObservation) => keys.every((k) => o[k] !== undefined);
+  const same = (a: SupervisorObservation, b: SupervisorObservation) => keys.every((k) => a[k] === b[k]);
   const differs = (a: SupervisorObservation, b: SupervisorObservation) =>
-    (["commit", "diff"] as const).filter((k) => a[k] !== undefined && b[k] !== undefined && a[k] !== b[k]);
+    keys.filter((k) => a[k] !== undefined && b[k] !== undefined && a[k] !== b[k]);
 
   // Files are changing under a working agent: progress in flight.
   if (current.turn === undefined && last && current.status === "working") {
@@ -88,8 +94,8 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
   const live = current.turn === undefined && known(current) ? current : null;
   const noCheckpoint = window.length === 3 && window.every(known)
     && new Set(window.map((o) => o.turn)).size === 3
-    && window.every((o) => o.commit === window[2]!.commit && o.diff === window[2]!.diff)
-    && (!live || (live.commit === window[2]!.commit && live.diff === window[2]!.diff));
+    && window.every((o) => same(o, window[2]!))
+    && (!live || same(live, window[2]!));
   if (noCheckpoint) {
     const head = window[2]!;
     const repeated = !!head.activity && window.every((o) => o.activity === head.activity);
@@ -113,6 +119,10 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
   }
 
   if (SETTLED.has(current.status) && !current.prompt_running) {
+    // The supervisor accepted its task: done, whatever other workers left in the shared tree.
+    if (opts.task?.status === "complete") {
+      return result("landed", "prune_close", "Its coordination task was accepted complete. Close the agent (prunable_agents gives what to close).", [`task=${opts.task.id}`, "task_status=complete", `status=${current.status}`]);
+    }
     // A baseline from another session (an agent restarted in the pane) says nothing about this one.
     const ours = opts.baseline && (opts.baseline.session == null || opts.baseline.session === current.session);
     const base = ours ? opts.baseline!.commit : undefined;

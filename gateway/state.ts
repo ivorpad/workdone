@@ -5,7 +5,7 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { TurnResult } from "./watcher.ts";
-import type { Objective } from "./coord.ts";
+import { normalizeStore, type CoordStore } from "./coord.ts";
 import { resolve } from "node:path";
 
 export type CreatedKind = "panes" | "tabs" | "workspaces";
@@ -87,6 +87,9 @@ export interface TurnRecord {
   upstream?: string | null;
   // Digest of the turn's final text, to tell the same answer repeated.
   activity?: string;
+  // The bound coordination task's version: a bound worker's progress, where several
+  // workers share one repo and HEAD moves for all of them.
+  task_version?: number;
 }
 
 export interface Supervision {
@@ -360,14 +363,13 @@ export class StateStore {
     });
   }
 
-  // Canonical coordination state (coord.ts): objectives by ID. Tasks outlive agents, so
-  // unwatch leaves them alone.
-  coord(): Record<string, Objective> {
-    const v = this.read("coord.json");
-    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Objective>) : {};
+  // Canonical coordination state (coord.ts). Tasks outlive agents, so unwatch leaves
+  // them alone.
+  coord(): CoordStore {
+    return normalizeStore(this.read("coord.json"));
   }
 
-  updateCoord<T>(fn: (c: Record<string, Objective>) => T): T {
+  updateCoord<T>(fn: (c: CoordStore) => T): T {
     return this.locked(() => {
       const c = this.coord();
       const before = JSON.stringify(c);

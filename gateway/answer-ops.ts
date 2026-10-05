@@ -19,6 +19,7 @@ import type { Gateway } from "./gateway.ts";
 import { str, type Op } from "./params.ts";
 import { StateStore } from "./state.ts";
 import { lastLines, resultView, textOf } from "./views.ts";
+import { bindAndSlice } from "./coord-ops.ts";
 
 // Pauses between keys, around typed text, and before reading the result. Tests set them to 0.
 export const timing = { key: 250, text: 450, settle: 1500 };
@@ -243,14 +244,17 @@ export function answerOps(g: Gateway): Record<string, Op> {
       if (text.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${g.cfg.maxPromptChars} characters`);
       if (agent.agent_status !== "working") {
         if (agent.agent_status === "blocked") throw new GatewayError("agent_blocked", "the agent is showing a menu: answer it with answer_agent first (choices.go_ahead is the option that lets it carry on)");
-        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease }) };
+        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease, task: params.task }) };
       }
       // A menu can come up between Herdr's status and the keys: enter would answer it.
       const d = parseDialog(await menuScreen(g.herdr, agent.pane_id));
       if (d) throw new GatewayError("agent_blocked", `the agent is showing a menu: ${lastLines(d.text, 6)}. Answer it with answer_agent first`);
+      // A queued steer is read when the agent's current tool call ends, so this slice can
+      // be older than the state by then (docs/coordination.md).
+      const slice = bindAndSlice(g, agent, params);
       const asked = g.askResult(agent.pane_id, agent, params);
       try {
-        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text });
+        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text: slice ? oneLine(`${text} ${slice}`) : text });
       } catch (err) {
         if (asked && !asked.already_pending) g.state.dropResult(agent.pane_id, asked.result_id);
         throw err;
