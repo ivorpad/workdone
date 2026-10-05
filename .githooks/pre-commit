@@ -1,0 +1,8 @@
+#!/bin/sh
+# Runs `bun run check` before a commit that touches code, config or plugin files.
+# Installed by `bun install` (package.json prepare) or `git config core.hooksPath .githooks`.
+staged=$(git diff --cached --name-only --diff-filter=ACMRD)
+if printf '%s\n' "$staged" | grep -Eq '\.(ts|json|sh)$|^(gateway|mcp|issuer|scripts|tests|plugin)/'; then
+  echo "pre-commit: bun run check" >&2
+  bun run check >/dev/null 2>&1 || { echo "pre-commit: bun run check failed; run it to see why" >&2; exit 1; }
+fi

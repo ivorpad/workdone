@@ -4,6 +4,7 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
+    "prepare": "git config core.hooksPath .githooks 2>/dev/null || true",
     "typecheck": "tsc --noEmit -p .",
     "test": "bun test",
     "check": "bun run typecheck && bun test"
