@@ -107,6 +107,18 @@ Agents are started by CLI, model and effort. `bridge_status` `agent_kinds` lists
 - Steer it with `prompt_agent` like any agent. `read_agent` with `source: "reply"` returns its last answer.
 - In a folder it has not been trusted with, an agent can first show a folder trust menu, which Herdr may report as `idle`. Startup and prompt operations answer trust and routine notices when the effective policy allows them. Under `ask`, show them to the owner like other manual permissions.
 
+## Canonical coordination state
+
+For work split across several agents, keep ownership, dependencies, acceptance and scarce resources in WorkDone, not in prose. `coord_update` (with this conversation's `lease`) creates an objective and its tasks. Each task has an `id` like `#772`, a `title`, an `owner` (the agent's name), `deps` (task ids, no cycles), `acceptance`, and a `status`: `queued`, `executing`, `waiting_dependency`, `verifying`, `blocked` or `complete`. `resources` maps an exclusive resource such as `e2e` or `browser` to the task holding it.
+
+Tell each worker its objective and task id, and that it reports with `workdone-task` from its pane:
+- `workdone-task` with no argument shows its slice and the status of its dependencies.
+- `workdone-task '{"status":"waiting_dependency","blocker":"..."}'` reports that it is waiting.
+- `workdone-task '{"result":{"summary":"...","commit":"..."}}'` publishes its result; then the worker stops.
+- `{"acquire":["e2e"]}` takes a resource exclusively.
+
+A worker can only change its own task. It never marks it `complete`. `coord_snapshot` is your one read: tasks, unmet deps, ready tasks, the `critical_path` and resource holders. Check a `verifying` task's evidence against its acceptance, then merge `complete` with `coord_update`; that frees its resources. A `waiting_dependency` agent is waiting, not working: don't report it as working, and the supervisor won't nudge it. Pass `expected_version` from the snapshot so a stale merge is refused.
+
 ## Supervising workers
 
 `supervisor_status` (read-only, every machine without `machine`) says for each watched agent whether it is making progress, from evidence rather than time: the commit, tree and diff digest WorkDone records at every finished turn, the live git state, and status and turn progression. Each agent has a `state`, `recommendations` with `reasons` and `evidence`, and `evidence.turns`, `evidence.baseline` and `evidence.nudges`. Quote the evidence when you report a recommendation.

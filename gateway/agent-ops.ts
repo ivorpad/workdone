@@ -4,6 +4,7 @@
 
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
+import { paneTask } from "./coord-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -183,9 +184,10 @@ async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, su
   const turns: SupervisorObservation[] = (s?.turns ?? []).map((t) => ({ ...t, session: t.session ?? undefined }));
   // The watch's last look comes after the turn records: status and seq progression.
   const history = [...turns, { status: w.last_status ?? "unknown", session: w.session, seq: w.seq }];
-  const diagnosis = supervise(observation, history, { role: w.role, nudges: s?.nudges ?? [], baseline: s?.baseline ?? null, result_pending: !!w.result_request });
+  const task = paneTask(g, a.pane_id, a.name ?? null);
+  const diagnosis = supervise(observation, history, { role: w.role, nudges: s?.nudges ?? [], baseline: s?.baseline ?? null, result_pending: !!w.result_request, task: task ?? undefined });
   return {
-    ...agentView(a), watch: watchView(w), observation,
+    ...agentView(a), watch: watchView(w), observation, ...(task ? { task } : {}),
     evidence: {
       baseline: s?.baseline ?? null,
       turns: (s?.turns ?? []).slice(-3).map((t) => ({ turn: t.turn, at: t.at, status: t.status, commit: t.commit ?? null, diff: t.diff ?? null, clean: t.clean ?? null })),
@@ -337,6 +339,9 @@ export function agentOps(g: Gateway): Record<string, Op> {
             }
           }
           Object.assign(view, await lifecycle(g, a, watched, { reply, screen }));
+          // A worker waiting on a dependency is not working, whatever its terminal shows.
+          const task = paneTask(g, a.pane_id, a.name ?? null);
+          if (task) view.task = task;
           return view;
         }),
       );

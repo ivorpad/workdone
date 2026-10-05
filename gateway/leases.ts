@@ -200,5 +200,16 @@ export function leaseOps(g: Gateway) {
     return m;
   }
 
-  return { check, after, claim_agents, release_agents, lease_check, labels };
+  // A live lease from params, for ops that act on something other than a pane (the
+  // supervisor's coordination state). null when leases are off.
+  function requireLive(params: Params): string | null {
+    if (!g.cfg.leases) return null;
+    const id = need(params);
+    const l = g.state.leases()[id];
+    if (!l || !live(l, now())) throw new GatewayError("lease_unknown", `lease ${id} is not known on this machine or lapsed: call claim_agents again`);
+    touch(id);
+    return id;
+  }
+
+  return { check, after, claim_agents, release_agents, lease_check, labels, requireLive };
 }

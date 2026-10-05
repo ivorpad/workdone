@@ -9,6 +9,7 @@ import {
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
+import { coordOps, paneTask } from "./coord-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
@@ -62,7 +63,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -213,7 +214,8 @@ export class Gateway {
 
       case "get_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
-        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())) };
+        const task = paneTask(this, agent.pane_id, agent.name ?? null);
+        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
         if (!optBool(params, "explain", false)) return view;
         // Herdr's own reasoning for the status, to tell its detection apart from ours. Servers
         // before agent.explain reject the method: get_agent still answers.

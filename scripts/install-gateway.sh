@@ -26,4 +26,6 @@ chmod 600 "$conf"
 # Agents in any repo message their linked ChatGPT chat with: workdone-tell "message"
 install -d -m 755 "$HOME/.local/bin"
 install -m 755 "$repo/scripts/tell.sh" "$HOME/.local/bin/workdone-tell"
-echo "installed gateway to $dest (bun: $bun), and workdone-tell to ~/.local/bin"
+# and report their coordination task with: workdone-task '{"status":"executing"}'
+install -m 755 "$repo/scripts/task.sh" "$HOME/.local/bin/workdone-task"
+echo "installed gateway to $dest (bun: $bun), and workdone-tell and workdone-task to ~/.local/bin"

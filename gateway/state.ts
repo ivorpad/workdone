@@ -5,6 +5,7 @@
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type { TurnResult } from "./watcher.ts";
+import type { Objective } from "./coord.ts";
 import { resolve } from "node:path";
 
 export type CreatedKind = "panes" | "tabs" | "workspaces";
@@ -355,6 +356,23 @@ export class StateStore {
       const out = fn(s);
       all[paneId] = { ...s, turns: s.turns.slice(-MAX_TURNS), nudges: s.nudges.slice(-MAX_TURNS) };
       this.write("supervisor.json", all);
+      return out;
+    });
+  }
+
+  // Canonical coordination state (coord.ts): objectives by ID. Tasks outlive agents, so
+  // unwatch leaves them alone.
+  coord(): Record<string, Objective> {
+    const v = this.read("coord.json");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Objective>) : {};
+  }
+
+  updateCoord<T>(fn: (c: Record<string, Objective>) => T): T {
+    return this.locked(() => {
+      const c = this.coord();
+      const before = JSON.stringify(c);
+      const out = fn(c);
+      if (JSON.stringify(c) !== before) this.write("coord.json", c);
       return out;
     });
   }

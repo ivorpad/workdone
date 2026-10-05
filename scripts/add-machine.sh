@@ -62,7 +62,7 @@ jq -n --argjson roots "$roots" --arg shell "$shell" '{
     else (umask 077; cat > ~/.config/herdr-chatgpt/gateway.json); echo written; fi'
 
 echo "== gateway files"
-COPYFILE_DISABLE=1 tar -C "$repo" --no-xattrs -czf - gateway scripts/install-gateway.sh scripts/tell.sh scripts/agent-models.ts |
+COPYFILE_DISABLE=1 tar -C "$repo" --no-xattrs -czf - gateway scripts/install-gateway.sh scripts/tell.sh scripts/task.sh scripts/agent-models.ts |
   ssh "$alias" 'rm -rf ~/herdr-chatgpt-gateway-staging && mkdir -m 700 ~/herdr-chatgpt-gateway-staging &&
     tar -C ~/herdr-chatgpt-gateway-staging -xzf - &&
     BUN="$HOME/.bun/bin/bun" sh ~/herdr-chatgpt-gateway-staging/scripts/install-gateway.sh &&

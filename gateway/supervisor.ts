@@ -33,11 +33,13 @@ export interface SupervisorOptions {
   baseline?: { commit?: string; session?: string | null } | null;
   // A reply: true result has not been delivered yet.
   result_pending?: boolean;
+  // The coordination task this agent owns (coord.ts), if any.
+  task?: { id: string; status: string; blocker: string | null; unmet_deps: string[] };
 }
 
 export const SUPERVISOR_ACTIONS = ["continue", "nudge_ship_slice", "lower_or_change_model_effort", "handoff", "verify_checkpoint", "ask_owner", "prune_close"] as const;
 export type SupervisorAction = (typeof SUPERVISOR_ACTIONS)[number];
-export type SupervisorState = "progressing" | "stalled" | "repetitive_loop" | "blocked" | "checkpoint_ready" | "landed" | "unknown";
+export type SupervisorState = "progressing" | "stalled" | "repetitive_loop" | "blocked" | "waiting_dependency" | "checkpoint_ready" | "landed" | "unknown";
 export interface SupervisorDiagnosis {
   state: SupervisorState;
   recommendations: Array<{ action: SupervisorAction; reasons: string[]; evidence: string[] }>;
@@ -54,6 +56,14 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
     return result("blocked", current.owner_required === true ? "ask_owner" : "handoff",
       current.owner_required === true ? "An explicit owner decision is required." : "Resolve the question or dialog with the existing coordinator and authority.",
       [`status=${current.status}`, `attention=${current.attention ?? "dialog"}`, `owner_required=${current.owner_required === true}`]);
+  }
+
+  // Waiting on another task is not a stall: no nudge, no handoff, until it unblocks.
+  if (opts.task && (opts.task.status === "waiting_dependency" || opts.task.status === "blocked")) {
+    return result("waiting_dependency", "continue", opts.task.status === "blocked"
+      ? "Its coordination task is blocked; the supervisor resolves the blocker, not the agent."
+      : "Its coordination task waits on a dependency; it is not working and not stalled.",
+    [`task=${opts.task.id}`, `task_status=${opts.task.status}`, `unmet_deps=${opts.task.unmet_deps.join(",") || "none"}`, ...(opts.task.blocker ? [`blocker=${opts.task.blocker}`] : [])]);
   }
 
   // Never compare across restarts or unknown session identities.
