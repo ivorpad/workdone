@@ -13,6 +13,7 @@ import { optBool, optInt, optStr, str, type Op, type Params } from "./params.ts"
 import { childProcesses, gitSummary } from "./process.ts";
 import { showDone, showWatched } from "./sidebar.ts";
 import type { Watched } from "./state.ts";
+import { supervise, type SupervisorObservation } from "./supervisor.ts";
 import { agentReply, type Reply } from "./transcript.ts";
 import { pollJobs } from "./jobs.ts";
 import { pollWaiting, pollWatched, sendNotification, withReports } from "./watcher.ts";
@@ -164,6 +165,32 @@ async function waitAgents(g: Gateway, params: Params) {
 
 export function agentOps(g: Gateway): Record<string, Op> {
   return {
+    // Advisory only. The watch baseline supplies status progression, not checkpoint
+    // history, so this first slice does not infer stalls or loops from poll age.
+    async supervisor_status() {
+      const watched = g.state.watched();
+      const { agents: active, panes } = await agentsAndPanes(g);
+      const seen = new Set(active.map((a: any) => a.pane_id));
+      const background = panes.filter((p: any) => !seen.has(p.pane_id) && watched[p.pane_id])
+        .map((p: any) => ({ ...p, agent_status: watched[p.pane_id]!.last_status === "background" || watched[p.pane_id]!.last_status === "stopped" ? watched[p.pane_id]!.last_status : "unknown" }));
+      const agents = [...active, ...background]
+        .filter((a: any) => watched[a.pane_id] && paneInScope(a, g.cfg.allowedRoots));
+      const items = await Promise.all(agents.map(async (a: any) => {
+        const w = watched[a.pane_id]!;
+        const reply = a.agent ? await agentReply(g.cfg, a).catch(() => null) : null;
+        const life = a.agent ? await lifecycle(g, a, watched, { reply }) : { attention: null };
+        const observation: SupervisorObservation = {
+          status: a.agent_status ?? "unknown", session: a.agent_session?.value,
+          seq: a.state_change_seq, attention: life.attention,
+          prompt_running: !!reply?.in_progress,
+        };
+        return { ...agentView(a), watch: watchView(w), observation,
+          ...supervise(observation, [{ status: w.last_status ?? "unknown", session: w.session, seq: w.seq }]),
+          ...("choices" in life ? { choices: life.choices } : {}) };
+      }));
+      return { agents: items, evidence_limit: "Watch baselines contain status progression only; stall and loop diagnoses require comparable checkpoint and completed-turn history." };
+    },
+
     // Internal, run by an agent on its own machine: a message to the ChatGPT thread whose
     // lease holds its pane, delivered by that thread's watch card. pane_id is the
     // agent's own pane ($HERDR_PANE_ID).

@@ -55,7 +55,7 @@ interface ToolDef {
 }
 
 // Called without a machine, these ask every machine and key the answer by machine name.
-export const FANOUT = new Set(["bridge_status", "overview", "prunable_agents", "list_panes", "list_workspaces", "list_repos"]);
+export const FANOUT = new Set(["bridge_status", "overview", "supervisor_status", "prunable_agents", "list_panes", "list_workspaces", "list_repos"]);
 
 export const TOOLS: Record<string, ToolDef> = {
   claim_agents: {
@@ -86,6 +86,12 @@ export const TOOLS: Record<string, ToolDef> = {
     title: "Overview of agents",
     description:
       "One call for 'what are my agents doing?': every agent with status, directory, git branch and changed-file count, the start of its last reply, the running prompt if any, and the dialog text when it is blocked. attention is dialog (a menu is up; choices lists its numbered options, dialog_id, kind: permission, trust, notice, gated or question, and go_ahead: a recognized routine go-ahead or null) or question (stopped and its last reply asks the owner something). blocked can mean either a permission or a question; inspect choices. watch shows its approval policy and last report.",
+    input: {},
+    annotations: READ,
+  },
+  supervisor_status: {
+    title: "Supervisor status",
+    description: "Read-only orchestration advice for current watched and managed agents, with reasons and evidence. Diagnoses visible progress, questions/dialogs and settled checkpoints. Missing checkpoint history is reported as unknown, never as a time-based stall. Recommendations do not prompt, approve, stop, restart or create reviewers.",
     input: {},
     annotations: READ,
   },
