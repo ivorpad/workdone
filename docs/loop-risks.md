@@ -61,3 +61,16 @@ Its sharpest point: with full-access agents, "any safety property that must surv
 5. A progress stop: the same blocker, question or error twice, or two finished turns with no progress, ends the autonomy and waits for the user.
 
 Then wake batching, spawn-depth limits, structured agent state and cost quotas.
+
+## What the code enforces
+
+What exists today, against the table above. Everything else is still model instruction.
+
+- **One result per request, no wake storms (2, 10).** `reply: true` is opt-in. Its result rides on the one `agent.finished` event of the turn that answers it, not on a second event. A pending request is reused, not stacked, and it is cleared by ID once delivered, so a concurrent prompt cannot make it owed again. Native event IDs come from the source report, so a repeated gateway pass is one delivery. The card treats an owed turn as one `reply` wake.
+- **Progress by evidence (2, "duplicate work", "useful work can still run away").** The watcher records the commit, tree and a digest of `git status` plus the full `git diff HEAD` at every finished turn of a managed agent (`gateway/checkpoint.ts`, `supervisor.json` in the state directory, last 12 turns per pane). `supervise()` calls two finished turns with an unchanged commit and diff a stall, and a loop when the answer digest repeats too. Elapsed time is never evidence.
+- **One nudge, then stop (1, 2, "retry loops").** `supervisor_nudge` sends a fixed message only when the supervisor recommends it right now, and the state store allows one per agent session. After it, the only advice is `handoff` or `lower_or_change_model_effort`. There is no automatic nudge from the watcher and no retry action.
+- **No reviewer recursion (3, 4).** A reviewer (`role: "reviewer"`) is always handed back to its coordinator and never nudged. No supervisor action spawns, reviews or retries; a test checks the action list.
+- **Closing finished work (context growth, cost).** `prune_close` needs a commit beyond the agent's start, a clean tree, a settled agent and no result still owed. It is a recommendation; `close` stays a separate call.
+- **Accounting.** `supervisor_nudge` is leased like `prompt_agent` and counts as the one message per wake on a linked card. Every launch records model and effective effort in its result, the watch entry and an `agent_launch` audit line.
+
+Not enforced yet: a goal budget across watches and threads (1, 7), an A→B edge counter (3) and spawn caps (4). Prompts from ChatGPT carry a provenance stamp (lease and time), but agent-to-agent prompts carry no depth or remaining budget (5).

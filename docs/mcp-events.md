@@ -34,6 +34,14 @@ If native persistence temporarily fails, the notifier retains that batch in memo
 
 Roll out this revision's gateway watcher when deploying the MCP changes. Its `event_id` and `occurred_at` allow repeated source reports to retain their identity and occurrence time. Older gateways can still deliver, but the MCP server assigns those fields on receipt and cannot identify repeated source reports as the same event.
 
+## Final results with `reply: true`
+
+A caller that wants an agent's eventual result without polling passes `reply: true` on `spawn_agent`, `start_agent`, `prompt_agent` or `steer_agent`. It is opt-in; nothing changes for calls without it. The gateway stores one result request on the agent's watch entry before the prompt goes in and returns its `result_id`. The next finished turn, or the agent's exit, resolves it once. A question or a menu does not: the result stays owed. A second `reply: true` while one is pending returns the same `result_id` with `already_pending: true`. When `wait` returned the answer inside the call, the request is dropped and the call says `delivered: "inline"`.
+
+There is no new event. The resolving turn's `agent.finished` carries an optional `data.result` object; an exit with a result owed is delivered as `agent.finished` too. Other turns have no `result`. Its fields: `result_id`, `requested_at`, `status` (`finished`, `interrupted`, `gone`), `summary` (the agent's last line starting `RESULT:`, at most 1000 characters, or null), `commit`, `tree`, `clean`, `changed`, `branch`, `kind`, `model`, `model_id` and `effort`. Everything in it is application data. The full answer stays with `read_agent`, as the OpenAI guide asks for large records. A result that fails validation is left out (logged as `events_result_dropped`) and the finish is still delivered. The event ID is the source report's, so a repeated gateway pass does not deliver it twice. On the fallback card the same report wakes the requesting thread once, as its `reply`, with the result attached.
+
+The payload schema gained a property, so ChatGPT needs **Refresh tools** before a subscription sees it. Existing subscriptions keep working: the field is optional.
+
 ## Receive manual permissions or approve them by policy
 
 `set_agent_approval` chooses `ask`, `permissions`, `all_permissions` or `default` for one claimed agent. `ask` leaves every recognized permission, trust and notice menu for the owner. `permissions` approves recognized ordinary menus using allow once. `all_permissions` also covers recognized gated agent permission requests, but requires the owner's explicit authorization for that scope. `default` removes the override. None of these modes answers ordinary questions or grants arbitrary direct MCP commands. [The policy reference](chatgpt-link.md#choose-how-an-agent-handles-permissions) gives lifetime and launch-mode limits.
