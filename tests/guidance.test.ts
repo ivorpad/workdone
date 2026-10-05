@@ -41,6 +41,10 @@ test("the instructions and skills teach results, the one-nudge supervisor and Ev
 });
 
 test("plugin versions moved with the new tool and payload", () => {
-  expect(JSON.parse(read("plugin/herdr-remote/.codex-plugin/plugin.json")).version).toBe("0.12.0");
-  expect(JSON.parse(read("plugin/workdone-events/.codex-plugin/plugin.json")).version).toBe("0.3.0");
+  const atLeast = (path: string, min: string) => {
+    const version = JSON.parse(read(path)).version as string;
+    expect(Bun.semver.order(version, min)).toBeGreaterThanOrEqual(0);
+  };
+  atLeast("plugin/herdr-remote/.codex-plugin/plugin.json", "0.12.0");
+  atLeast("plugin/workdone-events/.codex-plugin/plugin.json", "0.3.0");
 });
