@@ -273,6 +273,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   // Record decisions first, and only for entries nobody rewrote since the read above:
   // a prompt or a watch that landed meanwhile knows more than this pass.
   const applied = new Set<string>();
+  const dropped: string[] = [];
   const remaining = store.updateWatched((fresh) => {
     for (const { paneId, w, d } of decided) {
       const cur = fresh[paneId];
@@ -280,11 +281,13 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       applied.add(paneId);
       if (d.drop) {
         delete fresh[paneId];
+        if (d.event === "gone") dropped.push(paneId);
         if (cur.managed) showWatched(herdr, paneId, false);
       } else if (d.set) fresh[paneId] = { ...cur, ...d.set };
     }
     return Object.keys(fresh).length;
   });
+  store.clearSupervision(dropped);
   // Excerpts can take a couple of seconds (a transcript trails the status), so they come after.
   const messages: string[] = [];
   const reports: Report[] = [];

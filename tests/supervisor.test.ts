@@ -104,6 +104,8 @@ describe("supervisor policy", () => {
       [settled({ clean: false }), { baseline }, "uncommitted changes"],
       [settled(), { baseline, result_pending: true }, "result is still owed"],
       [settled(), {}, "no baseline"],
+      // A baseline left by an earlier session in the pane.
+      [settled(), { baseline: { commit: "abc", session: "s0" } }, "no baseline"],
       [settled({ status: "working" }), { baseline }, null],
       [settled({ prompt_running: true }), { baseline }, null],
     ] as const) {

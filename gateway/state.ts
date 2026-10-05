@@ -332,7 +332,9 @@ export class StateStore {
     this.updateWatched((w) => {
       const cur = w[paneId];
       if (cur?.result_request?.id !== id) return;
-      const { result_request: _, ...rest } = cur;
+      const { result_request: req, ...rest } = cur;
+      // The thread was owed this result only: its next turn is nobody's reply.
+      if (req.lease && rest.reply_to === req.lease) delete rest.reply_to;
       w[paneId] = { ...rest, rev: newRev() };
     });
   }
@@ -374,6 +376,17 @@ export class StateStore {
       if (s.nudges.some((n) => n.session === session)) return false;
       s.nudges.push({ at: new Date().toISOString(), session, after_turn: s.turns.at(-1)?.turn ?? null });
       return true;
+    });
+  }
+
+  // The agent in this pane is gone: its history must not judge the next one.
+  clearSupervision(paneIds: string[]) {
+    if (!paneIds.length) return;
+    this.locked(() => {
+      const sup = this.supervision();
+      if (!paneIds.some((id) => sup[id])) return;
+      for (const id of paneIds) delete sup[id];
+      this.write("supervisor.json", sup);
     });
   }
 

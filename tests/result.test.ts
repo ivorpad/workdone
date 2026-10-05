@@ -69,6 +69,8 @@ describe("reply: true", () => {
     const [r] = await t.poll();
     expect(r.type).toBe("gone");
     expect(r.result).toMatchObject({ result_id: result_request.result_id, status: "gone", summary: null });
+    // Its supervisor history goes with it: a later agent in the pane starts clean.
+    expect(JSON.parse(readFileSync(join(t.state, "supervisor.json"), "utf8"))["w1:p1"]).toBeUndefined();
   });
 
   test("asking again while one is pending returns the same request, so one wake", async () => {
@@ -85,9 +87,20 @@ describe("reply: true", () => {
   test("an answer returned inside the call is the result: nothing stays owed", async () => {
     const t = setup();
     await t.gw.handle("watch_agent", { target: "w1:p1" });
-    const res: any = await t.gw.handle("prompt_agent", { target: "w1:p1", text: "fix it", reply: true, wait: true });
+    const res: any = await t.gw.handle("prompt_agent", { target: "w1:p1", text: "fix it", reply: true, wait: true, lease: "L-abc123" });
     expect(res.result_request).toEqual({ result_id: expect.stringMatching(/^res_/), delivered: "inline" });
+    // Nor is the thread owed the agent's next turn, which the owner may start themselves.
     expect(t.watched()["w1:p1"].result_request).toBeUndefined();
+    expect(t.watched()["w1:p1"].reply_to).toBeUndefined();
+  });
+
+  test("a prompt that never went in owes nothing", async () => {
+    const t = setup();
+    await t.gw.handle("watch_agent", { target: "w1:p1" });
+    t.agent.failPrompt = true;
+    await expect(t.gw.handle("prompt_agent", { target: "w1:p1", text: "fix it", reply: true, lease: "L-abc123" })).rejects.toThrow("prompt refused");
+    expect(t.watched()["w1:p1"].result_request).toBeUndefined();
+    expect(t.watched()["w1:p1"].reply_to).toBeUndefined();
   });
 
   test("reply must be a boolean", async () => {

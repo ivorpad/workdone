@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } fro
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { timing } from "../gateway/answer-ops.ts";
-import { loadConfig } from "../gateway/config.ts";
+import { GatewayError, loadConfig } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
 
 export const SESSION = "5bada10f-7201-4b25-8616-ec95d6a71501";
@@ -31,6 +31,7 @@ export function gitAgent(extra: Record<string, unknown> = {}) {
     if (method === "agent.get") return { agent };
     if (method === "agent.read" || method === "pane.read") return { read: { text: "" } };
     if (method === "agent.prompt") {
+      if (agent.failPrompt) throw new GatewayError("herdr_error", "prompt refused");
       agent.agent_status = params.wait ? "idle" : "working";
       agent.state_change_seq++;
       return { agent: { ...agent } };

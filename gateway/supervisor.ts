@@ -103,7 +103,9 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
   }
 
   if (SETTLED.has(current.status) && !current.prompt_running) {
-    const base = opts.baseline?.commit;
+    // A baseline from another session (an agent restarted in the pane) says nothing about this one.
+    const ours = opts.baseline && (opts.baseline.session == null || opts.baseline.session === current.session);
+    const base = ours ? opts.baseline!.commit : undefined;
     const head = current.commit ?? last?.commit;
     const clean = current.clean ?? last?.clean;
     const evidence = [`status=${current.status}`, "prompt_running=false", `baseline=${short(base)}`, `commit=${short(head)}`, `clean=${clean ?? "unknown"}`,

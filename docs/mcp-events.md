@@ -40,7 +40,7 @@ A caller that wants an agent's eventual result without polling passes `reply: tr
 
 There is no new event. The resolving turn's `agent.finished` carries an optional `data.result` object; an exit with a result owed is delivered as `agent.finished` too. Other turns have no `result`. Its fields: `result_id`, `requested_at`, `status` (`finished`, `interrupted`, `gone`), `summary` (the agent's last line starting `RESULT:`, at most 1000 characters, or null), `commit`, `tree`, `clean`, `changed`, `branch`, `kind`, `model`, `model_id` and `effort`. Everything in it is application data. The full answer stays with `read_agent`, as the OpenAI guide asks for large records. A result that fails validation is left out (logged as `events_result_dropped`) and the finish is still delivered. The event ID is the source report's, so a repeated gateway pass does not deliver it twice. On the fallback card the same report wakes the requesting thread once, as its `reply`, with the result attached.
 
-The payload schema gained a property, so ChatGPT needs **Refresh tools** before a subscription sees it. Existing subscriptions keep working: the field is optional.
+The payload schema gained a property, so ChatGPT needs **Refresh tools** before anyone uses `reply: true`. Deliveries without `result` are unchanged. Whether ChatGPT checks incoming `data` against the cached `payloadSchema` (which has `additionalProperties: false`) is not verified, so a delivery carrying `data.result` before the refresh may be refused.
 
 ## Receive manual permissions or approve them by policy
 
