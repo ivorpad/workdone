@@ -20,9 +20,10 @@ import { layoutOps } from "./layout-ops.ts";
 import { leaseOps } from "./leases.ts";
 import { findModel, modelArgs } from "./models.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
-import { StateStore } from "./state.ts";
+import { StateStore, seenState, type Launch } from "./state.ts";
+import { checkpoint } from "./checkpoint.ts";
 import { agentReply } from "./transcript.ts";
-import { agentView, paneView, textOf, watchInfo, withWatch } from "./views.ts";
+import { agentView, paneView, resultView, textOf, watchInfo, withWatch } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done", "blocked"]);
 
@@ -146,7 +147,7 @@ export class Gateway {
       created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] })) as any).lease;
       lease = created;
     }
-    const result: any = await this.handle(op, stamped(op, params, lease, lease ? this.state.leases()[lease]?.label : undefined));
+    const result: any = await this.handle(op, stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined));
     this.leases.after(op, lease, params, result);
     // The thread asked something and didn't wait: the agent's answer is owed to it.
     const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
@@ -279,6 +280,8 @@ export class Gateway {
             );
           }
         }
+        // reply: true, asked before the prompt goes in so a quick turn can't end unclaimed.
+        const asked = this.askResult(agent.pane_id, agent, params);
         let res: any;
         try {
           res = await this.herdr(
@@ -289,7 +292,10 @@ export class Gateway {
         } catch (err) {
           // A wait that times out still delivered the prompt: report on it when it
           // finishes, and tell the caller it is working rather than failing the call.
-          if (!(wait && err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout"))) throw err;
+          if (!(wait && err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout"))) {
+            if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
+            throw err;
+          }
           this.state.prompted(agent.pane_id, watchInfo(agent), null, false);
           clearNote(this.herdr, agent.pane_id);
           const out: Record<string, unknown> = {
@@ -297,6 +303,7 @@ export class Gateway {
             note: "the prompt went in and the agent is still working; the owner gets a phone notification when it finishes",
           };
           if (approved.length) out.auto_approved = approved;
+          if (asked) out.result_request = resultView(asked);
           return out;
         }
         let status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
@@ -317,7 +324,12 @@ export class Gateway {
         if (settled && status !== "blocked") {
           const reply = await agentReply(cfg, agent, { freshFor: text });
           if (reply) out.reply = reply;
-        }
+          // The turn ended inside this call: its answer is the result, so nothing is owed.
+          if (asked) {
+            this.state.dropResult(agent.pane_id, asked.result_id);
+            out.result_request = { result_id: asked.result_id, delivered: "inline" };
+          }
+        } else if (asked) out.result_request = resultView(asked);
         return out;
       }
 
@@ -363,17 +375,20 @@ export class Gateway {
 
       case "start_agent": {
         const pane = await this.shellPane(str(params, "pane_id", TARGET_RE));
-        const { kind, model, args } = this.agentKind(params);
+        const { kind, args, launch } = this.agentKind(params);
         const name = str(params, "name", AGENT_NAME_RE);
+        const role = optEnum(params, "role", ["worker", "reviewer"] as const, "worker");
         // A shell pane has no agent, so anything still watched there is left over from one that exited.
         this.state.unwatch(pane.pane_id);
         const watch = optBool(params, "watch", true);
         showWatched(this.herdr, pane.pane_id, false);
-        const manage = (agent: any) => {
+        const manage = async (agent: any) => {
           if (!watch) return;
-          this.state.manage(pane.pane_id, { ...watchInfo(pane), name, kind }, agent, true);
+          this.state.manage(pane.pane_id, { ...watchInfo(pane), name, kind, launch, role }, agent, true);
+          await this.startSupervision(pane.pane_id, pane.foreground_cwd ?? pane.cwd, agent);
           showWatched(this.herdr, pane.pane_id, true);
         };
+        this.recordLaunch("start_agent", pane.pane_id, name, launch);
         let res: any = null;
         let notReady: GatewayError | null = null;
         try {
@@ -389,11 +404,12 @@ export class Gateway {
           const ready = await this.herdr("agent.wait", { target: pane.pane_id, until: ["idle", "done", "blocked"], timeout_ms: 30_000 }, 40_000).catch(() => null);
           res = { ...res, agent: ready?.agent ?? (await this.herdr("agent.get", { target: pane.pane_id }).catch(() => null))?.agent, auto_approved: got.approved };
         } else if (notReady) {
-          manage({ agent_status: "blocked" });
+          await manage({ agent_status: "blocked" });
           throw notReady;
         }
-        manage(res?.agent ?? { agent_status: "unknown" });
-        return res;
+        await manage(res?.agent ?? { agent_status: "unknown" });
+        const asked = this.askResult(pane.pane_id, res?.agent ?? pane, params);
+        return { ...res, launched: launch, ...(asked ? { result_request: resultView(asked) } : {}) };
       }
 
       case "list_repos": {
@@ -448,7 +464,34 @@ export class Gateway {
   // The Herdr kind and args for a new agent: the CLI (kind), then a model family from
   // agentModels at the effort asked for, else the CLI's default model there, else the
   // CLI on its own default with no model args.
-  agentKind(params: Params): { kind: string; model: string | null; args: string[] } {
+  // Every agent WorkDone starts is recorded with the model and effort that launched,
+  // defaults included. The audit line has no prompt text.
+  recordLaunch(via: string, paneId: string, name: string, launch: Launch) {
+    this.state.audit({ op: "agent_launch", ok: true, via, args: { pane_id: paneId, name, ...launch } });
+  }
+
+  // The supervisor's baseline: where a new agent's work starts.
+  async startSupervision(paneId: string, cwd: string | null | undefined, agent: any) {
+    const cp = await checkpoint(this.cfg, cwd);
+    this.state.setBaseline(paneId, {
+      at: new Date().toISOString(), session: seenState(agent).session ?? null,
+      ...(cp?.commit ? { commit: cp.commit } : {}), ...(cp ? { clean: cp.clean } : {}),
+    });
+  }
+
+  // reply: true on prompt_agent, steer_agent, spawn_agent or start_agent: the agent's
+  // next final result is owed to the caller. null when the caller did not ask.
+  askResult(paneId: string, agent: any, params: Params): { result_id: string; already_pending: boolean } | null {
+    if (params.reply === undefined || params.reply === null) return null;
+    if (typeof params.reply !== "boolean") throw new GatewayError("invalid_params", "reply must be true or false");
+    if (!params.reply) return null;
+    const lease = typeof params.lease === "string" && params.lease ? params.lease : null;
+    return this.state.requestResult(paneId, watchInfo(agent), agent, lease);
+  }
+
+  // launch says what actually starts: the model family and ID, the effective effort, and
+  // whether each was asked for or came from a default.
+  agentKind(params: Params): { kind: string; model: string | null; args: string[]; launch: Launch } {
     // Names often arrive through dictation: "Claude.", "Gemini Flash", "Extra High".
     const kind = spoken(str(params, "kind"));
     const asked = optStr(params, "model");
@@ -467,10 +510,20 @@ export class Gateway {
     } else name = Object.entries(families).find(([, m]) => m.default)?.[0];
     if (!name) {
       if (effort !== undefined) throw new GatewayError("invalid_params", `${kind} has no model list here, so it takes no effort`);
-      return { kind, model: null, args: extra };
+      return { kind, model: null, args: extra, launch: { kind, model: null, model_id: null, effort: null, model_source: "cli_default", effort_source: "none" } };
     }
     try {
-      return { kind, model: name, args: [...modelArgs(families[name]!, effort), ...extra] };
+      const m = families[name]!;
+      const args = [...modelArgs(m, effort), ...extra];
+      const used = effort ?? m.effort;
+      return {
+        kind, model: name, args,
+        launch: {
+          kind, model: name, model_id: m.model, effort: used,
+          model_source: asked !== undefined ? "requested" : "default",
+          effort_source: effort !== undefined ? "requested" : used !== null ? "model_default" : "none",
+        },
+      };
     } catch (err) {
       throw new GatewayError("invalid_params", `${kind} ${name}: ${(err as Error).message}`);
     }

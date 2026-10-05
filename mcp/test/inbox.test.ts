@@ -255,3 +255,25 @@ describe("watch logging", () => {
     expect(JSON.parse(lines[2]).why).toContain("idle");
   });
 });
+
+describe("reply: true results on the fallback card", () => {
+  const result = { result_id: "res_0123456789abcdef", requested_at: "2026-10-05T12:00:00.000Z", status: "finished" as const, summary: "landed", commit: null, tree: null, clean: null, changed: null, branch: null, kind: null, model: null, model_id: null, effort: null };
+  test("the owed finish wakes once, as the reply, with its result", async () => {
+    const box = new Inbox();
+    const w = opened(box, "mac", "L-abc123");
+    expect(box.add("mac", [report({ type: "finished", reply_to: "L-abc123", excerpt: "Done", result })])).toBe(1);
+    const { events } = await box.next(w.key.watch_id, w.key.cap, 0);
+    expect(events.map((e) => [e.type, e.result?.summary])).toEqual([["reply", "landed"]]);
+  });
+  test("an exit with a result owed wakes the thread that asked; a plain exit does not", async () => {
+    const box = new Inbox();
+    const w = opened(box, "mac", "L-abc123");
+    box.add("mac", [
+      report({ type: "gone", reply_to: "L-abc123", excerpt: null }),
+      report({ type: "gone", reply_to: "L-abc123", excerpt: null, result: { ...result, status: "gone" } }),
+      report({ type: "gone", reply_to: "L-other99", excerpt: null, result: { ...result, status: "gone" } }),
+    ]);
+    const { events } = await box.next(w.key.watch_id, w.key.cap, 0);
+    expect(events.map((e) => [e.type, e.result?.status])).toEqual([["reply", "gone"]]);
+  });
+});

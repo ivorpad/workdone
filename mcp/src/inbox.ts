@@ -41,6 +41,8 @@ export interface WakeEvent {
   type: WakeType;
   excerpt: string | null;
   message: string;
+  // The structured final result of a reply: true request (see gateway TurnResult).
+  result?: Report["result"];
 }
 
 interface Watch {
@@ -182,15 +184,17 @@ export class Inbox {
     this.sweep();
     let n = 0;
     for (const r of reports) {
-      if (!r.lease || !isWakeType(r.type)) continue;
+      // An agent that exited with a result owed still answers the thread that asked.
+      if (!r.lease || !(isWakeType(r.type) || (r.type === "gone" && r.result))) continue;
       let taken = false;
       for (const w of this.watches.values()) {
         if (w.stopped || w.machine !== machine || w.lease !== r.lease) continue;
         // A turn this thread asked for is its reply, whatever the turn's end looked like.
-        const owed = r.reply_to === w.lease && (r.type === "finished" || r.type === "question");
-        const type: WakeType = owed ? "reply" : r.type;
+        const owed = r.reply_to === w.lease && (r.type === "finished" || r.type === "question" || (r.type === "gone" && !!r.result));
+        if (!owed && !isWakeType(r.type)) continue;
+        const type = (owed ? "reply" : r.type) as WakeType;
         if (!w.wake.has(type)) continue;
-        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message });
+        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message, ...(r.result ? { result: r.result } : {}) });
         for (const wake of w.waiters.splice(0)) wake();
         n++;
         taken = true;

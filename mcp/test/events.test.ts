@@ -340,3 +340,60 @@ describe("delivery", () => {
     await n.idle(); await f.service.flush(); expect(phones).toEqual(["phone"]); expect(f.sent.filter(r => !JSON.parse(r.body).type).map(r => JSON.parse(r.body).name)).toEqual(["agent.finished", "agent.asks"]);
   });
 });
+
+describe("reply: true results on agent.finished", () => {
+  const result = (changes: Record<string, unknown> = {}) => ({
+    result_id: "res_0123456789abcdef", requested_at: new Date(time - 60_000).toISOString(), status: "finished",
+    summary: "retry fix landed", commit: "a".repeat(40), tree: "b".repeat(40), clean: true, changed: 0, branch: "main",
+    kind: "claude", model: "opus", model_id: "claude-opus-5-5", effort: "high", ...changes,
+  });
+  const delivered = (f: ReturnType<typeof fixture>) => f.sent.filter(s => JSON.parse(s.body).type !== "verification").map(s => JSON.parse(s.body));
+
+  test("the payload schema advertises result on agent.finished only", () => {
+    const finished = EVENTS.find(e => e.name === "agent.finished")!;
+    expect((finished.payloadSchema.properties as any).result.properties.result_id).toBeDefined();
+    for (const e of EVENTS.filter(e => e.name !== "agent.finished")) expect((e.payloadSchema.properties as any).result).toBeUndefined();
+  });
+  test("a result is delivered as data.result in one agent.finished event, never twice", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe());
+    const r = report({ result: result() as any });
+    await f.service.addReports("mac", [r]);
+    // The same source report again (a retried gateway pass) is the same event.
+    await f.service.addReports("mac", [r]);
+    await f.service.flush();
+    const events = delivered(f);
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe("agent.finished");
+    expect(events[0].data.result).toEqual(result());
+    expect(events[0].data.excerpt).toBe("done");
+  });
+  test("an invalid result is left out, but the finish still wakes", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe());
+    await f.service.addReports("mac", [report({ result: result({ commit: "not-a-sha", summary: "x".repeat(2000) }) as any })]);
+    await f.service.flush();
+    const events = delivered(f);
+    expect(events).toHaveLength(1);
+    expect(events[0].data.result).toBeUndefined();
+    expect(f.logs.some(l => l.includes("events_result_dropped"))).toBe(true);
+  });
+  test("an agent that exited with a result owed delivers agent.finished; a plain exit delivers nothing", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe());
+    await f.service.addReports("mac", [report({ event_id: "gone-plain", type: "gone", excerpt: null })]);
+    await f.service.addReports("mac", [report({ event_id: "gone-owed", type: "gone", excerpt: null, result: result({ status: "gone", summary: null }) as any })]);
+    await f.service.flush();
+    const events = delivered(f);
+    expect(events.map(e => [e.name, e.data.result?.status])).toEqual([["agent.finished", "gone"]]);
+  });
+  test("agent.asks never carries a result", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe({ name: "agent.asks" }));
+    await f.service.addReports("mac", [report({ type: "question", result: result() as any })]);
+    await f.service.flush();
+    const events = delivered(f);
+    expect(events).toHaveLength(1);
+    expect(events[0].data.result).toBeUndefined();
+  });
+});

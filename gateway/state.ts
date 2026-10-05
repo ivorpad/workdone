@@ -3,6 +3,7 @@
 // Also the audit log, and the lock that keeps two processes from answering one menu.
 
 import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 
 export type CreatedKind = "panes" | "tabs" | "workspaces";
@@ -40,9 +41,59 @@ export interface Watched {
   // A ChatGPT thread (its lease) prompted or steered this agent and did not wait: the
   // turn's end is that thread's reply, reported once with reply_to so it can be woken.
   reply_to?: string;
+  // What WorkDone launched here (spawn_agent, start_agent): model and effective effort.
+  launch?: Launch;
+  // A reviewer's stalls go back to its coordinator; it is never nudged.
+  role?: "worker" | "reviewer";
+  // A caller asked for this agent's next final result (reply: true). Resolved once, by
+  // the first finished turn or the agent's exit; a question or menu leaves it pending.
+  result_request?: ResultRequest;
 }
 
-export type WatchInfo = Pick<Watched, "name" | "cwd" | "kind">;
+export interface ResultRequest {
+  id: string;
+  at: string;
+  lease: string | null;
+}
+
+// The model and effort an agent was started with, and where each came from.
+export interface Launch {
+  kind: string;
+  model: string | null;
+  model_id: string | null;
+  effort: string | null;
+  model_source: "requested" | "default" | "cli_default";
+  effort_source: "requested" | "model_default" | "none";
+}
+
+export type WatchInfo = Pick<Watched, "name" | "cwd" | "kind"> & Pick<Watched, "launch" | "role">;
+
+// Checkpoint evidence the supervisor compares between turns (see checkpoint.ts).
+export interface TurnRecord {
+  turn: string;
+  at: string;
+  session: string | null;
+  status: string;
+  commit?: string;
+  tree?: string;
+  diff?: string;
+  clean?: boolean;
+  changed?: number;
+  ahead?: number | null;
+  upstream?: string | null;
+  // Digest of the turn's final text, to tell the same answer repeated.
+  activity?: string;
+}
+
+export interface Supervision {
+  // Where the agent started from: a commit beyond it is work that landed.
+  baseline?: { at: string; session: string | null; commit?: string; clean?: boolean };
+  turns: TurnRecord[];
+  // supervisor_nudge sends at most one per agent session.
+  nudges: Array<{ at: string; session: string | null; after_turn: string | null }>;
+}
+
+const MAX_TURNS = 12;
 
 // A ChatGPT thread's authorized panes. The thread keeps the ID and passes it on every
 // call that acts on an agent or pane; used is when it last did.
@@ -209,6 +260,8 @@ export class StateStore {
     const seq = seenState(agent).seq;
     this.updateWatched((w) => {
       const cur = w[paneId];
+      // A result asked for before the prompt went in belongs to this turn.
+      const asked = cur?.result_request ? { result_request: cur.result_request, ...(cur.reply_to ? { reply_to: cur.reply_to } : {}) } : {};
       if (cur?.managed) {
         const status = agent?.agent_status;
         w[paneId] = settled
@@ -217,7 +270,7 @@ export class StateStore {
       } else if (settled) {
         delete w[paneId];
       } else {
-        w[paneId] = { ...info, since: now, seq, rev: newRev() };
+        w[paneId] = { ...info, since: now, seq, ...asked, rev: newRev() };
       }
     });
   }
@@ -242,7 +295,11 @@ export class StateStore {
         last_event: cur?.last_event,
         dialog_id: cur?.dialog_id,
         reply_to: cur?.reply_to,
+        launch: info.launch ?? cur?.launch,
+        role: info.role ?? cur?.role,
+        result_request: cur?.result_request,
       };
+      for (const k of ["launch", "role", "result_request", "reply_to", "last_event", "dialog_id", "prompted_at"] as const) if (entry[k] === undefined) delete entry[k];
       w[paneId] = entry;
       return entry;
     });
@@ -257,6 +314,69 @@ export class StateStore {
     });
   }
 
+  // reply: true. The next final result of this agent is owed to the caller (and its
+  // thread, for the fallback card). One request at a time: asking again while one is
+  // pending returns it rather than queueing a second wake.
+  requestResult(paneId: string, info: WatchInfo, agent: any, lease: string | null): { result_id: string; already_pending: boolean } {
+    return this.updateWatched((w) => {
+      const cur = w[paneId] ?? { ...info, since: new Date().toISOString(), ...seenState(agent) };
+      if (cur.result_request) return { result_id: cur.result_request.id, already_pending: true };
+      const id = `res_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      w[paneId] = { ...cur, result_request: { id, at: new Date().toISOString(), lease }, ...(lease ? { reply_to: lease } : {}), rev: newRev() };
+      return { result_id: id, already_pending: false };
+    });
+  }
+
+  // The caller got the result inline after all, or the prompt never went in.
+  dropResult(paneId: string, id: string) {
+    this.updateWatched((w) => {
+      const cur = w[paneId];
+      if (cur?.result_request?.id !== id) return;
+      const { result_request: _, ...rest } = cur;
+      w[paneId] = { ...rest, rev: newRev() };
+    });
+  }
+
+  supervision(): Record<string, Supervision> {
+    const v = this.read("supervisor.json");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Supervision>) : {};
+  }
+
+  private updateSupervision<T>(paneId: string, fn: (s: Supervision) => T): T {
+    return this.locked(() => {
+      const all = this.supervision();
+      const s = all[paneId] ?? { turns: [], nudges: [] };
+      const out = fn(s);
+      all[paneId] = { ...s, turns: s.turns.slice(-MAX_TURNS), nudges: s.nudges.slice(-MAX_TURNS) };
+      this.write("supervisor.json", all);
+      return out;
+    });
+  }
+
+  // A fresh agent in this pane: its history starts over from here.
+  setBaseline(paneId: string, baseline: NonNullable<Supervision["baseline"]>) {
+    this.locked(() => {
+      const all = this.supervision();
+      all[paneId] = { baseline, turns: [], nudges: [] };
+      this.write("supervisor.json", all);
+    });
+  }
+
+  recordTurn(paneId: string, turn: TurnRecord) {
+    this.updateSupervision(paneId, (s) => {
+      if (!s.turns.some((t) => t.turn === turn.turn)) s.turns.push(turn);
+    });
+  }
+
+  // The one nudge for a session: false when that session already had it.
+  recordNudge(paneId: string, session: string | null): boolean {
+    return this.updateSupervision(paneId, (s) => {
+      if (s.nudges.some((n) => n.session === session)) return false;
+      s.nudges.push({ at: new Date().toISOString(), session, after_turn: s.turns.at(-1)?.turn ?? null });
+      return true;
+    });
+  }
+
   unwatch(paneId: string) {
     this.locked(() => {
       // Rewatching within the same clock tick must not revive an old policy.
@@ -268,6 +388,8 @@ export class StateStore {
       if (changed) this.write("leases.json", leases);
       const watched = this.watched();
       if (watched[paneId]) { delete watched[paneId]; this.write("watch.json", watched); }
+      const sup = this.supervision();
+      if (sup[paneId]) { delete sup[paneId]; this.write("supervisor.json", sup); }
     });
   }
 

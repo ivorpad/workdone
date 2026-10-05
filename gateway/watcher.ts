@@ -15,6 +15,7 @@ import { basename, resolve } from "node:path";
 import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog, type Dialog } from "./dialog.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
+import { activityDigest, checkpoint } from "./checkpoint.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import { herdrSocket } from "./herdr-socket.ts";
@@ -83,6 +84,35 @@ export interface Note {
   type: "finished" | "question" | "blocked" | "gone" | "background" | "stopped";
   excerpt: string | null;
   pid?: number;
+  // The whole final answer, for the RESULT: line and the supervisor's turn record.
+  text?: string | null;
+}
+
+// The final result a caller asked for with reply: true. Metadata and a one-line
+// summary; the full answer stays with read_agent.
+export interface TurnResult {
+  result_id: string;
+  requested_at: string;
+  status: "finished" | "interrupted" | "gone";
+  // The agent's last line starting RESULT:, or null when it wrote none.
+  summary: string | null;
+  commit: string | null;
+  tree: string | null;
+  clean: boolean | null;
+  changed: number | null;
+  branch: string | null;
+  kind: string | null;
+  model: string | null;
+  model_id: string | null;
+  effort: string | null;
+}
+
+// The last line of a final answer that starts with RESULT: (bold or not).
+export function resultLine(text: string | null | undefined): string | null {
+  if (!text) return null;
+  let found: string | null = null;
+  for (const m of text.matchAll(/^[ \t>*_-]*RESULT:\**[ \t]*(.+?)[ \t*_]*$/gm)) found = m[1]!.trim();
+  return found ? clip(found, 1000) : null;
 }
 
 // The same event as a message, for code: the MCP server wakes the ChatGPT thread whose
@@ -105,6 +135,8 @@ export interface Report {
   message: string;
   // Menu data for agent.asks. The receiver must re-read before answering it.
   choices?: ReturnType<typeof dialogView>;
+  // Present once, on the turn end that resolves a reply: true request.
+  result?: TurnResult;
 }
 
 // The live lease holding a pane (leases lapse a day after their last use, as in leases.ts).
@@ -190,7 +222,7 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
     const text = await finalText(cfg, herdr, agent);
     if (!text?.trim()) return { type: "finished", excerpt: null };
     const asks = asksOwner(text);
-    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null };
+    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null, text };
   } catch {
     return { type: event, excerpt: null };
   }
@@ -265,6 +297,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     reports.push({ event_id: randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
   }
   const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
+  const resolved = new Map<string, string>();
   for (const { paneId, w, agent, d, bg, menu, approved } of decided) {
     if (!applied.has(paneId)) continue;
     if (approved.length) events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(approved) }]);
@@ -272,11 +305,34 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
     const text = message(w, agent, paneId, note);
     messages.push(text);
-    reports.push({ event_id: randomUUID(), occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}) });
+    const eventId = randomUUID();
+    // A turn that ended (or the agent's exit) is evidence for the supervisor, and resolves a
+    // result someone asked for. A question keeps the result pending: it is not final.
+    const ended = note.type === "finished" || note.type === "question";
+    const resolves = !!w.result_request && (note.type === "finished" || note.type === "gone");
+    const cp = (ended && w.managed) || resolves ? await checkpoint(cfg, agent?.foreground_cwd ?? agent?.cwd ?? w.cwd).catch(() => null) : null;
+    if (ended && w.managed) {
+      store.recordTurn(paneId, {
+        turn: eventId, at: new Date(now).toISOString(), session: seenState(agent).session ?? null, status: note.type,
+        ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, changed: cp.changed, ahead: cp.ahead, upstream: cp.upstream } : {}),
+        activity: activityDigest(note.text ?? note.excerpt),
+      });
+    }
+    const result: TurnResult | undefined = resolves ? {
+      result_id: w.result_request!.id, requested_at: w.result_request!.at,
+      status: note.type === "gone" ? "gone" : note.text?.startsWith("[interrupted]") ? "interrupted" : "finished",
+      summary: resultLine(note.text), commit: cp?.commit ?? null, tree: cp?.tree ?? null, clean: cp?.clean ?? null,
+      changed: cp?.changed ?? null, branch: cp?.branch ?? null, kind: w.launch?.kind ?? agent?.agent ?? w.kind ?? null,
+      model: w.launch?.model ?? null, model_id: w.launch?.model_id ?? null, effort: w.launch?.effort ?? null,
+    } : undefined;
+    if (result) resolved.set(paneId, result.result_id);
+    reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
     events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
   }
   if (events.length) {
     store.updateWatched((fresh) => {
+      // Delivered once, by ID: a write since this pass's read can't make it owed again.
+      for (const [id, rid] of resolved) if (fresh[id]?.result_request?.id === rid) delete fresh[id]!.result_request;
       for (const [id, e] of events) {
         if (!fresh[id] || fresh[id]!.rev !== watched[id]?.rev) continue;
         fresh[id] = { ...fresh[id], last_event: e };

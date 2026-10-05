@@ -28,6 +28,10 @@ const layoutKind = z.enum(["pane", "tab", "workspace"]);
 const agentKind = z.string().describe("The agent CLI, one of bridge_status agent_kinds for that machine (claude, codex, cursor, opencode, pi, ...).");
 const model = z.string().optional().describe("Model family for that CLI, one of bridge_status agents[kind].models (e.g. opus, sol, grok), always its newest version. Omit for agents[kind].default_model, or the CLI's own default when there is none.");
 const effort = z.string().optional().describe("Reasoning effort, one of that model's efforts in bridge_status (default: the model's effort). Needs a model or a default_model.");
+const reply = z.boolean().optional().describe(
+  "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id.",
+);
+const role = z.enum(["worker", "reviewer"]).optional().describe("worker (default) or reviewer. supervisor_status hands a stalled reviewer back to you instead of nudging it; never spawn another reviewer to review a reviewer.");
 const watch = z.boolean().optional().describe("Watch the agent for completion, questions and manual permission notifications, and answer recognized menus according to its approval policy (default true).");
 
 const READ = { readOnlyHint: true, destructiveHint: false, openWorldHint: false };
@@ -127,6 +131,7 @@ export const TOOLS: Record<string, ToolDef> = {
       text: z.string().min(1).describe("The prompt text."),
       wait: z.boolean().optional().describe("Wait for the agent to settle before returning (default false)."),
       timeout_ms: timeoutMs,
+      reply,
     },
     annotations: WRITE,
   },
@@ -177,7 +182,7 @@ export const TOOLS: Record<string, ToolDef> = {
     title: "Steer working agent",
     description:
       "Send a message to an agent while it works, e.g. a correction or 'stop after this step'. WorkDone types it the way that agent takes a mid-turn message: most queue it until the current tool call ends; some send it at once (delivery says which). An idle agent gets it as a normal prompt. Fails with agent_blocked when a menu is up, so a message never answers one.",
-    input: { target, text: z.string().min(1).describe("The message.") },
+    input: { target, text: z.string().min(1).describe("The message."), reply },
     annotations: WRITE,
   },
   send_agent_keys: {
@@ -206,6 +211,8 @@ export const TOOLS: Record<string, ToolDef> = {
       wait: z.boolean().optional().describe("Wait for the first prompt's answer (default false)."),
       args: z.array(z.string()).max(20).optional().describe("Extra command-line arguments for the agent (needs exec)."),
       watch,
+      reply,
+      role,
     },
     annotations: WRITE,
   },
@@ -220,6 +227,8 @@ export const TOOLS: Record<string, ToolDef> = {
       name: z.string().regex(/^[a-z][a-z0-9_-]{0,31}$/).describe("Unique lowercase name for the agent."),
       args: z.array(z.string()).max(20).optional().describe("Extra command-line arguments for the agent (needs exec)."),
       watch,
+      reply,
+      role,
     },
     annotations: WRITE,
   },

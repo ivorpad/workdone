@@ -545,6 +545,25 @@ describe("agent models", () => {
   const opts = { agentModels, agentKinds: ["claude", "cursor", "codex"] };
   const starts = (sent: any[]) => sent.filter(([m]) => m === "agent.start").map(([, p]) => [p.kind, p.args]);
 
+  test("every launch records the model and effective effort, defaults included, in the result, the watch and the audit", async () => {
+    const { gw, state, watched } = gateway(opts);
+    const asked: any = await gw.handle("spawn_agent", { kind: "claude", model: "sonnet", effort: "low", name: "a", repo: "app" });
+    const dflt: any = await gw.handle("spawn_agent", { kind: "claude", name: "b", repo: "app" });
+    const bare: any = await gw.handle("spawn_agent", { kind: "codex", name: "c", repo: "app" });
+    expect(asked.launched).toEqual({ kind: "claude", model: "sonnet", model_id: "claude-sonnet-5-5", effort: "low", model_source: "requested", effort_source: "requested" });
+    expect(dflt.launched).toEqual({ kind: "claude", model: "opus", model_id: "claude-opus-5-5", effort: "high", model_source: "default", effort_source: "model_default" });
+    // No model list for the CLI: recorded as its own default, not guessed.
+    expect(bare.launched).toEqual({ kind: "codex", model: null, model_id: null, effort: null, model_source: "cli_default", effort_source: "none" });
+    expect(watched()[dflt.pane.pane_id].launch).toEqual(dflt.launched);
+    const audit = readFileSync(join(state, "audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((l) => l.op === "agent_launch");
+    expect(audit.map((l) => [l.via, l.args.name, l.args.model_id, l.args.effort, l.args.effort_source])).toEqual([
+      ["spawn_agent", "a", "claude-sonnet-5-5", "low", "requested"],
+      ["spawn_agent", "b", "claude-opus-5-5", "high", "model_default"],
+      ["spawn_agent", "c", null, null, "none"],
+    ]);
+    const viaStart: any = await gw.handle("start_agent", { pane_id: "w1:p2", kind: "claude", model: "opus", effort: "max", name: "d" });
+    expect(viaStart.launched).toMatchObject({ model_id: "claude-opus-5-5", effort: "max", effort_source: "requested" });
+  });
   test("kind, model and effort pick the args, loosely as dictated", async () => {
     const { gw, sent } = gateway(opts);
     await gw.handle("spawn_agent", { kind: "cursor", model: "grok", effort: "high-fast", name: "a", repo: "app" });

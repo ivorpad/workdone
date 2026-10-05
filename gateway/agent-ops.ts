@@ -9,7 +9,7 @@ import { parseDialog } from "./dialog.ts";
 import { AGENT_NAME_RE, AGENT_STATUSES, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import type { Gateway } from "./gateway.ts";
-import { optBool, optInt, optStr, str, type Op, type Params } from "./params.ts";
+import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { childProcesses, gitSummary } from "./process.ts";
 import { showDone, showWatched } from "./sidebar.ts";
 import type { Watched } from "./state.ts";
@@ -17,7 +17,7 @@ import { supervise, type SupervisorObservation } from "./supervisor.ts";
 import { agentReply, type Reply } from "./transcript.ts";
 import { pollJobs } from "./jobs.ts";
 import { pollWaiting, pollWatched, sendNotification, withReports } from "./watcher.ts";
-import { agentView, lastLines, paneView, textOf, watchInfo, watchView } from "./views.ts";
+import { agentView, lastLines, paneView, resultView, textOf, watchInfo, watchView } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done"]);
 const SHELL_STARTING = new Set(["agent_pane_busy", "agent_pane_unavailable"]);
@@ -244,6 +244,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
         return { watching: false, agent: agentView(agent) };
       }
       g.state.manage(agent.pane_id, watchInfo(agent), agent);
+      if (!g.state.supervision()[agent.pane_id]?.baseline) await g.startSupervision(agent.pane_id, agent.foreground_cwd ?? agent.cwd, agent);
       showWatched(g.herdr, agent.pane_id, true);
       // Watched agents never wait on a go-ahead, starting with a menu already up.
       const { approved } = await approveMenus(g.cfg, g.herdr, agent.pane_id, "watch_agent", { waitMs: 20_000 });
@@ -363,8 +364,10 @@ export function agentOps(g: Gateway): Record<string, Op> {
     // Where the agent goes: a new worktree (worktree_branch + repo), a split of an
     // existing pane (split_from), a new tab (workspace_id), or else a new workspace.
     async spawn_agent(params) {
-      const { kind, model, args } = g.agentKind(params);
+      const { kind, model, args, launch } = g.agentKind(params);
       const name = str(params, "name", AGENT_NAME_RE);
+      const role = optEnum(params, "role", ["worker", "reviewer"] as const, "worker");
+      if (params.reply !== undefined && typeof params.reply !== "boolean") throw new GatewayError("invalid_params", "reply must be true or false");
       const watch = optBool(params, "watch", true);
       const prompt = optStr(params, "prompt");
       if (prompt && prompt.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `prompt exceeds ${g.cfg.maxPromptChars} characters`);
@@ -392,6 +395,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
       }
       const paneId: string | undefined = placed?.pane?.pane_id;
       if (!paneId) throw new GatewayError("spawn_failed", "Herdr did not return a pane for the new agent");
+      g.recordLaunch("spawn_agent", paneId, name, launch);
 
       // A new pane's shell can take a few seconds to reach its prompt, and Herdr won't
       // start an agent before that. agent_not_ready means the agent started but sits at
@@ -420,10 +424,11 @@ export function agentOps(g: Gateway): Record<string, Op> {
       if (approved.length) started = await ready(30_000);
       const status: string = started.agent_status ?? "unknown";
       if (watch) {
-        g.state.manage(paneId, { name, cwd: placed.pane.cwd ?? null, kind }, started, true);
+        g.state.manage(paneId, { name, cwd: placed.pane.cwd ?? null, kind, launch, role }, started, true);
+        await g.startSupervision(paneId, placed.pane.cwd, started);
         showWatched(g.herdr, paneId, true);
       }
-      const out: Record<string, unknown> = { ...placed, name, kind, model, status, watching: watch, ...(approved.length ? { auto_approved: approved } : {}) };
+      const out: Record<string, unknown> = { ...placed, name, kind, model, launched: launch, status, watching: watch, ...(approved.length ? { auto_approved: approved } : {}) };
       if (status === "blocked") {
         out.note = "the agent is showing a menu WorkDone did not answer: get_agent shows it as choices";
       } else if (prompt && status !== "idle" && status !== "done") {
@@ -437,7 +442,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           // its name (pi, behind its update notices): retry that for a few seconds.
           for (let attempt = 0; ; attempt++) {
             try {
-              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()) });
+              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease });
               break;
             } catch (err) {
               if (!(err instanceof GatewayError && err.code === "agent_not_ready") || attempt >= 30 || left() < 5000) throw err;
@@ -449,6 +454,13 @@ export function agentOps(g: Gateway): Record<string, Op> {
           if (!(err instanceof GatewayError && err.code === "agent_blocked")) throw err;
           Object.assign(out, { status: "blocked", note: `${err.message}; the prompt was not sent: prompt_agent once it is answered` });
         }
+      }
+      const sent = out.prompt as { result_request?: unknown } | undefined;
+      if (sent?.result_request) out.result_request = sent.result_request;
+      else if (params.reply === true) {
+        // No prompt went in: the result owed is the one from the agent's first turn.
+        const asked = g.askResult(paneId, started, params);
+        if (asked) out.result_request = resultView(asked);
       }
       return out;
     },

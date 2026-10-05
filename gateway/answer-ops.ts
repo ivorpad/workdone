@@ -18,7 +18,7 @@ import { showApproved, showWatched } from "./sidebar.ts";
 import type { Gateway } from "./gateway.ts";
 import { str, type Op } from "./params.ts";
 import { StateStore } from "./state.ts";
-import { lastLines, textOf } from "./views.ts";
+import { lastLines, resultView, textOf } from "./views.ts";
 
 // Pauses between keys, around typed text, and before reading the result. Tests set them to 0.
 export const timing = { key: 250, text: 450, settle: 1500 };
@@ -243,12 +243,18 @@ export function answerOps(g: Gateway): Record<string, Op> {
       if (text.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${g.cfg.maxPromptChars} characters`);
       if (agent.agent_status !== "working") {
         if (agent.agent_status === "blocked") throw new GatewayError("agent_blocked", "the agent is showing a menu: answer it with answer_agent first (choices.go_ahead is the option that lets it carry on)");
-        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text }) };
+        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease }) };
       }
       // A menu can come up between Herdr's status and the keys: enter would answer it.
       const d = parseDialog(await menuScreen(g.herdr, agent.pane_id));
       if (d) throw new GatewayError("agent_blocked", `the agent is showing a menu: ${lastLines(d.text, 6)}. Answer it with answer_agent first`);
-      await g.herdr("pane.send_input", { pane_id: agent.pane_id, text });
+      const asked = g.askResult(agent.pane_id, agent, params);
+      try {
+        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text });
+      } catch (err) {
+        if (asked && !asked.already_pending) g.state.dropResult(agent.pane_id, asked.result_id);
+        throw err;
+      }
       await Bun.sleep(timing.text);
       const enters = STEER_ENTERS[agent.agent] ?? 1;
       for (let i = 0; i < enters; i++) {
@@ -260,6 +266,7 @@ export function answerOps(g: Gateway): Record<string, Op> {
         steered: true,
         delivery: enters > 1 ? "sent now" : "queued: it reaches the agent after its current tool call",
         ...res,
+        ...(asked ? { result_request: resultView(asked) } : {}),
       };
     },
   };
