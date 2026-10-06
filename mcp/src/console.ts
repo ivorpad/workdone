@@ -12,13 +12,12 @@
 
 import type { ConsoleConfig, OvhConfig } from "./config.ts";
 import { holdIfGated, type PendingCalls } from "./confirm.ts";
-import { TOUCH, auditToEvent, buildNeeds, controlOf, reportToEvent, type ConsoleEvent, type MachineState } from "./console-model.ts";
+import { TOUCH, auditToEvent, buildNeeds, controlOf, deliveryOf, pollDelay, reportToEvent, type ConsoleEvent, type MachineState } from "./console-model.ts";
 import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
 import type { Report } from "../../gateway/watcher.ts";
 
 const HTML = await Bun.file(new URL("./console.html", import.meta.url)).text();
 const RING = 300;
-const REFRESH_MS = 10_000;
 const FRESH_MS = 3_000;
 // What the gateway reads as the owner at the console: acts over every lease, takes none.
 const CONSOLE = "console";
@@ -72,6 +71,9 @@ export interface ConsoleDeps {
   // Whether a chat has a native agent.message subscription on this machine (Work chats).
   wantsMessages?: (machine: string) => boolean;
   now?: () => number;
+  // Polling pace while a page is open: the fast interval and the slowest it backs off to.
+  pollBaseMs?: number;
+  pollMaxMs?: number;
 }
 
 const ok = (result: unknown): GatewayResponse => ({ ok: true, result });
@@ -85,32 +87,60 @@ export function createConsole(deps: ConsoleDeps) {
   let snapshot: { at: number; body: any } | null = null;
   let inflight: Promise<any> | null = null;
   let lastFingerprint = "";
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let running = false;
+  let unchanged = 0;
+  const base = deps.pollBaseMs ?? 4_000;
+  const ceiling = deps.pollMaxMs ?? 60_000;
+  // Gateways from before console_snapshot, and when to ask them again.
+  const legacy = new Map<string, number>();
+  const RECHECK_MS = 5 * 60_000;
+  const emptyState = (error?: { code: string; message: string }): MachineState => ({ ok: !error, ...(error ? { error } : {}), agents: [], counts: {}, objectives: [], claims: [], leases: [], inbox: { entries: [], pending: [], unanswered: 0 } });
 
+  // One gateway call per machine. A gateway without the op (deployed before it) is read the old way, six calls, and says so.
   async function readMachine(machine: string): Promise<{ state: MachineState; supervisor: Record<string, any> }> {
+    const since = legacy.get(machine);
+    if (since === undefined || now() - since > RECHECK_MS) {
+      const snap = await call(machine, "console_snapshot", { audit_n: 60, audit_ops: [...TOUCH] });
+      if (snap.ok) { legacy.delete(machine); return fromSnapshot(machine, snap.result as any); }
+      if (snap.error.code !== "unknown_operation") return { state: emptyState({ code: snap.error.code, message: snap.error.message }), supervisor: {} };
+      legacy.set(machine, now());
+    }
+    return await readLegacy(machine);
+  }
+
+  function ingestAudit(machine: string, entries: any[]) {
+    for (const e of entries ?? []) {
+      const ev = auditToEvent(machine, e);
+      if (ev) bus.publish(ev, `audit:${machine}:${e.ts}:${e.op}:${e.id ?? ""}`);
+    }
+  }
+
+  function fromSnapshot(machine: string, r: any): { state: MachineState; supervisor: Record<string, any> } {
+    const leaseRows = r.leases ?? [];
+    const supervisor: Record<string, any> = {};
+    for (const s of r.supervisor ?? []) supervisor[s.pane_id] = { state: s.state, recommendations: s.recommendations };
+    ingestAudit(machine, r.audit);
+    const events = deps.wantsMessages?.(machine) ?? false;
+    const entries = (r.inbox?.entries ?? []).map((e: any) => ({ ...e, delivery: deliveryOf(e, events) }));
+    const agents = (r.agents ?? []).map((a: any) => ({ ...a, control: controlOf(a.pane_id, leaseRows), supervisor: supervisor[a.pane_id] ?? null }));
+    return { supervisor, state: { ok: true, agents, counts: r.counts ?? {}, objectives: r.objectives ?? [], claims: r.claims ?? [], leases: leaseRows, inbox: { entries, pending: r.inbox?.pending ?? [], unanswered: r.inbox?.unanswered ?? 0 } } };
+  }
+
+  async function readLegacy(machine: string): Promise<{ state: MachineState; supervisor: Record<string, any> }> {
     const [overview, sup, coord, leaseList, claims, audit] = await Promise.all([
       call(machine, "overview", {}), call(machine, "supervisor_status", {}), call(machine, "coord_snapshot", { view: "resume" }),
       call(machine, "lease_list", {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60, ops: [...TOUCH] }),
     ]);
-    // The overview is the one that says the machine is up. Without it nothing else is worth showing.
-    if (!overview.ok) return { state: { ok: false, error: { code: overview.error.code, message: overview.error.message }, agents: [], counts: {}, objectives: [], claims: [], leases: [] }, supervisor: {} };
-    const leaseRows = leaseList.ok ? ((leaseList.result as any)?.leases ?? []) : [];
-    const agents = (((overview.result as any)?.agents ?? []) as any[]).map((a) => ({ ...a, control: controlOf(a.pane_id, leaseRows) }));
-    const supervisor: Record<string, any> = {};
-    if (sup.ok) for (const s of (sup.result as any)?.agents ?? []) supervisor[s.pane_id] = { state: s.state, recommendations: s.recommendations };
-    if (audit.ok) {
-      for (const e of (audit.result as any)?.entries ?? []) {
-        const ev = auditToEvent(machine, e);
-        if (ev) bus.publish(ev, `audit:${machine}:${e.ts}:${e.op}:${e.id ?? ""}`);
-      }
-    }
-    return {
-      supervisor,
-      state: {
-        ok: true, agents: agents.map((a) => ({ ...a, supervisor: supervisor[a.pane_id] ?? null })), counts: (overview.result as any)?.counts ?? {},
-        objectives: coord.ok ? ((coord.result as any)?.objectives ?? []) : [], claims: claims.ok ? ((claims.result as any)?.claims ?? []) : [], leases: leaseRows,
-      },
+    if (!overview.ok) return { state: emptyState({ code: overview.error.code, message: overview.error.message }), supervisor: {} };
+    const r = {
+      agents: (overview.result as any)?.agents ?? [], counts: (overview.result as any)?.counts ?? {}, supervisor: sup.ok ? (sup.result as any)?.agents : [],
+      objectives: coord.ok ? (coord.result as any)?.objectives : [], leases: leaseList.ok ? (leaseList.result as any)?.leases : [], claims: claims.ok ? (claims.result as any)?.claims : [],
+      audit: audit.ok ? (audit.result as any)?.entries : [], inbox: { entries: [], pending: [], unanswered: 0 },
     };
+    const out = fromSnapshot(machine, r);
+    out.state.legacy = true;
+    return out;
   }
 
   async function refresh(): Promise<any> {
@@ -132,20 +162,42 @@ export function createConsole(deps: ConsoleDeps) {
     return await refresh();
   }
 
-  // While a page is open the state is read every REFRESH_MS and pushed when it changed.
-  function tick() {
-    if (!bus.hasClients()) return;
-    void refresh().then((body) => {
-      const { at: _at, events: _events, ...rest } = body;
-      const fp = JSON.stringify(rest);
-      if (fp !== lastFingerprint) { lastFingerprint = fp; bus.publish({ at: body.at, machine: null, source: "gateway", kind: "state", agent: null, text: "state changed" }); }
-    }).catch(() => {});
+  // What changed, as a string: the state without the clock, the feed, or a lease's last-used time.
+  function fingerprint(body: any): string {
+    const { at: _at, events: _events, ...rest } = body;
+    return JSON.stringify(rest, (k, v) => (k === "used" ? undefined : v));
   }
-  function start() { if (!timer) timer = setInterval(tick, REFRESH_MS); }
-  function stop() { if (timer) clearInterval(timer); timer = null; }
+
+  // Looks only while a page is open. Fast while things change, slower each quiet look, fast again on any report or click.
+  async function tick() {
+    timer = null;
+    if (bus.hasClients()) {
+      try {
+        const body = await refresh();
+        const fp = fingerprint(body);
+        if (fp !== lastFingerprint) {
+          lastFingerprint = fp;
+          unchanged = 0;
+          bus.publish({ at: body.at, machine: null, source: "gateway", kind: "state", agent: null, text: "state changed" });
+        } else unchanged++;
+      } catch { unchanged++; }
+    }
+    schedule();
+  }
+  function schedule() {
+    if (!running) return;
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { void tick(); }, pollDelay(unchanged, base, ceiling));
+  }
+  function start() { running = true; schedule(); }
+  function stop() { running = false; if (timer) clearTimeout(timer); timer = null; }
   let nudged: ReturnType<typeof setTimeout> | null = null;
-  // A report arrived: look again soon, once, however many arrive together.
-  function soon() { if (nudged) return; nudged = setTimeout(() => { nudged = null; tick(); }, 600); }
+  // A report arrived, a page connected or the owner clicked: look again soon, once, however many arrive together, and at the fast pace.
+  function soon() {
+    unchanged = 0;
+    if (nudged) return;
+    nudged = setTimeout(() => { nudged = null; if (timer) clearTimeout(timer); void tick(); }, 600);
+  }
 
   function identity(req: Request): Response | null {
     const c = cfg.console;
@@ -215,6 +267,13 @@ export function createConsole(deps: ConsoleDeps) {
           res = ok({ ...r, events_subscribed: events, delivery: events ? "queued; a chat subscribed to agent.message on this machine will be woken" : r.held_by ? "queued; reaches the chat only while its link card is open, and waits up to an hour" : "queued; no chat holds this agent and no Events subscription is active, so nobody may get it" });
         }
         log("note", `${res.ok ? "left a note for the chat about" : `note refused (${res.error.code}):`} ${target}: ${clip(text)}`, !res.ok);
+        break;
+      }
+      case "dismiss": {
+        // One entry by id (a derived one needs its target too), or everything unanswered from one agent.
+        const id = typeof body.id === "string" ? body.id : undefined;
+        res = await call(machine, "inbox_resolve", { ...(id ? { id } : {}), target, origin: CONSOLE });
+        log("dismiss", `${res.ok ? "dismissed" : `dismiss refused (${res.error.code}):`} ${id ? "a message from" : "messages from"} ${target}`, false);
         break;
       }
       case "focus":

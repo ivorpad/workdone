@@ -12,12 +12,35 @@ export interface MachineState {
   objectives: any[];
   claims: any[];
   leases: any[];
+  // What agents told the owner (gateway inbox, plus derived finishes), with how each could be delivered.
+  inbox: { entries: any[]; pending: any[]; unanswered: number };
+  // The gateway has no console_snapshot yet: the console fell back to separate reads, and the inbox is empty.
+  legacy?: boolean;
+}
+
+// How long to wait before the next look. Fast while the state is changing, doubling each
+// look that finds nothing new, up to a ceiling. Anything that happens (a report, a click)
+// resets it to fast.
+export function pollDelay(unchanged: number, base = 4_000, max = 60_000): number {
+  return Math.min(max, base * 2 ** Math.min(unchanged, 10));
+}
+
+// Where an inbox entry can go. The gateway keeps every entry; this says what could carry it
+// to a chat, without claiming it arrived: an agent held by a thread is queued for that thread
+// (its card or Events subscription may or may not be listening), an agent no thread holds
+// reaches only a chat subscribed to agent.message events, and with neither nothing is woken.
+export function deliveryOf(entry: { status: string; thread?: string | null; derived?: boolean }, eventsSubscribed: boolean): { route: "thread" | "events" | "none"; text: string } {
+  if (entry.status === "answered") return { route: "none", text: "answered" };
+  if (entry.status === "dismissed") return { route: "none", text: "dismissed" };
+  if (entry.thread) return { route: "thread", text: `queued for thread “${entry.thread}”; delivery to the chat is not confirmed` };
+  if (eventsSubscribed) return { route: "events", text: "no thread holds this agent; a chat subscribed to agent events may get it" };
+  return { route: "none", text: "undelivered: no chat route for this agent. It waits here" };
 }
 
 export interface Need {
   id: string;
   level: "act" | "check";
-  kind: "menu" | "approve" | "question" | "stalled" | "human" | "acceptance" | "machine" | "result";
+  kind: "menu" | "approve" | "question" | "stalled" | "human" | "acceptance" | "machine" | "result" | "inbox";
   machine: string;
   pane_id?: string;
   name?: string | null;
@@ -79,6 +102,15 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
         needs.push({ ...base, id: `result:${machine}:${a.pane_id}`, level: "check", kind: "result", title: `${who} owes a result`, detail: "A reply: true result has not been delivered yet. read_agent has what it said so far." });
       }
     }
+    // One need per agent for what it said and nobody answered, newest first: the owner should not have to tell ChatGPT an agent is done.
+    const byPane = new Map<string, any[]>();
+    for (const e of m.inbox?.entries ?? []) if (e.status === "unanswered" && e.pane_id) byPane.set(e.pane_id, [...(byPane.get(e.pane_id) ?? []), e]);
+    for (const [pane, list] of byPane) {
+      const e = list[0];
+      const who = `${e.agent ?? pane} (${pane})`;
+      const verb = e.kind === "tell" ? "wrote to you" : e.kind === "gone" ? "exited" : e.kind === "question" ? "asked a question" : e.kind === "result" ? "returned a result" : "finished";
+      needs.push({ id: `inbox:${machine}:${pane}`, level: "check", kind: "inbox", machine, pane_id: pane, name: e.agent ?? null, title: `${who} ${verb}${list.length > 1 ? ` (${list.length} unanswered)` : ""}`, detail: clip(e.text, 400) });
+    }
     for (const o of m.objectives) {
       for (const t of o.blocked_human ?? []) needs.push({ id: `human:${machine}:${o.id}:${t.id}`, level: "act", kind: "human", machine, title: `${o.id} ${t.id} needs a person`, detail: clip(t.blocker, 300) });
       for (const t of o.needs_acceptance ?? []) needs.push({ id: `accept:${machine}:${o.id}:${t.id}`, level: "check", kind: "acceptance", machine, title: `${o.id} ${t.id} awaits acceptance`, detail: clip(t.result?.summary ?? t.title, 300) });
@@ -87,7 +119,7 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
   for (const p of pending) {
     needs.push({ id: `approve:${p.pending}`, level: "act", kind: "approve", machine: p.machine, title: `Held ${p.op} on ${p.machine}: ${p.reason}`, detail: clip(p.detail, 600), pending: p.pending });
   }
-  const rank: Record<Need["kind"], number> = { menu: 0, approve: 1, human: 2, question: 3, stalled: 4, result: 5, acceptance: 6, machine: 7 };
+  const rank: Record<Need["kind"], number> = { menu: 0, approve: 1, human: 2, question: 3, inbox: 4, stalled: 5, result: 6, acceptance: 7, machine: 8 };
   return needs.sort((x, y) => rank[x.kind] - rank[y.kind]);
 }
 

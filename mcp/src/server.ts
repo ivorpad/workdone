@@ -245,7 +245,7 @@ if (import.meta.main) {
   const ownerConsole = cfg.console ? createConsole({ cfg: { ...cfg, console: cfg.console }, call, pending: pendingCalls, bus, wantsMessages: (m) => events?.wantsMessages(m) ?? false }) : undefined;
   const wanted = (m: string) => (events?.wantsMessages(m) ?? false) || bus.hasClients();
   const notifier = cfg.notify || events || ownerConsole ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events, undefined, (m, r) => { bus.publishReports(m, r); ownerConsole?.soon(); }), wanted) : null;
-  bus.onConnect = () => { for (const m of Object.keys(cfg.machines)) notifier?.markPending(m); };
+  bus.onConnect = () => { for (const m of Object.keys(cfg.machines)) notifier?.markPending(m); ownerConsole?.soon(); };
   events?.start();
   ownerConsole?.start();
   const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events }, ownerConsole?.handler);

@@ -6,14 +6,14 @@ import { parseConfig } from "../src/config.ts";
 import { PendingCalls } from "../src/confirm.ts";
 import { ConsoleBus, createConsole } from "../src/console.ts";
 import { createEndpoints, createReportSink } from "../src/server.ts";
-import { auditToEvent, buildNeeds, controlOf } from "../src/console-model.ts";
+import { auditToEvent, buildNeeds, controlOf, deliveryOf, pollDelay } from "../src/console-model.ts";
 import type { CallGateway, GatewayResponse } from "../src/gateway-client.ts";
 
 const target = { user: "u", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
 const DIALOG = "a".repeat(64);
 const OWNER = "owner@example.com";
 
-function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResponse | ((op: string, p: any) => GatewayResponse | undefined) } = {}) {
+function setup(opts: { devNoAuth?: boolean; wants?: boolean; legacy?: boolean; inbox?: { entries: any[]; pending: any[]; unanswered: number }; pollBaseMs?: number; pollMaxMs?: number; calls?: GatewayResponse | ((op: string, p: any) => GatewayResponse | undefined) } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "console-"));
   const cfg = parseConfig({
     machines: { mac: target },
@@ -21,10 +21,7 @@ function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResp
   });
   const calls: Array<[string, string, any]> = [];
   let leaseCounter = 0;
-  const gateway: CallGateway = async (machine, op, params) => {
-    calls.push([machine, op, params]);
-    const over = typeof opts.calls === "function" ? opts.calls(op, params) : undefined;
-    if (over) return over;
+  const answer = (op: string, params: any): GatewayResponse => {
     switch (op) {
       case "overview": return { ok: true, result: { counts: { blocked: 1, working: 1 }, agents: [
         { pane_id: "w1:p1", name: "alpha", agent: "claude", status: "blocked", attention: "dialog", choices: { dialog_id: DIALOG, kind: "permission", go_ahead: 1, text: "Run ls?", options: [{ n: 1, label: "Yes" }, { n: 2, label: "No" }] } },
@@ -45,9 +42,21 @@ function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResp
         return { ok: true, result: { op } };
     }
   };
+  // The gateway as the console sees it: console_snapshot assembles the same sections the separate ops answer.
+  const gateway: CallGateway = async (machine, op, params) => {
+    calls.push([machine, op, params]);
+    const over = typeof opts.calls === "function" ? opts.calls(op, params) : undefined;
+    if (over) return over;
+    if (op === "console_snapshot") {
+      if (opts.legacy) return { ok: false, error: { code: "unknown_operation", message: "no such op" } };
+      const r = (o: string) => (answer(o, {}) as any).result;
+      return { ok: true, result: { agents: r("overview").agents, counts: r("overview").counts, supervisor: r("supervisor_status").agents, objectives: r("coord_snapshot").objectives, leases: r("lease_list").leases, claims: r("claims").claims, audit: r("audit_tail").entries, inbox: opts.inbox ?? { entries: [], pending: [], unanswered: 0 }, errors: {} } };
+    }
+    return answer(op, params);
+  };
   const pending = new PendingCalls();
   const bus = new ConsoleBus();
-  const con = createConsole({ cfg: { ...cfg, console: cfg.console! }, call: gateway, pending, bus, wantsMessages: () => opts.wants ?? false });
+  const con = createConsole({ cfg: { ...cfg, console: cfg.console! }, call: gateway, pending, bus, wantsMessages: () => opts.wants ?? false, pollBaseMs: opts.pollBaseMs, pollMaxMs: opts.pollMaxMs });
   const req = (path: string, init: RequestInit & { login?: string | null } = {}) => {
     const { login = OWNER, ...rest } = init;
     const headers = new Headers(rest.headers);
@@ -111,6 +120,100 @@ describe("console listener", () => {
   });
 });
 
+const entry = (over: Record<string, unknown>) => ({ id: "e1", kind: "finished", status: "unanswered", at: "2026-10-06T15:00:00Z", pane_id: "w1:p1", agent: "alpha", agent_kind: "claude", cwd: "/x", session: "s", lease: null, thread: null, task: null, text: "all done", ...over });
+
+describe("console snapshot path", () => {
+  test("one gateway call per machine per refresh, and it is console_snapshot", async () => {
+    const t = setup();
+    await t.req("/api/state?fresh=1");
+    expect(t.calls.map((c) => [c[0], c[1]])).toEqual([["mac", "console_snapshot"]]);
+  });
+  test("a gateway from before console_snapshot is read the old way, flagged, and not asked again", async () => {
+    const t = setup({ legacy: true });
+    const body: any = await (await t.req("/api/state?fresh=1")).json();
+    expect(body.machines.mac).toMatchObject({ ok: true, legacy: true });
+    expect(body.machines.mac.agents.length).toBe(2);
+    expect(t.calls.map((c) => c[1]).sort()).toEqual(["audit_tail", "claims", "console_snapshot", "coord_snapshot", "lease_list", "overview", "supervisor_status"]);
+    t.calls.length = 0;
+    await t.req("/api/state?fresh=1");
+    expect(t.calls.some((c) => c[1] === "console_snapshot")).toBe(false);
+  });
+  test("a snapshot that fails for another reason is the machine being down, not a reason to fall back", async () => {
+    const t = setup({ calls: (op) => (op === "console_snapshot" ? { ok: false, error: { code: "herdr_unavailable", message: "herdr down" } } : undefined) });
+    const body: any = await (await t.req("/api/state")).json();
+    expect(body.machines.mac).toMatchObject({ ok: false, error: { code: "herdr_unavailable" } });
+    expect(t.calls.map((c) => c[1])).toEqual(["console_snapshot"]);
+  });
+});
+
+describe("console inbox", () => {
+  const inbox = { unanswered: 2, pending: [], entries: [entry({ id: "t1", kind: "tell", pane_id: "w1:p2", agent: "beta", thread: "Run watcher", text: "need a decision" }), entry({ id: "f1" }), entry({ id: "old", status: "answered", pane_id: "w1:p2", resolved_by: "console" })] };
+
+  test("entries come through with where each could go, and the unanswered ones are in Needs you, one per agent", async () => {
+    const t = setup({ inbox });
+    const body: any = await (await t.req("/api/state")).json();
+    const entries = body.machines.mac.inbox.entries;
+    expect(entries.find((e: any) => e.id === "t1").delivery.route).toBe("thread");
+    expect(entries.find((e: any) => e.id === "f1").delivery).toMatchObject({ route: "none" });
+    expect(entries.find((e: any) => e.id === "f1").delivery.text).toContain("undelivered");
+    expect(entries.find((e: any) => e.id === "old").delivery.text).toBe("answered");
+    const needs = body.needs.filter((n: any) => n.kind === "inbox");
+    expect(needs.map((n: any) => n.title).sort()).toEqual(["alpha (w1:p1) finished", "beta (w1:p2) wrote to you"]);
+  });
+  test("a chat subscribed to agent events makes an unheld agent's entry deliverable, in words, not as delivered", async () => {
+    const t = setup({ inbox, wants: true });
+    const body: any = await (await t.req("/api/state")).json();
+    const d = body.machines.mac.inbox.entries.find((e: any) => e.id === "f1").delivery;
+    expect(d.route).toBe("events");
+    expect(d.text).not.toMatch(/delivered:|arrived/i);
+  });
+  test("it needs no chat card and no Events subscription: the entry is there with neither", async () => {
+    const t = setup({ inbox, wants: false });
+    const body: any = await (await t.req("/api/state")).json();
+    expect(body.machines.mac.inbox.unanswered).toBe(2);
+  });
+  test("dismissing passes the id and the agent, as the console", async () => {
+    const t = setup();
+    const res: any = await (await t.act({ action: "dismiss", machine: "mac", target: "w1:p1", id: "derived:w1:p1:x" })).json();
+    expect(res.ok).toBe(true);
+    expect(t.calls.find((c) => c[1] === "inbox_resolve")![2]).toEqual({ id: "derived:w1:p1:x", target: "w1:p1", origin: "console" });
+    await t.act({ action: "dismiss", machine: "mac", target: "w1:p2" });
+    expect(t.calls.filter((c) => c[1] === "inbox_resolve").at(-1)![2]).toEqual({ target: "w1:p2", origin: "console" });
+  });
+  test("deliveryOf never says an unanswered entry arrived", () => {
+    for (const e of [{ status: "unanswered", thread: "t" }, { status: "unanswered", thread: null }]) for (const ev of [true, false]) expect(deliveryOf(e, ev).text).not.toMatch(/^(delivered|sent|arrived)/i);
+  });
+});
+
+describe("console polling pace", () => {
+  test("backs off by doubling to a ceiling, and a change starts it over", () => {
+    expect([0, 1, 2, 3, 4, 5, 20].map((n) => pollDelay(n))).toEqual([4000, 8000, 16000, 32000, 60000, 60000, 60000]);
+    expect(pollDelay(0, 100, 1000)).toBe(100);
+    expect(pollDelay(3, 100, 1000)).toBe(800);
+  });
+  test("with a page open and nothing changing it looks less and less often; with no page open it does not look at all", async () => {
+    const quiet = setup({ pollBaseMs: 5, pollMaxMs: 40 });
+    quiet.con.start();
+    await Bun.sleep(120);
+    expect(quiet.calls.length).toBe(0);
+    quiet.con.stop();
+
+    const t = setup({ pollBaseMs: 5, pollMaxMs: 40 });
+    const off = t.bus.subscribe(() => {});
+    t.con.start();
+    await Bun.sleep(400);
+    // A fixed 5 ms pace would be about 80 looks; doubling to 40 ms is about a dozen.
+    expect(t.calls.length).toBeGreaterThan(3);
+    expect(t.calls.length).toBeLessThan(25);
+    const before = t.calls.length;
+    t.con.soon();
+    await Bun.sleep(150);
+    expect(t.calls.length).toBeGreaterThan(before);
+    t.con.stop();
+    off();
+  });
+});
+
 describe("console wiring", () => {
   test("the report sink hands each fresh report to the console once, and the bus keeps the notifier polling", async () => {
     const seen: string[] = [];
@@ -150,9 +253,9 @@ describe("console state", () => {
     const t = setup();
     const body: any = await (await t.req("/api/state")).json();
     // The audit read asks only for ops worth a line, so reads cannot fill its window.
-    const asked = t.calls.find((c) => c[1] === "audit_tail")![2];
-    expect(asked.ops).toContain("steer_agent");
-    expect(asked.ops).not.toContain("overview");
+    const asked = t.calls.find((c) => c[1] === "console_snapshot")![2];
+    expect(asked.audit_ops).toContain("steer_agent");
+    expect(asked.audit_ops).not.toContain("overview");
     const kinds = body.events.map((e: any) => e.kind);
     expect(kinds).toContain("prompt_agent");
     expect(kinds).not.toContain("overview");
@@ -165,7 +268,7 @@ describe("console state", () => {
     expect(again.events.filter((e: any) => e.kind === "steer_agent").length).toBe(1);
   });
   test("an offline machine is a need, not a crash", async () => {
-    const t = setup({ calls: (op) => (op === "overview" ? { ok: false, error: { code: "machine_offline", message: "mac did not answer" } } : undefined) });
+    const t = setup({ calls: (op) => (op === "console_snapshot" ? { ok: false, error: { code: "machine_offline", message: "mac did not answer" } } : undefined) });
     const body: any = await (await t.req("/api/state")).json();
     expect(body.machines.mac.ok).toBe(false);
     expect(body.needs[0]).toMatchObject({ kind: "machine", machine: "mac" });
@@ -297,7 +400,7 @@ describe("console model", () => {
     expect(auditToEvent("mac", { ts: "t", op: "read_agent", ok: true, args: {} })).toBeNull();
   });
   test("a stalled agent that is not watched yields no need and a clean machine yields none", () => {
-    const needs = buildNeeds({ mac: { ok: true, agents: [{ pane_id: "p", name: "a", status: "idle" }], counts: {}, objectives: [], claims: [], leases: [] } }, {}, []);
+    const needs = buildNeeds({ mac: { ok: true, agents: [{ pane_id: "p", name: "a", status: "idle" }], counts: {}, objectives: [], claims: [], leases: [], inbox: { entries: [], pending: [], unanswered: 0 } } }, {}, []);
     expect(needs).toEqual([]);
   });
 });
