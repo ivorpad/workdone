@@ -17,7 +17,7 @@ import { StateStore } from "./state.ts";
 
 // Fields worth keeping in the audit log. Commands are kept in full-ish: with exec
 // on, the log is the record of what ran.
-const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat"];
+const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat", "origin"];
 
 // Read-only ops only the console calls, every few seconds.
 const CONSOLE_READS = new Set(["lease_list", "claims", "audit_tail"]);

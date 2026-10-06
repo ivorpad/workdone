@@ -76,6 +76,10 @@ export function leaseOps(g: Gateway) {
   // new panes to afterwards, or null when leases are off or the op is not guarded.
   async function check(op: string, params: Params): Promise<string | null> {
     if (!g.cfg.leases) return null;
+    // The owner at the console acts over every lease and takes none: the message goes in
+    // stamped as the console's, and the thread that holds the agent keeps it. ChatGPT's
+    // tools never forward this field (the MCP server drops it).
+    if (params.origin === "console") return null;
     if (op === "spawn_agent") return params.lease === undefined ? null : need(params);
     const rule = GUARDED[op];
     const where = typeof rule === "function" ? rule(params) : rule;

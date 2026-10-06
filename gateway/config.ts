@@ -5,6 +5,12 @@ import { basename, dirname, join, resolve } from "node:path";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
 import { parseModels, type ModelList } from "./models.ts";
 
+function parseTerminalApp(v: unknown): string | null {
+  if (v === undefined || v === null || v === "") return null;
+  if (typeof v !== "string" || !(/^\/[\w .+\/-]+\.app$/.test(v) || /^[\w .+-]{1,40}$/.test(v))) throw new Error("terminalApp must be an app name such as Ghostty or the path to its .app");
+  return v;
+}
+
 export const GATEWAY_VERSION = "0.11.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
@@ -47,6 +53,8 @@ export interface GatewayConfig {
   // Run exec in a Herdr pane, in the owner's desktop session (keychain, .zshrc, ssh-agent),
   // instead of as the gateway's own ssh login.
   execInPane: boolean;
+  // The macOS app that hosts Herdr's window, raised by focus: an app name or a path to its .app. Unset: found from the process tree.
+  terminalApp: string | null;
   // Answer menus that only ask for a go-ahead (a permission, folder trust, an update
   // notice) for watched agents and while a tool call waits. On unless set to false.
   autoApprove: boolean;
@@ -186,6 +194,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     agentModels,
     browser: parseBrowser(c.browser),
     execInPane: c.execInPane === true,
+    terminalApp: parseTerminalApp(c.terminalApp),
     autoApprove: c.autoApprove !== false,
     leases: c.leases !== false,
     allowRawPaneRun: c.allowRawPaneRun === true,

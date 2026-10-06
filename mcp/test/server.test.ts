@@ -40,6 +40,16 @@ async function callTool(name: string, args: Record<string, unknown>) {
   return ((await res.json()) as any).result;
 }
 
+describe("owner override", () => {
+  test("a ChatGPT tool call cannot say it is the console: origin is dropped before the gateway", async () => {
+    calls.length = 0;
+    await callTool("steer_agent", { target: "w1:p1", text: "x", origin: "console" });
+    const forwarded = calls.find((c) => c[1] === "steer_agent");
+    expect(forwarded).toBeDefined();
+    expect("origin" in forwarded![2]).toBe(false);
+  });
+});
+
 describe("config", () => {
   test("refuses a non-loopback listener", () => {
     expect(() => parseConfig({ listen: { host: "0.0.0.0" }, ssh: {} })).toThrow(/loopback/);

@@ -110,7 +110,9 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       return { renamed: kind, id, label };
     },
 
-    // Brings something to the front in the Herdr window on the machine itself.
+    // Brings something to the front in the Herdr window on the machine itself, and (raise,
+    // on unless false) the terminal app that hosts that window. A failed raise is reported,
+    // not an error: the pane is focused either way.
     async focus(params) {
       const kind = need(params, "kind", ["pane", "tab", "workspace", "agent"] as const);
       const id = str(params, "id", TARGET_RE);
@@ -124,7 +126,8 @@ export function layoutOps(g: Gateway): Record<string, Op> {
         await members(kind, id);
         await g.herdr(`${kind}.focus`, kind === "tab" ? { tab_id: id } : { workspace_id: id });
       }
-      return { focused: kind, id };
+      const raised = optBool(params, "raise", true) ? await g.raiser(g.cfg).catch((err) => ({ raised: false, reason: String(err?.message ?? err).slice(0, 200) })) : null;
+      return { focused: kind, id, ...(raised ? { terminal: raised } : {}) };
     },
 
     async move_pane(params) {

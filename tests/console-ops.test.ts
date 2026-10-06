@@ -122,3 +122,38 @@ describe("console provenance", () => {
     expect(String(stamped("prompt_agent", { text: "x" }, "L-abc123", "t", at).text)).toContain("their ChatGPT chat (lease …c123");
   });
 });
+
+describe("owner override from the console", () => {
+  function steerSetup() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "owner-")));
+    const agent = { pane_id: "w1:p1", name: "fixer", agent: "claude", agent_status: "working", cwd: root, foreground_cwd: root };
+    const sent: Array<[string, any]> = [];
+    const herdr = async (method: string, params: any) => {
+      sent.push([method, params]);
+      if (method === "agent.get") return { agent };
+      if (method === "agent.list") return { agents: [agent] };
+      if (method === "agent.read") return { read: { text: "" } };
+      return {};
+    };
+    const gw = new Gateway(loadConfig({ allowedRoots: [root], stateDir: join(root, "s") }), herdr);
+    const used = new Date().toISOString();
+    mkdirSync(join(root, "s"), { recursive: true });
+    writeFileSync(join(root, "s", "leases.json"), JSON.stringify({ "L-abc12345": { label: "Run watcher", panes: ["w1:p1"], created: used, used } }));
+    return { gw, sent };
+  }
+  test("without origin console, an agent held by a thread refuses a call with no lease", async () => {
+    const { gw } = steerSetup();
+    await expect(gw.request("steer_agent", { target: "w1:p1", text: "x" })).rejects.toMatchObject({ code: "needs_lease" });
+    await expect(gw.request("steer_agent", { target: "w1:p1", text: "x", lease: "L-zzzzzz1" })).rejects.toMatchObject({ code: "lease_unknown" });
+  });
+  test("origin console acts over the lease, keeps it with its thread, and is stamped as the console", async () => {
+    const { gw, sent } = steerSetup();
+    const res: any = await gw.request("steer_agent", { target: "w1:p1", text: "use the cache", origin: "console" });
+    expect(res.steered).toBe(true);
+    const typed = sent.filter(([m]) => m === "pane.send_text" || m === "agent.prompt" || m === "pane.send_input").map(([, p]) => JSON.stringify(p)).join(" ");
+    expect(typed).toContain("Sent by the owner from the WorkDone console");
+    expect(typed).not.toContain("from their ChatGPT chat");
+    // The thread still holds the agent.
+    expect(gw.leases.labels().get("w1:p1")).toBe("Run watcher");
+  });
+});

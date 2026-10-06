@@ -23,6 +23,7 @@ import { findModel, modelArgs } from "./models.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
+import { raiseTerminal } from "./raise.ts";
 import { agentReply } from "./transcript.ts";
 import { agentView, paneView, resultView, textOf, watchInfo, withWatch } from "./views.ts";
 
@@ -59,6 +60,8 @@ export class Gateway {
   readonly state: StateStore;
   private extra: Record<string, Op>;
   readonly leases: ReturnType<typeof leaseOps>;
+  // Brings the terminal app that hosts Herdr to the front; replaceable so tests never touch the desktop.
+  raiser: typeof raiseTerminal = raiseTerminal;
 
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);

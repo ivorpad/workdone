@@ -9,7 +9,7 @@ import { EventsService, type EventPrincipal, type EventsOptions } from "./events
 import { sshGateway, type CallGateway } from "./gateway-client.ts";
 import { inbox } from "./inbox.ts";
 import { pendingCalls } from "./confirm.ts";
-import { ConsoleBus, ConsoleLeases, createConsole } from "./console.ts";
+import { ConsoleBus, createConsole } from "./console.ts";
 import { startNotifier, WAIT_MS } from "./notifier.ts";
 import { buildServer } from "./tools.ts";
 import { resolve } from "node:path";
@@ -242,7 +242,7 @@ if (import.meta.main) {
   const events = auth ? createEventService(cfg, call, auth, { onSubscribed }) : undefined;
   // The console hears every report the notifier takes and keeps the notifier polling while a page is open.
   const bus = new ConsoleBus();
-  const ownerConsole = cfg.console ? createConsole({ cfg: { ...cfg, console: cfg.console }, call, pending: pendingCalls, bus, leases: new ConsoleLeases(cfg.console.statePath, call), wantsMessages: (m) => events?.wantsMessages(m) ?? false }) : undefined;
+  const ownerConsole = cfg.console ? createConsole({ cfg: { ...cfg, console: cfg.console }, call, pending: pendingCalls, bus, wantsMessages: (m) => events?.wantsMessages(m) ?? false }) : undefined;
   const wanted = (m: string) => (events?.wantsMessages(m) ?? false) || bus.hasClients();
   const notifier = cfg.notify || events || ownerConsole ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events, undefined, (m, r) => { bus.publishReports(m, r); ownerConsole?.soon(); }), wanted) : null;
   bus.onConnect = () => { for (const m of Object.keys(cfg.machines)) notifier?.markPending(m); };

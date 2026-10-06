@@ -329,8 +329,8 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   focus: {
     title: "Focus",
-    description: "Bring a pane, tab, workspace or agent to the front in the Herdr window on that machine.",
-    input: { kind: z.enum(["pane", "tab", "workspace", "agent"]), id: z.string() },
+    description: "Bring a pane, tab, workspace or agent to the front in the Herdr window on that machine, and on macOS raise the terminal app that hosts it (terminal in the result says whether that worked).",
+    input: { kind: z.enum(["pane", "tab", "workspace", "agent"]), id: z.string(), raise: z.boolean().optional().describe("Also raise the terminal app (default true). false only switches the pane inside Herdr.") },
     annotations: WRITE,
   },
   move_pane: {
@@ -525,6 +525,8 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
       { title: def.title, description: def.description, inputSchema: z.object({ ...def.input, machine }), annotations: def.annotations },
       async (args: Record<string, unknown>) => {
         const { machine: chosen, ...params } = args ?? {};
+        // Only the owner's console may say it is the console: the gateway lets that origin act over every lease.
+        delete (params as Record<string, unknown>).origin;
         if (typeof chosen === "string" && !machines.includes(chosen)) {
           return render({ ok: false, error: { code: "unknown_machine", message: `machine ${chosen} is not configured; machines: ${machines.join(", ")}` } });
         }

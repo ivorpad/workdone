@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseConfig } from "../src/config.ts";
 import { PendingCalls } from "../src/confirm.ts";
-import { ConsoleBus, ConsoleLeases, createConsole } from "../src/console.ts";
+import { ConsoleBus, createConsole } from "../src/console.ts";
 import { createEndpoints, createReportSink } from "../src/server.ts";
 import { auditToEvent, buildNeeds, controlOf } from "../src/console-model.ts";
 import type { CallGateway, GatewayResponse } from "../src/gateway-client.ts";
@@ -17,11 +17,10 @@ function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResp
   const dir = mkdtempSync(join(tmpdir(), "console-"));
   const cfg = parseConfig({
     machines: { mac: target },
-    console: { port: 8790, statePath: join(dir, "console.json"), ...(opts.devNoAuth ? { devNoAuth: true } : { ownerLogins: [OWNER] }) },
+    console: { port: 8790, ...(opts.devNoAuth ? { devNoAuth: true } : { ownerLogins: [OWNER] }) },
   });
   const calls: Array<[string, string, any]> = [];
   let leaseCounter = 0;
-  let lapseNext = false;
   const gateway: CallGateway = async (machine, op, params) => {
     calls.push([machine, op, params]);
     const over = typeof opts.calls === "function" ? opts.calls(op, params) : undefined;
@@ -43,14 +42,12 @@ function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResp
       case "claim_agents": return { ok: true, result: { lease: params.lease ?? `L-console${++leaseCounter}`, label: "console", panes: params.targets ?? [], refused: [] } };
       case "owner_note": return { ok: true, result: { queued: true, held_by: "Run watcher" } };
       default:
-        if (lapseNext && (op === "steer_agent" || op === "prompt_agent") && params.lease === "L-console1") { lapseNext = false; return { ok: false, error: { code: "lease_unknown", message: "lapsed" } }; }
         return { ok: true, result: { op } };
     }
   };
   const pending = new PendingCalls();
   const bus = new ConsoleBus();
-  const leases = new ConsoleLeases(cfg.console!.statePath, gateway);
-  const con = createConsole({ cfg: { ...cfg, console: cfg.console! }, call: gateway, pending, bus, leases, wantsMessages: () => opts.wants ?? false });
+  const con = createConsole({ cfg: { ...cfg, console: cfg.console! }, call: gateway, pending, bus, wantsMessages: () => opts.wants ?? false });
   const req = (path: string, init: RequestInit & { login?: string | null } = {}) => {
     const { login = OWNER, ...rest } = init;
     const headers = new Headers(rest.headers);
@@ -59,7 +56,7 @@ function setup(opts: { devNoAuth?: boolean; wants?: boolean; calls?: GatewayResp
     return con.handler(new Request(`http://console.test${path}`, { ...rest, headers }));
   };
   const act = (body: unknown) => req("/api/act", { method: "POST", headers: { "x-workdone-console": "1", "content-type": "application/json" }, body: JSON.stringify(body) });
-  return { con, calls, pending, bus, req, act, dir, lapse: () => { lapseNext = true; } };
+  return { con, calls, pending, bus, req, act, dir };
 }
 
 describe("console access", () => {
@@ -78,8 +75,8 @@ describe("console access", () => {
     expect((await t.con.handler(new Request("http://evil.example/", { headers: { host: "evil.example" } }))).status).toBe(421);
   });
   test("config refuses a console with no owner and no devNoAuth, and a port clash", () => {
-    expect(() => parseConfig({ machines: { mac: target }, console: { port: 8790, statePath: "/x" } })).toThrow(/ownerLogins/);
-    expect(() => parseConfig({ machines: { mac: target }, console: { port: 8787, statePath: "/x", ownerLogins: [OWNER] } })).toThrow(/differ/);
+    expect(() => parseConfig({ machines: { mac: target }, console: { port: 8790 } })).toThrow(/ownerLogins/);
+    expect(() => parseConfig({ machines: { mac: target }, console: { port: 8787, ownerLogins: [OWNER] } })).toThrow(/differ/);
   });
   test("an Origin of null or garbage is refused, not a crash", async () => {
     const t = setup();
@@ -102,7 +99,7 @@ describe("console access", () => {
 describe("console listener", () => {
   test("is a third loopback endpoint, and the MCP endpoint never serves the console", async () => {
     const t = setup();
-    const cfg = parseConfig({ machines: { mac: target }, console: { port: 8790, statePath: join(t.dir, "x.json"), ownerLogins: [OWNER] } });
+    const cfg = parseConfig({ machines: { mac: target }, console: { port: 8790, ownerLogins: [OWNER] } });
     const endpoints = createEndpoints(cfg, async () => ({ ok: true, result: {} }), undefined, {}, t.con.handler);
     expect(endpoints.map((e) => [e.host, e.port])).toEqual([["127.0.0.1", 8787], ["127.0.0.1", 8790]]);
     const mcp = endpoints[0]!.handler;
@@ -174,40 +171,24 @@ describe("console state", () => {
 });
 
 describe("console actions", () => {
-  test("claims one lease labelled console and reuses it, then steers with console provenance", async () => {
+  test("steering goes in as the console with no lease, so a thread that holds the agent keeps it", async () => {
     const t = setup();
-    const claim: any = await (await t.act({ action: "claim", machine: "mac", target: "w1:p1" })).json();
-    expect(claim.ok).toBe(true);
-    const steer: any = await (await t.act({ action: "steer", machine: "mac", target: "w1:p1", text: "use the cache" })).json();
+    const steer: any = await (await t.act({ action: "steer", machine: "mac", target: "w1:p2", text: "use the cache" })).json();
     expect(steer.ok).toBe(true);
-    const claims = t.calls.filter((c) => c[1] === "claim_agents");
-    expect(claims[0]![2]).toMatchObject({ label: "console", targets: [] });
-    const sent = t.calls.find((c) => c[1] === "steer_agent")!;
-    expect(sent[2]).toMatchObject({ target: "w1:p1", text: "use the cache", origin: "console", lease: "L-console1" });
-    expect(await Bun.file(join(t.dir, "console.json")).json()).toEqual({ mac: "L-console1" });
+    const prompt: any = await (await t.act({ action: "prompt", machine: "mac", target: "w1:p1", text: "hello" })).json();
+    expect(prompt.ok).toBe(true);
+    expect(t.calls.map((c) => [c[1], c[2]])).toEqual([
+      ["steer_agent", { target: "w1:p2", text: "use the cache", origin: "console" }],
+      ["prompt_agent", { target: "w1:p1", text: "hello", origin: "console" }],
+    ]);
+    // Nothing is claimed, released or taken over.
+    expect(t.calls.some((c) => ["claim_agents", "release_agents"].includes(c[1]))).toBe(false);
+    expect(t.calls.every((c) => c[2].lease === undefined)).toBe(true);
   });
-  test("a lapsed lease is claimed again once and the call retried", async () => {
+  test("there is no claim, release or takeover action", async () => {
     const t = setup();
-    await t.act({ action: "claim", machine: "mac", target: "w1:p1" });
-    t.lapse();
-    const res: any = await (await t.act({ action: "prompt", machine: "mac", target: "w1:p1", text: "hi" })).json();
-    expect(res.ok).toBe(true);
-    const prompts = t.calls.filter((c) => c[1] === "prompt_agent");
-    expect(prompts.map((c) => c[2].lease)).toEqual(["L-console1", "L-console2"]);
-    expect(await Bun.file(join(t.dir, "console.json")).json()).toEqual({ mac: "L-console2" });
-  });
-  test("a lapse retries exactly once", async () => {
-    const t = setup({ calls: (op) => (op === "steer_agent" ? { ok: false, error: { code: "lease_unknown", message: "lapsed" } } : undefined) });
-    const res: any = await (await t.act({ action: "steer", machine: "mac", target: "w1:p1", text: "x" })).json();
-    expect(res.ok).toBe(false);
-    expect(t.calls.filter((c) => c[1] === "steer_agent").length).toBe(2);
-  });
-  test("a refused claim says who holds the agent, and take over passes take_over", async () => {
-    const t = setup({ calls: (op, p) => (op === "claim_agents" && p.targets?.length ? { ok: true, result: { lease: "L-console1", refused: [{ pane_id: "w1:p2", held_by: "Run watcher" }] } } : undefined) });
-    const res: any = await (await t.act({ action: "claim", machine: "mac", target: "w1:p2" })).json();
-    expect(res.error.code).toBe("held_by_other");
-    await t.act({ action: "claim", machine: "mac", target: "w1:p2", take_over: true });
-    expect(t.calls.filter((c) => c[1] === "claim_agents").at(-1)![2].take_over).toBe(true);
+    for (const action of ["claim", "release"]) expect((await t.act({ action, machine: "mac", target: "w1:p1" })).status).toBe(400);
+    expect(t.calls.length).toBe(0);
   });
   test("an answer is bound to the menu shown and a gated one is held for a second click", async () => {
     const t = setup({ calls: (op, p) => (op === "answer_agent" && p.confirm !== true ? { ok: false, error: { code: "needs_confirmation", message: "this menu asks to run a git push, which is the owner's call: x", details: { dialog_id: DIALOG, menu: "git push?" } } } : undefined) });
@@ -222,7 +203,8 @@ describe("console actions", () => {
     const done: any = await (await t.act({ action: "confirm", machine: "mac", pending: listed[0]!.pending, approve: true })).json();
     expect(done.ok).toBe(true);
     const last = t.calls.filter((c) => c[1] === "answer_agent").at(-1)!;
-    expect(last[2]).toMatchObject({ confirm: true, expected_dialog_id: DIALOG, target: "w1:p1", lease: "L-console1" });
+    expect(last[2]).toMatchObject({ confirm: true, expected_dialog_id: DIALOG, target: "w1:p1", origin: "console" });
+    expect(last[2].lease).toBeUndefined();
     expect(t.pending.list().length).toBe(0);
     // Single use: a second click finds nothing.
     expect((await t.act({ action: "confirm", machine: "mac", pending: listed[0]!.pending, approve: true })).status).toBe(404);
@@ -261,12 +243,12 @@ describe("console actions", () => {
     expect(t.calls.length).toBe(0);
   });
   test("its own actions reach the feed at once, flagged when refused", async () => {
-    const t = setup({ calls: (op) => (op === "steer_agent" ? { ok: false, error: { code: "not_your_agent", message: "held" } } : undefined) });
+    const t = setup({ calls: (op) => (op === "steer_agent" ? { ok: false, error: { code: "agent_blocked", message: "menu up" } } : undefined) });
     await t.act({ action: "steer", machine: "mac", target: "w1:p2", text: "x" });
     const ev = t.bus.recent().find((e) => e.kind === "steer")!;
     expect(ev.source).toBe("console");
     expect(ev.flag).toBe(true);
-    expect(ev.text).toContain("not_your_agent");
+    expect(ev.text).toContain("agent_blocked");
   });
 });
 
@@ -300,18 +282,17 @@ describe("console stream", () => {
 });
 
 describe("console model", () => {
-  test("controlOf tells console, thread and nobody apart", () => {
-    const leases = [{ label: "console", panes: ["a"], mine: true }, { label: "Run watcher", panes: ["b"], mine: false }];
-    expect(controlOf("a", leases).by).toBe("console");
+  test("controlOf says which thread holds a pane, or nobody", () => {
+    const leases = [{ label: "Run watcher", panes: ["b"] }];
     expect(controlOf("b", leases)).toEqual({ by: "thread", label: "Run watcher" });
     expect(controlOf("c", leases).by).toBe("none");
   });
-  test("a takeover is flagged and the console's own lease lines are skipped", () => {
-    const took = auditToEvent("mac", { ts: "t", op: "claim_agents", ok: true, args: { lease: "…abcd", take_over: true, target: "w1:p1" } }, "…zzzz");
+  test("a takeover by a thread is flagged and the console's own calls are not shown twice", () => {
+    const took = auditToEvent("mac", { ts: "t", op: "claim_agents", ok: true, args: { lease: "…abcd", take_over: true, target: "w1:p1" } });
     expect(took).toMatchObject({ flag: true, source: "chatgpt" });
     expect(took!.text).toContain("took over");
-    expect(auditToEvent("mac", { ts: "t", op: "steer_agent", ok: true, args: { lease: "…zzzz", target: "w1:p1" } }, "…zzzz")).toBeNull();
-    expect(auditToEvent("mac", { ts: "t", op: "read_agent", ok: true, args: {} }, null)).toBeNull();
+    expect(auditToEvent("mac", { ts: "t", op: "steer_agent", ok: true, args: { origin: "console", target: "w1:p1" } })).toBeNull();
+    expect(auditToEvent("mac", { ts: "t", op: "read_agent", ok: true, args: {} })).toBeNull();
   });
   test("a stalled agent that is not watched yields no need and a clean machine yields none", () => {
     const needs = buildNeeds({ mac: { ok: true, agents: [{ pane_id: "p", name: "a", status: "idle" }], counts: {}, objectives: [], claims: [], leases: [] } }, {}, []);

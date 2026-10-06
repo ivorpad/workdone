@@ -1,16 +1,15 @@
 // The owner's console: one page that shows every agent on every machine, who steers it,
 // what waits on the owner, and what each controller just did, and lets the owner answer,
-// steer, take over or leave a note for the chat. It is a client of the same gateway
-// calls ChatGPT's tools make, under its own lease ("console"), so a thread that tries to
-// steer an agent the console holds gets not_your_agent, and the reverse.
+// steer or leave a note for the chat. It calls the same gateway ops ChatGPT's tools do,
+// as the owner: origin "console" acts over every lease and takes none, so a thread that
+// holds an agent keeps it and the message is stamped as the console's. Nothing here
+// claims, releases or takes over.
 //
 // Third loopback listener. Tailnet exposure is `tailscale serve`, which adds the
 // caller's Tailscale-User-Login header; only configured owner logins pass. A process on
 // this box could forge that header (agents run here), the same trust the SSH key and
 // config already extend to it: docs/console.md.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
 import type { ConsoleConfig, OvhConfig } from "./config.ts";
 import { holdIfGated, type PendingCalls } from "./confirm.ts";
 import { TOUCH, auditToEvent, buildNeeds, controlOf, reportToEvent, type ConsoleEvent, type MachineState } from "./console-model.ts";
@@ -21,6 +20,8 @@ const HTML = await Bun.file(new URL("./console.html", import.meta.url)).text();
 const RING = 300;
 const REFRESH_MS = 10_000;
 const FRESH_MS = 3_000;
+// What the gateway reads as the owner at the console: acts over every lease, takes none.
+const CONSOLE = "console";
 const TARGET = /^[A-Za-z0-9_.:-]{1,80}$/;
 const LOOPBACK_HOSTS = ["127.0.0.1", "localhost", "[::1]"];
 
@@ -63,57 +64,11 @@ export class ConsoleBus {
   }
 }
 
-// The console's lease on each machine. Guarded gateway ops need one; it lapses after a day
-// without use, so a lapsed lease is claimed again once and the call retried (the gateway
-// refuses before running anything, so a retry cannot repeat an action).
-export class ConsoleLeases {
-  private ids: Record<string, string> = {};
-  constructor(private path: string | null, private call: CallGateway) {
-    if (path) try { this.ids = JSON.parse(readFileSync(path, "utf8")); } catch { /* first run */ }
-  }
-
-  peek(machine: string): string | undefined { return this.ids[machine]; }
-  tail(machine: string): string | null { const id = this.ids[machine]; return id ? "…" + id.slice(-4) : null; }
-
-  private save() {
-    if (!this.path) return;
-    try {
-      mkdirSync(dirname(this.path), { recursive: true, mode: 0o700 });
-      writeFileSync(this.path, JSON.stringify(this.ids), { mode: 0o600 });
-    } catch { /* a lease that is not saved is claimed again after a restart */ }
-  }
-
-  async ensure(machine: string, fresh = false): Promise<GatewayResponse & { lease?: string }> {
-    const have = this.ids[machine];
-    if (have && !fresh) return { ok: true, result: null, lease: have };
-    const res = await this.call(machine, "claim_agents", { label: "console", targets: [] });
-    if (!res.ok) return res;
-    const lease = (res.result as any)?.lease;
-    if (typeof lease !== "string") return { ok: false, error: { code: "gateway_bad_response", message: "claim_agents returned no lease" } };
-    this.ids[machine] = lease;
-    this.save();
-    return { ok: true, result: res.result, lease };
-  }
-
-  async run(machine: string, op: string, params: Record<string, unknown>): Promise<GatewayResponse> {
-    const first = await this.ensure(machine);
-    if (!first.ok) return first;
-    let res = await this.call(machine, op, { ...params, lease: first.lease });
-    if (!res.ok && (res.error.code === "lease_unknown" || res.error.code === "needs_lease")) {
-      const again = await this.ensure(machine, true);
-      if (!again.ok) return again;
-      res = await this.call(machine, op, { ...params, lease: again.lease });
-    }
-    return res;
-  }
-}
-
 export interface ConsoleDeps {
   cfg: OvhConfig & { console: ConsoleConfig };
   call: CallGateway;
   pending: PendingCalls;
   bus: ConsoleBus;
-  leases: ConsoleLeases;
   // Whether a chat has a native agent.message subscription on this machine (Work chats).
   wantsMessages?: (machine: string) => boolean;
   now?: () => number;
@@ -124,7 +79,7 @@ const fail = (code: string, message: string): GatewayResponse => ({ ok: false, e
 const json = (body: unknown, status = 200) => Response.json(body, { status, headers: { "cache-control": "no-store" } });
 
 export function createConsole(deps: ConsoleDeps) {
-  const { cfg, call, pending, bus, leases } = deps;
+  const { cfg, call, pending, bus } = deps;
   const now = deps.now ?? Date.now;
   const machines = Object.keys(cfg.machines);
   let snapshot: { at: number; body: any } | null = null;
@@ -133,10 +88,9 @@ export function createConsole(deps: ConsoleDeps) {
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function readMachine(machine: string): Promise<{ state: MachineState; supervisor: Record<string, any> }> {
-    const mine = leases.peek(machine);
     const [overview, sup, coord, leaseList, claims, audit] = await Promise.all([
       call(machine, "overview", {}), call(machine, "supervisor_status", {}), call(machine, "coord_snapshot", { view: "resume" }),
-      call(machine, "lease_list", mine ? { lease: mine } : {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60, ops: [...TOUCH] }),
+      call(machine, "lease_list", {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60, ops: [...TOUCH] }),
     ]);
     // The overview is the one that says the machine is up. Without it nothing else is worth showing.
     if (!overview.ok) return { state: { ok: false, error: { code: overview.error.code, message: overview.error.message }, agents: [], counts: {}, objectives: [], claims: [], leases: [] }, supervisor: {} };
@@ -146,7 +100,7 @@ export function createConsole(deps: ConsoleDeps) {
     if (sup.ok) for (const s of (sup.result as any)?.agents ?? []) supervisor[s.pane_id] = { state: s.state, recommendations: s.recommendations };
     if (audit.ok) {
       for (const e of (audit.result as any)?.entries ?? []) {
-        const ev = auditToEvent(machine, e, leases.tail(machine));
+        const ev = auditToEvent(machine, e);
         if (ev) bus.publish(ev, `audit:${machine}:${e.ts}:${e.op}:${e.id ?? ""}`);
       }
     }
@@ -215,23 +169,10 @@ export function createConsole(deps: ConsoleDeps) {
     const clip = (s: string) => (s.length > 120 ? s.slice(0, 119) + "…" : s);
     let res: GatewayResponse;
     switch (action) {
-      case "claim": {
-        const first = await leases.ensure(machine);
-        if (!first.ok) { res = first; break; }
-        res = await leases.run(machine, "claim_agents", { targets: [target], take_over: body.take_over === true });
-        const refused = (res.ok && (res.result as any)?.refused?.length) ? (res.result as any).refused : [];
-        if (res.ok && refused.length) res = { ok: false, error: { code: "held_by_other", message: `${target} is held by "${refused[0].held_by}". Take over to move it here.` } };
-        log("claim", `${res.ok ? (body.take_over === true ? "took over" : "took control of") : "could not take control of"} ${target}`, body.take_over === true);
-        break;
-      }
-      case "release":
-        res = await leases.run(machine, "release_agents", { targets: [target] });
-        log("release", `released ${target}`);
-        break;
       case "prompt":
       case "steer": {
         if (!text.trim()) return { status: 400, body: fail("invalid_params", "text is empty") };
-        res = await leases.run(machine, action === "steer" ? "steer_agent" : "prompt_agent", { target, text, origin: "console" });
+        res = await call(machine, action === "steer" ? "steer_agent" : "prompt_agent", { target, text, origin: CONSOLE });
         log(action, `${res.ok ? (action === "steer" ? "steered" : "prompted") : `refused (${res.error.code}):`} ${target}: ${clip(text)}`, !res.ok);
         break;
       }
@@ -241,9 +182,8 @@ export function createConsole(deps: ConsoleDeps) {
         const params: Record<string, unknown> = { target, expected_dialog_id: body.dialog_id };
         if (Array.isArray(body.options)) params.options = body.options; else params.option = body.option;
         if (text.trim()) params.text = text;
-        const answered = await leases.run(machine, "answer_agent", params);
-        // The held call keeps the console's lease, so approving it later acts as the console.
-        res = holdIfGated(pending, machine, "answer_agent", { ...params, lease: leases.peek(machine) }, answered);
+        params.origin = CONSOLE;
+        res = holdIfGated(pending, machine, "answer_agent", params, await call(machine, "answer_agent", params));
         log("answer", `${res.ok ? "answered" : res.error.code === "needs_confirmation" ? "held for approval" : `refused (${res.error.code}):`} menu on ${target}`, !res.ok && res.error.code !== "needs_confirmation");
         break;
       }
@@ -258,11 +198,11 @@ export function createConsole(deps: ConsoleDeps) {
         break;
       }
       case "nudge":
-        res = await leases.run(machine, "supervisor_nudge", { target });
+        res = await call(machine, "supervisor_nudge", { target, origin: CONSOLE });
         log("nudge", `${res.ok ? "nudged" : `nudge refused (${res.error.code}):`} ${target}`, !res.ok);
         break;
       case "close":
-        res = await leases.run(machine, "close", { kind: "pane", id: target });
+        res = await call(machine, "close", { kind: "pane", id: target, origin: CONSOLE });
         log("close", `${res.ok ? "closed" : `close refused (${res.error.code}):`} ${target}`, !res.ok);
         break;
       case "note": {

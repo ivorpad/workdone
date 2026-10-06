@@ -21,6 +21,6 @@
     }
   },
   "defaultMachine": "mac",
-  "console": { "port": 8790, "ownerLogins": ["you@example.com"], "statePath": "/var/lib/herdr-mcp/console-leases.json" },
+  "console": { "port": 8790, "ownerLogins": ["you@example.com"] },
   "requestTimeoutMs": 130000
 }

@@ -32,7 +32,6 @@ export interface OvhConfig {
 export interface ConsoleConfig {
   port: number;
   ownerLogins: string[];
-  statePath: string;
   devNoAuth: boolean;
 }
 
@@ -149,7 +148,7 @@ function parseConsole(raw: any, listenPort: unknown, authPort: number | undefine
   const logins = raw.ownerLogins ?? [];
   if (!Array.isArray(logins) || !logins.every((l) => typeof l === "string" && /^[^\s@]+@[^\s@]+$/.test(l))) throw new Error("console.ownerLogins must be tailnet login names such as you@example.com");
   if (!devNoAuth && logins.length === 0) throw new Error("console needs ownerLogins (the tailnet identities allowed in), or devNoAuth: true for local use only");
-  return { port: raw.port, ownerLogins: logins.map((l: string) => l.toLowerCase()), statePath: absolutePath(raw.statePath, "console.statePath"), devNoAuth };
+  return { port: raw.port, ownerLogins: logins.map((l: string) => l.toLowerCase()), devNoAuth };
 }
 
 // Every option that matters is explicit, and -F /dev/null keeps any ssh_config

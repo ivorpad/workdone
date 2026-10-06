@@ -32,7 +32,8 @@ export interface ConsoleEvent {
   at: string;
   machine: string | null;
   // agent: what Herdr's watcher reported. chatgpt: a call made under a ChatGPT thread's
-  // lease. console: this console. gateway: a call without a lease, or an automatic answer.
+  // lease. console: the owner here (its calls are published as they happen). gateway: a
+  // call without a lease, or an automatic answer.
   source: "agent" | "chatgpt" | "console" | "gateway";
   kind: string;
   agent: string | null;
@@ -46,12 +47,11 @@ const clip = (s: unknown, n: number) => {
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 };
 
-// The console's own lease on a machine marks the agents it holds. A pane held by another
-// lease is "thread" with that lease's label; a pane nobody holds is "none".
-export function controlOf(paneId: string, leases: Array<{ label: string; panes: string[]; mine: boolean }>) {
+// Which ChatGPT thread holds a pane, by its lease label, or nobody. The console holds nothing:
+// it acts over leases as the owner, so this only says who else is steering.
+export function controlOf(paneId: string, leases: Array<{ label: string; panes: string[] }>) {
   const held = leases.find((l) => l.panes.includes(paneId));
-  if (!held) return { by: "none" as const, label: null };
-  return held.mine ? { by: "console" as const, label: held.label } : { by: "thread" as const, label: held.label };
+  return held ? { by: "thread" as const, label: held.label } : { by: "none" as const, label: null };
 }
 
 export function buildNeeds(machines: Record<string, MachineState>, supervisor: Record<string, Record<string, any>>, pending: Array<{ pending: string; machine: string; op: string; reason: string; detail: string }>): Need[] {
@@ -94,15 +94,14 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
 // Gateway ops worth a line in the feed. Reads and the notifier's own polling are left out.
 export const TOUCH = new Set(["prompt_agent", "steer_agent", "answer_agent", "claim_agents", "release_agents", "send_agent_keys", "spawn_agent", "start_agent", "close", "supervisor_nudge", "set_agent_approval", "owner_note", "auto_approve", "coord_update", "send_pane_input", "run_command_in_pane"]);
 
-// One audit line as a feed event, or null. consoleTail is "…xxxx", the tail of the lease
-// this console holds on that machine: its own calls are published when they happen, so
-// the audit copy of them is skipped.
-export function auditToEvent(machine: string, e: Record<string, any>, consoleTail: string | null): Omit<ConsoleEvent, "id"> | null {
+// One audit line as a feed event, or null. The console's own calls (audit args origin
+// console) are published when they happen, so their audit copy is skipped.
+export function auditToEvent(machine: string, e: Record<string, any>): Omit<ConsoleEvent, "id"> | null {
   const op = typeof e.op === "string" ? e.op : null;
   if (!op || !TOUCH.has(op)) return null;
   const args = e.args ?? {};
+  if (args.origin === "console") return null;
   const lease: string | null = typeof args.lease === "string" ? args.lease : null;
-  if (lease && consoleTail && lease === consoleTail) return null;
   const target = args.target ?? args.pane_id ?? args.id ?? null;
   const source: ConsoleEvent["source"] = lease ? "chatgpt" : "gateway";
   const failed = e.ok === false;

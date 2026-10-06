@@ -245,7 +245,7 @@ function renderGroups() {
     return '<div class="group-h"><b>' + esc(o) + "</b><span>" + g.length + " agent" + (g.length === 1 ? "" : "s") + "</span></div>" + g.map((a) => {
       const [w, c] = why(a);
       const k = key(a.machine, a.pane_id);
-      const ctl = a.control && a.control.by === "console" ? "console" : a.control && a.control.by === "thread" ? "thread: " + clip(a.control.label, 24) : "";
+      const ctl = a.control && a.control.by === "thread" ? "thread: " + clip(a.control.label, 24) : "";
       return '<button type="button" class="row" data-open="' + esc(k) + '" aria-selected="' + (k === sel) + '"><div class="nm"><b>' + esc(a.name || a.pane_id) + "</b><small>" + esc(a.machine) + " · " + esc(a.agent || "") + (ctl ? " · " + esc(ctl) : "") + "</small></div>" + pill(a) + '<div class="why ' + c + '">' + esc(w) + "</div></button>";
     }).join("");
   }).join("") : '<div class="empty">No agents match this filter.</div>';
@@ -257,15 +257,11 @@ function renderDetail() {
   if (!a) { box.innerHTML = '<div class="empty" style="padding:0">Pick an agent from the list.</div>'; return; }
   const k = key(a.machine, a.pane_id);
   const ctl = a.control || { by: "none" };
-  const mine = ctl.by === "console";
-  let controlHtml;
-  if (mine) controlHtml = '<div><b>Steered by</b> the console</div><div class="row-acts"><button type="button" class="btn" data-release="' + esc(k) + '">Release</button></div>';
-  else if (ctl.by === "thread") controlHtml = '<div><b>Steered by</b> ChatGPT thread “' + esc(ctl.label) + '”</div><div class="row-acts"><button type="button" class="btn" data-claim="' + esc(k) + '" data-take="1">Take over from that thread</button></div>';
-  else controlHtml = '<div><b>Steered by</b> nobody</div><div class="row-acts"><button type="button" class="btn" data-claim="' + esc(k) + '">Take control</button></div>';
+  const controlHtml = ctl.by === "thread" ? '<div><b>ChatGPT thread</b> “' + esc(ctl.label) + '” holds this agent</div><div class="hint">Your messages go in as the owner and do not take it from that thread.</div>' : '<div><b>No ChatGPT thread</b> holds this agent</div>';
   const working = a.status === "working", menu = a.attention === "dialog";
-  const canSend = mine && !menu;
+  const canSend = !menu;
   const sendLabel = working ? "Steer" : "Send prompt";
-  const hint = !mine ? "Take control first. Until then a ChatGPT thread or nobody steers this agent." : menu ? "The agent shows a menu. Answer it under Needs you first." : working ? "Queued until the agent's current tool call ends." : "Starts a new turn.";
+  const hint = menu ? "The agent shows a menu. Answer it under Needs you first." : ctl.by === "thread" ? "Sent as the owner, over the thread that holds it. The message says it came from the console." : working ? "Queued until the agent's current tool call ends." : "Starts a new turn.";
   const sup = a.supervisor && a.supervisor.recommendations && a.supervisor.recommendations[0];
   const canNudge = sup && sup.action === "nudge_ship_slice";
   const d = drafts[k] || {};
@@ -279,9 +275,9 @@ function renderDetail() {
     "<dt>Directory</dt><dd class=m>" + esc(a.cwd || "") + "</dd></dl>" +
     '<div class="quote">' + esc(clip(a.dialog || (a.last_reply && a.last_reply.text) || (a.screen_tail || ""), 1200) || "No reply yet.") + "</div>" +
     '<div class="field"><label for="send">Message to the agent</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + '</button>' +
-    (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '"' + (mine ? "" : " disabled") + ">Send the one nudge</button>" : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
+    (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '">Send the one nudge</button>' : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
     '<div class="field"><label for="note">Note for the chat (about this agent)</label><textarea id="note" data-draft="' + esc(k) + ':note">' + esc(d.note || "") + '</textarea><div class="row-acts"><button type="button" class="btn" data-note="' + esc(k) + '">Leave note</button></div><div class="hint" id="note-result">Goes to the chat that holds this agent. It says below whether anything can deliver it.</div></div>' +
-    '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '"' + (mine ? "" : " disabled") + ">" + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
+    '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '">' + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
 }
 
 function renderObjectives() {
@@ -321,8 +317,6 @@ document.addEventListener("click", async (ev) => {
   if (t.id === "refresh") { await load(true); return; }
   if (t.id === "flagged") { flaggedOnly = !flaggedOnly; t.setAttribute("aria-pressed", String(flaggedOnly)); renderFeed(); return; }
   if (d.focus) { const [m, p] = split(d.focus); await act({ action: "focus", machine: m, target: p }, () => toast("Focused in Herdr on " + m + ".")); return; }
-  if (d.claim) { const [m, p] = split(d.claim); await act({ action: "claim", machine: m, target: p, take_over: d.take === "1" }, () => toast(d.take === "1" ? "Taken over. That thread now gets not_your_agent." : "You steer this agent now.")); return; }
-  if (d.release) { const [m, p] = split(d.release); await act({ action: "release", machine: m, target: p }, () => toast("Released. Nobody steers it until a thread claims it.")); return; }
   if (d.send) {
     const [m, p] = split(d.send); const a = agents().find((x) => x.machine === m && x.pane_id === p); const text = ($("send") || {}).value || "";
     if (!text.trim()) return toast("Write the message first.", true);
