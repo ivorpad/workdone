@@ -116,6 +116,7 @@ textarea{width:100%;min-height:64px;resize:vertical;background:var(--bg);border:
       <div id="groups"></div>
     </section>
     <div class="side">
+      <section class="panel" aria-labelledby="ib-h"><h2 id="ib-h"><span>Inbox <span id="ib-n" class="pill idle"></span></span><span><button class="chip" id="ib-all" type="button" aria-pressed="false">Show answered</button></span></h2><div id="inbox-note" class="hint" style="padding:0 14px 6px" hidden></div><div class="feed" id="inbox"></div></section>
       <section class="panel" aria-labelledby="dt-h"><h2 id="dt-h">Selected agent</h2><div class="detail" id="detail"></div></section>
       <section class="panel" aria-labelledby="ob-h"><h2 id="ob-h">Objectives</h2><div id="objectives"></div></section>
       <section class="panel" aria-labelledby="cl-h"><h2 id="cl-h">Singleton files held</h2><div id="claims"></div></section>
@@ -182,7 +183,7 @@ function render() {
   if (!S) return;
   // A redraw would drop the caret of someone typing a message: the detail pane waits until they leave the box.
   const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
-  renderMachines(); renderNeeds(); renderChips(); renderGroups(); if (!typing) renderDetail(); renderObjectives(); renderClaims(); renderFeed();
+  renderMachines(); renderNeeds(); renderInbox(); renderChips(); renderGroups(); if (!typing) renderDetail(); renderObjectives(); renderClaims(); renderFeed();
 }
 
 function renderMachines() {
@@ -207,7 +208,8 @@ function renderNeeds() {
     } else if (n.kind === "approve") {
       body += '<div class="acts"><button type="button" class="btn primary" data-approve="' + esc(n.pending) + '">Approve</button><button type="button" class="btn" data-decline="' + esc(n.pending) + '">Decline</button></div>';
     } else if (n.pane_id) {
-      body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button></div>';
+      if (n.kind === "inbox") body += '<div class="acts"><button type="button" class="btn" data-reply="' + esc(key(n.machine, n.pane_id)) + '">Reply</button><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button><button type="button" class="btn" data-dismiss="' + esc(JSON.stringify({ m: n.machine, p: n.pane_id })) + '">Dismiss all</button></div>';
+      else body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button></div>';
     }
     return "<li" + target + '><span class="pill ' + esc(n.level) + '">' + (n.level === "act" ? "act" : "check") + '</span><div><b>' + esc(n.title) + '</b><div class="detail">' + (n.kind === "menu" ? "" : esc(n.detail)) + "</div></div>" + body + "</li>";
   }).join("");
@@ -282,6 +284,37 @@ function renderDetail() {
     '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '">' + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
 }
 
+let showAnswered = false;
+function ago(iso) {
+  const t = Date.parse(iso); if (isNaN(t)) return "";
+  const m = Math.max(0, Math.round((Date.now() - t) / 60000));
+  return m < 1 ? "now" : m < 60 ? m + " min ago" : m < 1440 ? Math.round(m / 60) + " h ago" : Math.round(m / 1440) + " d ago";
+}
+function renderInbox() {
+  const rows = Object.entries(S.machines).flatMap(([m, s]) => [].concat(((s.inbox && s.inbox.pending) || []), ((s.inbox && s.inbox.entries) || [])).map((e) => ({ ...e, machine: m })));
+  const open = rows.filter((e) => e.status === "unanswered" || e.status === "pending");
+  $("ib-n").textContent = open.filter((e) => e.status === "unanswered").length + " unanswered" + (open.some((e) => e.status === "pending") ? " · " + open.filter((e) => e.status === "pending").length + " owed" : "");
+  const legacy = Object.entries(S.machines).filter(([, s]) => s.legacy).map(([m]) => m);
+  $("inbox-note").hidden = !legacy.length;
+  $("inbox-note").textContent = legacy.length ? legacy.join(", ") + ": gateway is from before the inbox. Deploy it to see what agents told you there." : "";
+  const shown = rows.filter((e) => showAnswered || e.status === "unanswered" || e.status === "pending").sort((a, b) => String(b.at).localeCompare(String(a.at)));
+  $("inbox").innerHTML = shown.length ? shown.map((e) => {
+    const who = (e.agent || e.pane_id) + " (" + e.pane_id + ")";
+    const k = key(e.machine, e.pane_id);
+    const r = e.result;
+    const kind = { tell: "wrote to you", result: "result", finished: "finished", gone: "exited", question: "asked", }[e.kind] || e.kind;
+    const pillC = e.status === "unanswered" ? "warn" : e.status === "pending" ? "idle" : "ok";
+    const label = e.status === "pending" ? "owed" : e.status === "answered" ? "answered by " + (e.resolved_by || "?") : e.status;
+    const ctx = [e.task ? e.task.objective + " " + e.task.id : "", e.cwd ? e.cwd.split("/").slice(-1)[0] : "", r && r.commit ? "commit " + r.commit.slice(0, 8) : "", r && r.branch ? r.branch : "", e.derived ? "from live status, not yet recorded" : ""].filter(Boolean).join(" · ");
+    const delivery = e.delivery && e.status === "unanswered" ? '<div class="hint">' + esc(e.delivery.text) + "</div>" : e.status === "pending" ? '<div class="hint">Asked for with reply: true; not back yet' + (e.thread ? " (thread “" + esc(e.thread) + "”)" : "") + ".</div>" : "";
+    return '<div class="ev" style="grid-template-columns:auto minmax(0,1fr);padding:8px 14px;border-bottom:1px solid var(--line)"><span class="pill ' + pillC + '">' + esc(label) + '</span><div style="min-width:0"><div><b>' + esc(who) + "</b> " + esc(kind) + ' <small style="color:var(--muted)">' + esc(ago(e.at)) + " · " + esc(e.machine) + "</small></div>" +
+      (e.text && e.status !== "pending" ? '<div class="detail" style="color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere">' + esc(clip(e.text, 600)) + "</div>" : "") +
+      (ctx ? '<div class="hint">' + esc(ctx) + "</div>" : "") + delivery +
+      '<div class="row-acts" style="margin-top:4px"><button type="button" class="btn" data-reply="' + esc(k) + '">Reply</button>' +
+      (e.status === "unanswered" ? '<button type="button" class="btn" data-dismiss="' + esc(JSON.stringify({ m: e.machine, p: e.pane_id, i: e.id })) + '">Dismiss</button>' : "") + "</div></div></div>";
+  }).join("") : '<div class="empty">' + (showAnswered ? "Nothing yet." : "Nothing unanswered.") + "</div>";
+}
+
 function renderObjectives() {
   const rows = Object.entries(S.machines).flatMap(([m, s]) => (s.objectives || []).map((o) => ({ ...o, machine: m })));
   $("objectives").innerHTML = rows.length ? rows.map((o) => {
@@ -318,6 +351,9 @@ document.addEventListener("click", async (ev) => {
   if (d.open) { sel = d.open; renderGroups(); renderDetail(); return; }
   if (t.id === "refresh") { await load(true); return; }
   if (t.id === "flagged") { flaggedOnly = !flaggedOnly; t.setAttribute("aria-pressed", String(flaggedOnly)); renderFeed(); return; }
+  if (t.id === "ib-all") { showAnswered = !showAnswered; t.setAttribute("aria-pressed", String(showAnswered)); t.textContent = showAnswered ? "Hide answered" : "Show answered"; renderInbox(); return; }
+  if (d.reply) { sel = d.reply; render(); const box = $("send"); if (box) box.focus(); return; }
+  if (d.dismiss) { const x = JSON.parse(d.dismiss); await act({ action: "dismiss", machine: x.m, target: x.p, ...(x.i ? { id: x.i } : {}) }, () => toast("Dismissed.")); return; }
   if (d.focus) { const [m, p] = split(d.focus); await act({ action: "focus", machine: m, target: p }, () => toast("Focused in Herdr on " + m + ".")); return; }
   if (d.send) {
     const [m, p] = split(d.send); const a = agents().find((x) => x.machine === m && x.pane_id === p); const text = ($("send") || {}).value || "";

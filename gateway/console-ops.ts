@@ -43,7 +43,7 @@ const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + "…"
 // agent nobody watches, or a turn that ended before a watch existed. Not stored: it is read
 // off the live agent each time, and goes away when Herdr marks the agent seen. An entry the
 // inbox already holds for that pane at or after the reply stands in for it.
-export function derivedFinished(agents: any[], stored: InboxEntry[]) {
+export function derivedFinished(agents: any[], stored: InboxEntry[], threads: Map<string, string> = new Map()) {
   const out: any[] = [];
   for (const a of agents) {
     if (a.status !== "done" || typeof a.pane_id !== "string") continue;
@@ -52,7 +52,7 @@ export function derivedFinished(agents: any[], stored: InboxEntry[]) {
     out.push({
       id: `derived:${a.pane_id}:${a.last_reply?.at ?? "unknown"}`, kind: "finished", status: "unanswered", derived: true,
       at: a.last_reply?.at ?? new Date().toISOString(), pane_id: a.pane_id, agent: a.name ?? null, agent_kind: a.agent ?? null, cwd: a.cwd ?? null, session: null,
-      lease: null, thread: a.held_by ?? null, task: a.task ? { objective: a.task.objective, id: a.task.id } : null, text: clip(a.last_reply?.text ?? "finished", 600),
+      lease: null, thread: threads.get(a.pane_id) ?? null, task: a.task ? { objective: a.task.objective, id: a.task.id } : null, text: clip(a.last_reply?.text ?? "finished", 600),
     });
   }
   return out;
@@ -79,7 +79,7 @@ export function consoleOps(g: Gateway): Record<string, Op> {
       const errors: Record<string, { code: string; message: string }> = {};
       for (const [name, r] of Object.entries({ supervisor, coord, leases, claims, audit })) if (r.err) errors[name] = r.err;
       const inbox = inboxView(g);
-      const derived = derivedFinished(overview.agents ?? [], g.state.inbox());
+      const derived = derivedFinished(overview.agents ?? [], g.state.inbox(), g.leases.labels());
       return {
         agents: overview.agents ?? [], counts: overview.counts ?? {},
         supervisor: supervisor.v?.agents ?? [], objectives: coord.v?.objectives ?? [], leases: leases.v?.leases ?? [], claims: claims.v?.claims ?? [], audit: audit.v?.entries ?? [],

@@ -96,6 +96,13 @@ describe("regression: an agent finishes while no card is awake", () => {
     expect(snap.inbox.entries.find((e: any) => e.pane_id === "w1:p2" && e.derived)).toBeUndefined();
     expect(snap.inbox.unanswered).toBe(0);
   });
+  test("a derived entry says which thread holds the agent, so its delivery route is known", async () => {
+    const { g, agents } = setup();
+    await g.request("claim_agents", { label: "pane-close-guard", targets: ["w1:p2"] });
+    agents[1].agent_status = "done";
+    const snap: any = await g.handle("console_snapshot", {});
+    expect(snap.inbox.entries.find((e: any) => e.pane_id === "w1:p2")).toMatchObject({ derived: true, thread: "pane-close-guard" });
+  });
   test("a stored entry for the same finish stands in for the derived one", async () => {
     const { g, agents, watch, since } = setup();
     watch({ "w1:p2": { name: "worker-b", cwd: "/srv/allowed/app", since: since(), last_status: "working", managed: true, busy: true } });

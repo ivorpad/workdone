@@ -24,7 +24,7 @@ tailscale serve --bg --https=8443 http://127.0.0.1:8790
 
 ## What it shows
 
-A gateway from before this change has no `lease_list`, `claims`, `audit_tail`, `owner_note`, the `origin: "console"` override or the focus raise. The console still lists its agents from `overview`; the control column, claims and feed lines from that gateway stay empty and a note fails with `unknown_operation`. Deploy gateways first.
+A gateway from before this change has no `console_snapshot`, `inbox_resolve`, `lease_list`, `claims`, `audit_tail`, `owner_note`, the `origin: "console"` override or the focus raise. The console still lists its agents from `overview` and says the gateway is legacy; the inbox, claims and some feed lines stay empty and a note fails with `unknown_operation`. Deploy gateways first.
 
 - **Needs you:** menus (with their options), held calls awaiting Approve or Decline, human blockers and acceptance in coordination objectives, agents asking a question, stalled or looping agents (`supervisor_status`), results still owed, machines that don't answer.
 - **Agents by objective**, with the ChatGPT thread that holds each, if any (`lease_list`).
@@ -32,7 +32,35 @@ A gateway from before this change has no `lease_list`, `claims`, `audit_tail`, `
 - **Singleton files held:** read from `<repo>/.git/workdone-claims.json` in each configured repo (`claims` op). Nothing in WorkDone writes that file yet, so the panel is empty until a harness does. Shape: `{"claims":[{"path","holder","pane_id"?,"at"?,"note"?}]}`.
 - **Who touched what:** gateway reports (finished, question, menu, gone), other controllers' calls from each gateway's audit log (prompts, steers, answers, claims, takeovers, closes), and this console's own actions. A takeover by a thread, and a refusal such as `not_your_agent` or `stale_dialog`, is flagged: that is two controllers colliding.
 
-The state is read every 10 s while a page is open (six small gateway calls per machine) and pushed when it changes. A report from the notifier triggers an earlier read. With no page open the console does nothing.
+The page's state is one `console_snapshot` call per machine: agents, supervisor view, coordination objectives, lease holders, file claims, recent audit touches and the inbox. It looks every 4 s while the state is changing, doubles the wait each quiet look up to 60 s, and starts over on a report, a connect or a click. With no page open it does not look at all. Neither `console_snapshot` nor the other console reads (`inbox_list`, `lease_list`, `claims`, `audit_tail`) is written to the gateway's audit log: they are read-only and would otherwise fill it (on 10-06 the old six-call poll made 1,700 of the day's audited calls). Writes, including `inbox_resolve`, are still audited. A gateway from before `console_snapshot` is read the old way, six calls, flagged `legacy` on the page, and asked again every five minutes.
+
+## Inbox
+
+What agents tell the owner is kept by the gateway, not by a chat card or this page, so a finish does not depend on anyone listening. The gateway writes `inbox.json` when:
+
+- an agent calls `workdone-tell` (`tell`);
+- the watcher sees a watched agent's turn end (`finished`), its exit (`gone`), or a question (`question`), or the end of a turn someone asked a `reply: true` result of (`result`, with `result_id`, commit, branch).
+
+Each entry keeps the agent's name, pane, session, working directory, its coordination task, and the thread that held it when it spoke (the console sees the thread's label and the last four characters of its lease). It is **unanswered** until the agent is sent a follow-up (`prompt_agent`, `steer_agent` or `supervisor_nudge`, by a thread or the console; the entry records who) or the owner dismisses it with `inbox_resolve`. A result still owed shows as **pending**.
+
+An agent that Herdr marks `done` and that no watch recorded shows as a **derived** entry: read off the live agent each time, not stored, gone when Herdr marks the agent seen. Dismissing it stores a dismissed entry so it does not return. This covers agents nobody watches and turns that ended before a watch existed.
+
+The inbox keeps 500 entries, dropping answered and dismissed ones first and anything older than two weeks; an unanswered entry is never aged out. Unanswered entries are one need per agent under Needs you, with Reply (selects the agent and puts the cursor in the message box), Focus pane and Dismiss all.
+
+**Delivery is stated, never claimed.** Each unanswered entry says where it could go: queued for the thread that holds the agent (its card or Events subscription may or may not be listening), reachable by a chat subscribed to `agent.message` events, or undelivered because no chat has a route. The gateway cannot see whether a card was open or a webhook landed, so "answered" means someone acted on the agent, not that a chat read it. A finished turn nobody follows up on stays unanswered until you dismiss it.
+
+**What it needs.** The watcher records turn ends when something polls the gateway's `watch_poll`: the MCP server's notifier or the standalone `watcher.ts`. A watched agent finishing with neither running is recorded at the next poll, and the derived entries cover the gap in the meantime. An agent the gateway does not watch, and that Herdr never marks `done`, is not in the inbox.
+
+### The beacon and stop-hook idea
+
+The idea was that an agent should only try to wake or deliver to a chat when it has a valid owner or session route, and otherwise leave a durable, visibly undelivered record instead of silently dropping it. The gateway does this centrally, so no per-agent hook is needed:
+
+- The record is written by the watcher and the `tell` op, on the machine, from what Herdr reports. It does not depend on the agent running anything at the end of a turn, so a crash, a killed agent or a CLI with no hook still produces an entry.
+- A stop hook runs in the agent's own process and can only call `workdone-tell`, which needs `HERDR_PANE_ID` and a linked chat. It cannot know whether a card is open or a subscription is live, and each CLI (Claude Code, Codex, Cursor) has a different hook mechanism to install and keep working.
+- What a hook would add is an agent-written summary at the end. The watcher already reads the agent's last `RESULT:` line from the transcript, and a `reply: true` request carries it.
+- The route check lives where the routes are known: a held agent is queued for its thread, an unheld one reaches only an events subscriber, and an agent's `tell` with no route now says in its result that it is kept in the inbox, undelivered. Only the console labels an entry undelivered. ChatGPT and agents never see that label.
+
+So: no stop hook, and no agent-side beacon. The remaining gap is the one under "What it needs": the gateway has to be polled.
 
 ## Steering
 
@@ -64,4 +92,4 @@ The console starts nothing on its own: no automatic nudge, answer, prompt or not
 
 ## Checking it
 
-`bun test mcp/test/console.test.ts tests/console-ops.test.ts`. The page itself is checked by hand: run `createConsole` over a fake `CallGateway` with `devNoAuth` and open it. After deploying, steer an agent a ChatGPT thread holds and check that both calls show in the feed, the thread's as `chatgpt` and yours as `console`.
+`bun test mcp/test/console.test.ts tests/console-ops.test.ts tests/inbox.test.ts tests/console-snapshot.test.ts`. The page itself is checked by hand: run `createConsole` over a fake `CallGateway` with `devNoAuth` and open it. After deploying, steer an agent a ChatGPT thread holds and check that both calls show in the feed, the thread's as `chatgpt` and yours as `console`.
