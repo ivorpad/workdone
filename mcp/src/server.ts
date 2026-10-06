@@ -184,6 +184,15 @@ export function createHandler(cfg: OvhConfig, call: CallGateway, onWatch?: (mach
       let response: Response;
       try { response = await modern.fetch(req, { parsedBody }); }
       finally { contexts.delete(req); }
+      const eventsMethod = (parsedBody as any)?.method;
+      if (principal && services.events && (eventsMethod === "events/subscribe" || eventsMethod === "events/unsubscribe")) {
+        // Rejections happen in schema validation or the handler, before the service audits anything.
+        const body = await response.clone().json().catch(() => undefined) as any;
+        if (body?.error || !response.ok) {
+          const p = (parsedBody as any).params;
+          console.log(JSON.stringify({ event: "events_rpc_rejected", method: eventsMethod, status: response.status, code: body?.error?.code, message: String(body?.error?.message ?? "").slice(0, 300), name: p?.name, argument_keys: p?.arguments && typeof p.arguments === "object" ? Object.keys(p.arguments) : undefined, delivery_keys: p?.delivery && typeof p.delivery === "object" ? Object.keys(p.delivery) : undefined }));
+        }
+      }
       if (principal && services.events && (parsedBody as any)?.method === "events/subscribe" && response.ok) {
         const result = await response.clone().json() as any;
         if (result.result?.id) {
