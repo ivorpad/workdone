@@ -182,7 +182,8 @@ describe("inbox: bounds", () => {
     const all = s.inbox();
     expect(all.length).toBe(500);
     expect(all.filter((e) => e.status === "unanswered").length).toBe(300);
-  });
+    // 560 fsynced writes: about 5 s on a busy Mac, past bun's default timeout.
+  }, 30_000);
   test("resolved entries age out after two weeks, unanswered ones never do, and an id is added once", () => {
     const dir = mkdtempSync(join(tmpdir(), "inbox-age-"));
     dirs.push(dir);
