@@ -9,7 +9,7 @@ import {
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
-import { bindAndSlice, coordOps, paneTask } from "./coord-ops.ts";
+import { coordOps, dispatchSlice, INTENT, paneTask, sendOutcome } from "./coord-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
 import { parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
@@ -148,7 +148,11 @@ export class Gateway {
       created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] })) as any).lease;
       lease = created;
     }
-    const result: any = await this.handle(op, stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined));
+    const sent = stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined);
+    // What the caller asked, before the stamp: a bound prompt's idempotency is about this.
+    const key = STAMPED[op];
+    if (key && typeof params[key] === "string") (sent as any)[INTENT] = { op, text: params[key] };
+    const result: any = await this.handle(op, sent);
     this.leases.after(op, lease, params, result);
     // The thread asked something and didn't wait: the agent's answer is owed to it.
     const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
@@ -214,7 +218,7 @@ export class Gateway {
 
       case "get_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
-        const task = paneTask(this, agent.pane_id, agent.name ?? null);
+        const task = paneTask(this, agent.pane_id, agent.name ?? null, agent.agent_session?.value ?? null);
         const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
         if (!optBool(params, "explain", false)) return view;
         // Herdr's own reasoning for the status, to tell its detection apart from ours. Servers
@@ -283,11 +287,24 @@ export class Gateway {
           }
         }
         // The opt-in turn contract: a bound task's current slice, read now. An unbound
-        // agent's prompt goes in exactly as written.
-        const slice = bindAndSlice(this, agent, params);
-        const sent = slice ? `${text}\n\n${slice}` : text;
+        // agent's prompt goes in exactly as written. A new binding is pending until the
+        // prompt is known to be delivered.
         // reply: true, asked before the prompt goes in so a quick turn can't end unclaimed.
         const asked = this.askResult(agent.pane_id, agent, params);
+        let prepared: ReturnType<typeof dispatchSlice>;
+        try {
+          prepared = dispatchSlice(this, agent, params, text);
+        } catch (err) {
+          if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
+          throw err;
+        }
+        // The same command_id and prompt again, already delivered: say so, send nothing.
+        if (prepared && "replay" in prepared) {
+          if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
+          return { submitted: true, duplicate: true, dispatch: prepared.replay, note: "this command_id was already delivered; nothing was sent again" };
+        }
+        const dispatch = prepared;
+        const sent = dispatch ? `${text}\n\n${dispatch.slice}` : text;
         let res: any;
         try {
           res = await this.herdr(
@@ -300,7 +317,23 @@ export class Gateway {
           // finishes, and tell the caller it is working rather than failing the call.
           if (!(wait && err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout"))) {
             if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
+            // Refused: the pending binding is dropped. Unknown: kept for reconciliation,
+            // never resent from here.
+            dispatch?.settle(sendOutcome(err));
             throw err;
+          }
+          // Herdr's own wait expired after it took the prompt; no answer at all from the
+          // socket leaves delivery unknown.
+          const sentState = dispatch?.settle((err as GatewayError).code === "timeout" ? "delivered" : "unknown");
+          // A bound prompt in doubt is not reported as started: no turn is expected of it.
+          if (sentState?.state === "unknown") {
+            const out: Record<string, unknown> = {
+              submitted: null, waited: true, timed_out: true, status: "unknown", dispatch: sentState,
+              note: "Herdr did not answer: whether the prompt went in is unknown, and it is not resent. The task shows protocol dispatch_unknown; read the agent, then coord_update the task with dispatch: delivered or lost",
+            };
+            if (approved.length) out.auto_approved = approved;
+            if (asked) out.result_request = resultView(asked);
+            return out;
           }
           this.state.prompted(agent.pane_id, watchInfo(agent), null, false);
           clearNote(this.herdr, agent.pane_id);
@@ -310,8 +343,10 @@ export class Gateway {
           };
           if (approved.length) out.auto_approved = approved;
           if (asked) out.result_request = resultView(asked);
+          if (sentState) out.dispatch = sentState;
           return out;
         }
+        const sentState = dispatch?.settle("delivered");
         let status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
         // Stopped at a menu mid-turn: a go-ahead is given and the wait goes on.
         if (wait && status === "blocked") {
@@ -325,7 +360,7 @@ export class Gateway {
         const settled = wait && SETTLED.has(status);
         this.state.prompted(agent.pane_id, watchInfo(agent), res?.agent ?? { agent_status: status }, settled);
         clearNote(this.herdr, agent.pane_id);
-        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(slice ? { task_slice: true } : {}) };
+        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(sentState ? { task_slice: true, dispatch: sentState } : {}) };
         if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
           const reply = await agentReply(cfg, agent, { freshFor: sent });

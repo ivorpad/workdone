@@ -77,8 +77,9 @@ describe("turn contract", () => {
     const out: any = await g.handle("coord_report", { token, report_id: "r1", evidence: ["unit tests pass"] });
     expect(out.task).toMatchObject({ id: "build", evidence: ["unit tests pass"] });
     expect(out.task.binding).toBeUndefined();
-    const again: any = await g.handle("coord_report", { token, report_id: "r1", evidence: ["ignored"] });
+    const again: any = await g.handle("coord_report", { token, report_id: "r1", evidence: ["unit tests pass"] });
     expect(again.duplicate).toBe(true);
+    await expect(g.handle("coord_report", { token, report_id: "r1", evidence: ["ignored"] })).rejects.toMatchObject({ code: "report_conflict" });
     expect(coord().objectives.demo.tasks.build.evidence).toEqual(["unit tests pass"]);
     // A later prompt to the bound agent carries the current slice without asking again.
     prompts.length = 0;

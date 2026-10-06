@@ -49,13 +49,16 @@ describe("model", () => {
     // A later merge never surfaces the same readiness again.
     expect(planTasks(s, "relay-pwc", [{ id: "#772", evidence: ["late note"] }], undefined, T3).transitions).toEqual([]);
   });
-  test("duplicate_report_id_noop", () => {
+  test("duplicate_report_id_noop; the same id with other content is a conflict", () => {
     const s = relay();
     bind(s, "#775", "w1:p3", 1);
     const first = reportTask(s, "relay-pwc", "#775", { report_id: "r1", evidence: ["focused checks passed"] }, T2);
     const v = s.objectives["relay-pwc"]!.tasks["#775"]!.version;
-    const again = reportTask(s, "relay-pwc", "#775", { report_id: "r1", evidence: ["something else"] }, T3);
+    const again = reportTask(s, "relay-pwc", "#775", { report_id: "r1", evidence: ["focused checks passed"] }, T3);
     expect([first.duplicate, again.duplicate]).toEqual([false, true]);
+    expect(again.receipt).toEqual(first.receipt);
+    // Intentional contract: reusing an id for different content is refused, not dropped.
+    expect(code(() => reportTask(s, "relay-pwc", "#775", { report_id: "r1", evidence: ["something else"] }, T3))).toBe("report_conflict");
     expect(s.objectives["relay-pwc"]!.tasks["#775"]).toMatchObject({ version: v, evidence: ["focused checks passed"] });
   });
   test("per_task_expected_version: a stale merge conflicts on its task only", () => {
@@ -81,6 +84,8 @@ describe("model", () => {
     reportTask(s, "relay-pwc", "#772", { status: "blocked", blocker: "staff erasure needs prod data access", blocker_kind: "human" }, T1);
     const r = reportTask(s, "relay-pwc", "#772", { result: { summary: "isolation and retention pass", commit: "26a3e2af" } }, T2);
     expect(s.objectives["relay-pwc"]!.tasks["#772"]).toMatchObject({ status: "verifying", blocker: "staff erasure needs prod data access", blocker_kind: "human", artifacts: ["26a3e2af"] });
+    // blocked_human came with the report that set the blocker; the result adds only
+    // needs_acceptance.
     expect(r.transitions.map((t) => t.kind)).toEqual(["needs_acceptance"]);
     expect(code(() => reportTask(s, "relay-pwc", "#772", { status: "complete" }, T3))).toBe("not_allowed");
     expect(code(() => reportTask(s, "relay-pwc", "#772", { owner: "x" } as any, T3))).toBe("not_allowed");
@@ -171,14 +176,15 @@ describe("model", () => {
   });
 });
 
-test("supervise_prefers_task_version_over_shared_head", () => {
-  const turn = (n: string, extra = {}) => ({ status: "idle", session: "s1", turn: n, at: `2026-10-05T12:0${n}:00Z`, commit: "abc", diff: "d", activity: `a${n}`, ...extra });
-  const task = (version: number, status = "executing") => ({ id: "#772", status, version, blocker: null, unmet_deps: [] });
-  // Another worker's commit moved HEAD; this worker's task did not move: stalled.
-  const stuck = supervise(turn("3", { commit: "zzz", task_version: 4 }), [turn("1", { task_version: 4 }), turn("2", { commit: "yyy", task_version: 4 })], { task: task(4) });
+test("supervise_prefers_task_progress_over_shared_head", () => {
+  const task_identity = { objective: "relay-pwc", id: "#772", binding: "run_1" };
+  const turn = (n: string, extra = {}) => ({ status: "idle", session: "s1", turn: n, at: `2026-10-05T12:0${n}:00Z`, commit: "abc", diff: "d", activity: `a${n}`, task_identity, ...extra });
+  const task = (progress: number, status = "executing") => ({ id: "#772", status, progress, blocker: null, unmet_deps: [] });
+  // Another worker's commit moved HEAD; this worker's task did not progress: stalled.
+  const stuck = supervise(turn("3", { commit: "zzz", task_progress: 4 }), [turn("1", { task_progress: 4 }), turn("2", { commit: "yyy", task_progress: 4 })], { task: task(4) });
   expect(stuck.state).toBe("stalled");
-  // Its own task moved while HEAD stayed put: progress.
-  const moving = supervise(turn("3", { task_version: 6 }), [turn("1", { task_version: 4 }), turn("2", { task_version: 5 })], { task: task(6) });
+  // Its own task progressed while HEAD stayed put: progress.
+  const moving = supervise(turn("3", { task_progress: 6 }), [turn("1", { task_progress: 4 }), turn("2", { task_progress: 5 })], { task: task(6) });
   expect(moving.state).not.toBe("stalled");
   // Accepted complete: prunable even though the shared tree is dirty.
   expect(supervise({ status: "idle", clean: false }, [], { task: task(7, "complete") }).recommendations[0]!.action).toBe("prune_close");

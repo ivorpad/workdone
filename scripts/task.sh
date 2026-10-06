@@ -9,8 +9,10 @@
 #        workdone-task --token wdt_... '{"result":{"summary":"rate limits shipped","commit":"cc2245e3"},"report_id":"r1"}'
 #        workdone-task --token wdt_...            (show my task)
 #        WORKDONE_TASK_TOKEN=wdt_... workdone-task '{"acquire":["e2e"]}'
+#        workdone-task --token wdt_... '{"release":["e2e@2"],"report_id":"r7"}'   (only generation 2 of e2e)
+# A retry of a report reuses its report_id with the same JSON; new content needs a new id.
 set -eu
-usage='usage: workdone-task [--token wdt_...] [JSON]   (JSON: status, evidence, artifacts, blocker, blocker_kind, wait_for, next_action, result {summary, commit}, acquire, release, report_id)'
+usage='usage: workdone-task [--token wdt_...] [JSON]   (JSON: status, evidence, artifacts, blocker, blocker_kind, wait_for, next_action, result {summary, commit}, acquire, release [name or name@generation], report_id)'
 token=${WORKDONE_TASK_TOKEN:-}
 while [ $# -gt 0 ]; do
   case "$1" in

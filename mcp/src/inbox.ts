@@ -11,8 +11,8 @@
 // A watch's credential is its cap, a random token the card gets in the tool result's
 // _meta and the model never sees. watch_next, watch_stop and replacing an open watch
 // need it; the lease alone is not enough. A watch that used up its rounds ends, and the
-// thread can link again at once. Events are handed out once. Watches live in memory: a
-// restart forgets them, and the card opens its watch again.
+// thread can link again at once. Events are handed out once. Production persists
+// watches and source intake; an in-memory inbox remains available for isolated tests.
 //
 // Polling is what ChatGPT sees, so a watch is only as long as the conversation: it ends
 // IDLE_MS after its last activity (opening, a wake handed out, a message the thread sent
@@ -20,6 +20,9 @@
 // when it hands an agent work. While quiet, polls get longer, and a second card polling
 // the same watch is turned away, so two devices don't double the calls.
 
+import { Database } from "bun:sqlite";
+import { chmodSync, mkdirSync } from "node:fs";
+import { dirname } from "node:path";
 import type { Report } from "../../gateway/watcher.ts";
 
 // The event types a watch can wake on. "message" is one an agent sent this thread on
@@ -36,13 +39,15 @@ export interface WakeEvent {
   seq: number;
   at: string;
   machine: string;
-  pane_id: string;
+  pane_id: string | null;
   agent: string | null;
   type: WakeType;
   excerpt: string | null;
   message: string;
   // The structured final result of a reply: true request (see gateway TurnResult).
   result?: Report["result"];
+  objective?: string;
+  transition?: Report["transition"];
 }
 
 interface Watch {
@@ -95,6 +100,7 @@ export const POLL_MS = 20_000;
 export const QUIET_POLL_MS = 45_000;
 // A message an agent sent while its thread had no open link waits this long for one.
 const HOLD_MS = 3600_000;
+const MAX_HELD_COORD = 10_000;
 // After a wake, the thread gets one message to its agents in this window. There is no
 // override: a back-and-forth goes on because each reply is a new wake.
 const REPLY_WINDOW_MS = 10 * 60_000;
@@ -107,6 +113,49 @@ export class Inbox {
   // Messages (tell) for a machine and lease with no open watch, by `${machine}|${lease}`.
   private held = new Map<string, WakeEvent[]>();
   private seq = 0;
+  private seen = new Set<string>();
+  private db?: Database;
+  private committed?: string;
+
+  // Production attaches this before starting the notifier. Queues, held messages,
+  // credentials and source IDs survive restart; never write this database publicly.
+  persistTo(path: string) {
+    if (this.db) throw new Error("Inbox persistence is already configured");
+    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+    this.db = new Database(path, { create: true, strict: true });
+    if (path !== ":memory:") chmodSync(path, 0o600);
+    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS inbox (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL)");
+    const row = this.db.query("SELECT value FROM inbox WHERE id=1").get() as { value: string } | null;
+    if (row) { this.restore(row.value); this.committed = row.value; }
+    else this.persist();
+  }
+  close() { this.db?.close(); this.db = undefined; }
+  private snapshot(): string {
+    return JSON.stringify({ version: 1, seq: this.seq, seen: [...this.seen], held: [...this.held], watches: [...this.watches].map(([id, w]) => [id, { ...w, wake: [...w.wake], waiters: [] }]) });
+  }
+  private restore(text: string) {
+    const state = JSON.parse(text);
+    if (state.version !== 1 || !Array.isArray(state.seen) || !Array.isArray(state.held) || !Array.isArray(state.watches) || !Number.isSafeInteger(state.seq)) throw new Error("Invalid durable inbox state");
+    this.seq = state.seq;
+    this.seen = new Set(state.seen);
+    this.held = new Map(state.held);
+    this.watches = new Map(state.watches.map(([id, w]: [string, any]) => [id, { ...w, wake: new Set(w.wake), waiters: [] }]));
+  }
+  private persist() {
+    if (!this.db) return;
+    const snapshot = this.snapshot();
+    try {
+      this.db.query("INSERT INTO inbox(id,value) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET value=excluded.value").run(snapshot);
+      this.committed = snapshot;
+    } catch (err) {
+      if (this.committed) {
+        const waiters = new Map([...this.watches].map(([id, w]) => [id, w.waiters]));
+        this.restore(this.committed);
+        for (const [id, w] of this.watches) w.waiters = waiters.get(id) ?? [];
+      }
+      throw err;
+    }
+  }
   constructor(private now: () => number = Date.now, private busyMs = 30_000, private log: (line: string) => void = () => {}) {}
 
   // Which link a log line is about, without the credentials: the end of the watch id and of the lease.
@@ -158,7 +207,7 @@ export class Inbox {
     this.log(JSON.stringify({ event: "watch_open", ...this.tag(id, w), hours: opts.hours ?? 72, replaced: Boolean(open) }));
     // Messages the agent sent before this link opened.
     const key = `${machine}|${lease}`;
-    const waiting = (this.held.get(key) ?? []).filter((e) => Date.parse(e.at) + HOLD_MS > t);
+    const waiting = (this.held.get(key) ?? []).filter((e) => e.objective || Date.parse(e.at) + HOLD_MS > t);
     this.held.delete(key);
     // A chat that took an agent over (claim_agents moves a pane to the new lease) also gets
     // what the agent told the lease it came from, which no card will ever open on.
@@ -166,24 +215,54 @@ export class Inbox {
     if (panes.size) {
       for (const [k, list] of [...this.held]) {
         if (!k.startsWith(`${machine}|`) || k === key) continue;
-        const mine = list.filter((e) => panes.has(e.pane_id));
+        const mine = list.filter((e) => !e.objective && (e.pane_id !== null && panes.has(e.pane_id)));
         if (!mine.length) continue;
-        waiting.push(...mine.filter((e) => Date.parse(e.at) + HOLD_MS > t));
-        const rest = list.filter((e) => !panes.has(e.pane_id));
+        waiting.push(...mine.filter((e) => e.objective || Date.parse(e.at) + HOLD_MS > t));
+        const rest = list.filter((e) => e.objective || !(e.pane_id !== null && panes.has(e.pane_id)));
         if (rest.length) this.held.set(k, rest);
         else this.held.delete(k);
       }
       waiting.sort((a, b) => a.seq - b.seq);
     }
     if (w.wake.has("message")) w.queue.push(...waiting);
+    else this.retainHeld(key, waiting.filter(e => e.objective));
+    this.persist();
     return { ok: true, state: this.state(id)!, key: { watch_id: id, cap, lease } };
   }
 
   // Reports from one machine's watch pass. Returns how many watches got an event.
   add(machine: string, reports: Report[]): number {
+    const before = this.snapshot();
+    try {
+      const n = this.addReports(machine, reports);
+      this.persist();
+      for (const w of this.watches.values()) if (w.queue.length) for (const wake of w.waiters.splice(0)) wake();
+      return n;
+    } catch (err) {
+      const waiters = new Map([...this.watches].map(([id, w]) => [id, w.waiters]));
+      if (before) {
+        this.restore(before);
+        for (const [id, w] of this.watches) w.waiters = waiters.get(id) ?? [];
+      }
+      throw err;
+    }
+  }
+
+  private addReports(machine: string, reports: Report[]): number {
     this.sweep();
     let n = 0;
-    for (const r of reports) {
+    for (const source of reports) {
+      const key = source.event_id ? JSON.stringify([machine, source.event_id]) : null;
+      if (key && this.seen.has(key)) continue;
+      // Objective transitions have an explicit supervisor recipient. Never infer
+      // their authority or destination from an unrelated worker's lease.
+      const r = source.recipient_lease ? { ...source, lease: source.recipient_lease } : source;
+      if (r.objective && r.lease) {
+        const held = (this.held.get(`${machine}|${r.lease}`) ?? []).filter(e => e.objective).length;
+        const queued = [...this.watches.values()].filter(w => w.machine === machine && w.lease === r.lease).reduce((n, w) => n + w.queue.filter(e => e.objective).length, 0);
+        if (held + queued >= MAX_HELD_COORD) throw new Error("Coordination inbox is full; source intake must wait");
+      }
+      if (key) this.seen.add(key);
       // An agent that exited with a result owed still answers the thread that asked.
       if (!r.lease || !(isWakeType(r.type) || (r.type === "gone" && r.result))) continue;
       let taken = false;
@@ -194,8 +273,7 @@ export class Inbox {
         if (!owed && !isWakeType(r.type)) continue;
         const type = (owed ? "reply" : r.type) as WakeType;
         if (!w.wake.has(type)) continue;
-        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message, ...(r.result ? { result: r.result } : {}) });
-        for (const wake of w.waiters.splice(0)) wake();
+        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message, ...(r.result ? { result: r.result } : {}), ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
         n++;
         taken = true;
       }
@@ -203,11 +281,18 @@ export class Inbox {
       if (!taken && r.type === "message") {
         const key = `${machine}|${r.lease}`;
         const list = this.held.get(key) ?? [];
-        list.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type: "message", excerpt: r.excerpt, message: r.message });
-        this.held.set(key, list.slice(-20));
+        list.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type: "message", excerpt: r.excerpt, message: r.message, ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
+        this.retainHeld(key, list);
       }
     }
     return n;
+  }
+
+  private retainHeld(key: string, events: WakeEvent[]) {
+    if (events.filter(e => e.objective).length > MAX_HELD_COORD) throw new Error("Coordination inbox is full; source intake must wait");
+    const tells = new Set(events.filter(e => !e.objective).slice(-20));
+    const retained = events.filter(e => e.objective || tells.has(e));
+    if (retained.length) this.held.set(key, retained);
   }
 
   // Waits up to timeoutMs for events, then hands them out once, each one counting as a
@@ -251,6 +336,7 @@ export class Inbox {
     if (cur.rounds >= cur.maxRounds) {
       this.end(id, `reached its ${cur.maxRounds} rounds`);
     }
+    this.persist();
     this.log(JSON.stringify({ event: "watch_poll", ...this.tag(id, cur), wake_events: events.length, idle_in_s: Math.round((cur.idleUntil - this.now()) / 1000) }));
     return { events, state: this.state(id) };
   }
@@ -270,6 +356,7 @@ export class Inbox {
     const w = this.watches.get(id);
     if (!w || w.cap !== cap) return null;
     this.end(id, "stopped");
+    this.persist();
     return this.state(id);
   }
 
@@ -286,6 +373,7 @@ export class Inbox {
       w.sentSinceWake += 1;
       this.touch(w);
     }
+    this.persist();
   }
 
   state(id: string): WatchState | null {
@@ -309,6 +397,11 @@ export class Inbox {
     w.stopped = why;
     w.endedAt = this.now();
     this.log(JSON.stringify({ event: "watch_end", ...this.tag(id, w), why, rounds: w.rounds }));
+    const coordination = w.queue.filter(e => e.objective);
+    if (coordination.length) {
+      const key = `${w.machine}|${w.lease}`;
+      this.retainHeld(key, [...(this.held.get(key) ?? []), ...coordination]);
+    }
     w.queue = [];
     for (const wake of w.waiters.splice(0)) wake();
   }

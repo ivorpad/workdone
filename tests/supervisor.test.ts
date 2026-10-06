@@ -95,11 +95,15 @@ describe("supervisor policy", () => {
     }
   });
   test("prune_close only once a commit beyond the start landed, the tree is clean and no result is owed", () => {
-    const settled = (extra: Partial<SupervisorObservation> = {}) => ({ status: "idle", session: "s1", commit: "def", clean: true, ...extra });
+    const settled = (extra: Partial<SupervisorObservation> = {}) => ({ status: "idle", session: "s1", commit: "def", clean: true, upstream: "origin/main", ahead: 0, ...extra });
     const baseline = { commit: "abc" };
     const landed = supervise(settled(), [], { baseline });
     expect([landed.state, action(landed)]).toEqual(["landed", "prune_close"]);
     for (const [obs, opts, why] of [
+      // Landed means published: commits ahead of upstream, no upstream or an unknown count are not.
+      [settled({ ahead: 2 }), { baseline }, "2 commits not pushed to origin/main"],
+      [settled({ upstream: null, ahead: null }), { baseline }, "no upstream"],
+      [settled({ ahead: null }), { baseline }, "ahead of upstream is unknown"],
       [settled({ commit: "abc" }), { baseline }, "no commit beyond the start"],
       [settled({ clean: false }), { baseline }, "uncommitted changes"],
       [settled(), { baseline, result_pending: true }, "result is still owed"],
@@ -211,12 +215,39 @@ describe("supervisor on real turn evidence", () => {
     expect((await status(t)).state).toBe("progressing");
     t.git("commit", "-qam", "landed");
     await turn(t, "Committed.\nRESULT: landed");
+    // Committed but not published (no upstream): not prunable yet.
+    const local = await status(t);
+    expect([local.state, local.recommendations[0].action]).toEqual(["checkpoint_ready", "verify_checkpoint"]);
+    expect(local.recommendations[0].reasons[0]).toContain("no upstream");
+    const remote = join(t.root, "remote.git");
+    t.git("init", "-q", "--bare", remote);
+    t.git("remote", "add", "origin", remote);
+    t.git("push", "-q", "-u", "origin", "HEAD");
     const landed = await status(t);
     expect([landed.state, landed.recommendations[0].action]).toEqual(["landed", "prune_close"]);
     expect(landed.recommendations[0].evidence).toContain("clean=true");
     // A dirty tree after the commit is not prunable.
     writeFileSync(join(t.repo, "b.txt"), "new\n");
     expect((await status(t)).recommendations[0].action).toBe("verify_checkpoint");
+  });
+
+  test("a bound worker's heartbeat-only turns are a stall; a turn with new evidence is not (watcher records to supervise)", async () => {
+    const t = setup({ leases: false });
+    await t.gw.handle("watch_agent", { target: "w1:p1" });
+    await t.gw.handle("coord_update", { objective: "demo", tasks: [{ id: "build", title: "Build it", owner: "fixer" }] });
+    await t.gw.handle("prompt_agent", { target: "w1:p1", text: "go", task: { objective: "demo", id: "build" } });
+    const token = /--token (wdt_[A-Za-z0-9_-]+)/.exec(t.sent.filter(([m]) => m === "agent.prompt").at(-1)![1].text)![1]!;
+    for (const answer of ["Working.", "Still working.", "Nearly there."]) {
+      // Version moves (next_action), progress doesn't.
+      await t.gw.handle("coord_report", { token, status: "executing", next_action: answer });
+      await turn(t, answer);
+    }
+    const stalled = await status(t);
+    expect(stalled.task).toMatchObject({ id: "build", identity: { objective: "demo", id: "build" } });
+    expect([stalled.state, stalled.recommendations[0].action]).toEqual(["stalled", "nudge_ship_slice"]);
+    await t.gw.handle("coord_report", { token, evidence: ["unit tests pass"] });
+    await turn(t, "Tests pass.");
+    expect((await status(t)).state).not.toBe("stalled");
   });
 
   test("a reviewer's stall goes back to the coordinator and is never nudged", async () => {

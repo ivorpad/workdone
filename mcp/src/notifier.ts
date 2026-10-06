@@ -27,8 +27,9 @@ export interface Notifier {
 
 // Both native Events and fallback cards consume these reports. Await durable
 // enqueue before taking another gateway pass; phone delivery stays independent.
-// keep(machine): poll that machine even with nothing watched, and have its gateway wait
-// for tells too. True while a chat is subscribed to agent.message there.
+// New gateways retain reports until a following poll acknowledges successful
+// durable intake. Legacy gateways keep their existing one-shot polling semantics.
+// keep(machine): poll even with nothing watched and wait for tells/transitions too.
 export function startNotifier(call: CallGateway, machines: string[], via: string | null, intervalMs: number, waitMs = WAIT_MS, onReports?: (machine: string, reports: Report[]) => void | Promise<void>, keep: (machine: string) => boolean = () => false): Notifier {
   const pending = new Set<string>();
   const failing = new Map<string, string>();
@@ -36,6 +37,8 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
   const resting = new Map<string, () => void>();
   // Retain failed intake and apply backpressure before consuming another pass.
   const retryReports = new Map<string, Report[]>();
+  const reliable = new Set<string>();
+  const acknowledgments = new Map<string, string[]>();
   // Bumped by every markPending, so a call that started before it cannot drop the machine.
   const marks = new Map<string, number>();
   let stopped = false;
@@ -56,12 +59,18 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
   async function once(machine: string): Promise<"now" | "rest" | "done" | "unsupported"> {
     const retry = retryReports.get(machine);
     if (retry) {
-      try { await onReports?.(machine, retry); retryReports.delete(machine); }
+      try {
+        await onReports?.(machine, retry);
+        if (reliable.has(machine)) acknowledgments.set(machine, retry.map(r => r.event_id!));
+        retryReports.delete(machine);
+      }
       catch { return "rest"; }
     }
     const started = Date.now();
     const tells = keep(machine);
-    const res = await call(machine, "watch_poll", tells ? { wait_ms: waitMs, tells: true } : { wait_ms: waitMs });
+    const ack = acknowledgments.get(machine);
+    const params = { wait_ms: waitMs, ...(tells ? { tells: true } : {}), ...(onReports ? { delivery: "ack" } : {}), ...(ack?.length ? { ack } : {}) };
+    const res = await call(machine, "watch_poll", params);
     if (!res.ok) {
       // Only a gateway older than watch_poll fails the same way every time. Anything
       // else is retried: watches last for days, and dropping the machine would leave
@@ -77,7 +86,14 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
       return "rest";
     }
     failing.delete(machine);
-    const { messages = [], remaining = 0, reports = [] } = (res.result ?? {}) as { messages?: string[]; remaining?: number; reports?: Report[] };
+    if (ack) acknowledgments.delete(machine); // Successful response confirms that ack was applied.
+    const { messages = [], remaining = 0, reports = [], delivery } = (res.result ?? {}) as { messages?: string[]; remaining?: number; reports?: Report[]; delivery?: string };
+    if (delivery === "ack") reliable.add(machine);
+    else reliable.delete(machine);
+    if (delivery === "ack" && reports.some(r => !r.event_id)) {
+      console.error(JSON.stringify({ event: "report_dispatch_failed", machine, reason: "missing_source_id" }));
+      return "rest";
+    }
     if (reports.length) {
       // Older gateways omit IDs. Assign them once so retries of a partially
       // committed batch cannot create duplicate native deliveries.
@@ -85,7 +101,10 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
         report.event_id ??= randomUUID();
         report.occurred_at ??= new Date().toISOString();
       }
-      try { await onReports?.(machine, reports); }
+      try {
+        await onReports?.(machine, reports);
+        if (delivery === "ack" && onReports) acknowledgments.set(machine, reports.map(r => r.event_id!));
+      }
       catch {
         retryReports.set(machine, reports);
         console.error(JSON.stringify({ event: "report_dispatch_failed", machine }));
@@ -97,6 +116,7 @@ export function startNotifier(call: CallGateway, machines: string[], via: string
       if (!sent.ok) console.error(JSON.stringify({ event: "notify_failed", machine, message, error: sent.error }));
     }
     if (retryReports.has(machine)) return "rest";
+    if (acknowledgments.has(machine)) return "now";
     if (remaining === 0 && !keep(machine)) return "done";
     return messages.length > 0 || Date.now() - started >= waitMs / 2 ? "now" : "rest";
   }

@@ -4,7 +4,7 @@
 
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
-import { bindAndSlice, paneTask } from "./coord-ops.ts";
+import { dispatchSlice, paneTask } from "./coord-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -17,14 +17,12 @@ import { showDone, showWatched } from "./sidebar.ts";
 import type { Supervision, Watched } from "./state.ts";
 import { supervise, type SupervisorObservation } from "./supervisor.ts";
 import { agentReply, type Reply } from "./transcript.ts";
-import { pollJobs } from "./jobs.ts";
-import { pollWaiting, pollWatched, sendNotification, withReports } from "./watcher.ts";
+import { watchPoll } from "./jobs.ts";
+import { sendNotification } from "./watcher.ts";
 import { agentView, lastLines, paneView, resultView, textOf, watchInfo, watchView } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done"]);
 const SHELL_STARTING = new Set(["agent_pane_busy", "agent_pane_unavailable"]);
-// Below the MCP server's ssh request timeout, with room for the passes around the wait.
-const WATCH_WAIT_MAX_MS = 25_000;
 
 function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
@@ -181,8 +179,9 @@ async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, su
     prompt_running: !!reply?.in_progress,
     ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, ahead: cp.ahead, upstream: cp.upstream } : {}),
   };
-  const task = paneTask(g, a.pane_id, a.name ?? null);
-  if (task) observation.task_version = task.version;
+  const task = paneTask(g, a.pane_id, a.name ?? null, a.agent_session?.value ?? null);
+  // Progress, not metadata: a heartbeat report moves version but never progress.
+  if (task) Object.assign(observation, { task_version: task.version, task_progress: task.progress, task_identity: task.identity });
   const turns: SupervisorObservation[] = (s?.turns ?? []).map((t) => ({ ...t, session: t.session ?? undefined }));
   // The watch's last look comes after the turn records: status and seq progression.
   const history = [...turns, { status: w.last_status ?? "unknown", session: w.session, seq: w.seq }];
@@ -260,14 +259,9 @@ export function agentOps(g: Gateway): Record<string, Op> {
     // Internal, used by the MCP server's notifier rather than by ChatGPT.
     // wait_ms: while nothing is found, wait up to that long for a watched agent to change
     // (Herdr events) or a browser run to end, so the notifier hears within a second or so.
+    // delivery: "ack" with ack: [event ids] is the reliable mode (jobs.ts watchPoll).
     async watch_poll(params) {
-      const waitMs = optInt(params, "wait_ms", 0, WATCH_WAIT_MAX_MS) ?? 0;
-      const agents = () => pollWatched(g.cfg, g.herdr, Date.now());
-      const jobs = () => pollJobs(g.cfg);
-      if (waitMs > 0) return await pollWaiting(g.cfg, g.herdr, waitMs, agents, jobs, params.tells === true);
-      const found = await agents();
-      const runs = jobs();
-      return withReports({ messages: [...found.messages, ...runs.messages], remaining: found.remaining + runs.remaining }, found.reports);
+      return await watchPoll(g.cfg, g.herdr, params);
     },
 
     async wait_agent(params) {
@@ -341,7 +335,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           }
           Object.assign(view, await lifecycle(g, a, watched, { reply, screen }));
           // A worker waiting on a dependency is not working, whatever its terminal shows.
-          const task = paneTask(g, a.pane_id, a.name ?? null);
+          const task = paneTask(g, a.pane_id, a.name ?? null, a.agent_session?.value ?? null);
           if (task) view.task = task;
           return view;
         }),
@@ -506,7 +500,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
       }
       // Bound with no prompt sent: the slice comes with the first prompt.
       if (params.task && !out.prompt) {
-        bindAndSlice(g, { ...started, pane_id: paneId, name }, params, false);
+        dispatchSlice(g, { ...started, pane_id: paneId, name }, params, "", false);
         out.task_bound = params.task;
       }
       const sent = out.prompt as { result_request?: unknown } | undefined;

@@ -1,4 +1,8 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { Database } from "bun:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Report } from "../../gateway/watcher.ts";
 import { Inbox, POLL_MS, QUIET_POLL_MS, type Opened, type WakeType } from "../src/inbox.ts";
 
@@ -276,4 +280,144 @@ describe("reply: true results on the fallback card", () => {
     const { events } = await box.next(w.key.watch_id, w.key.cap, 0);
     expect(events.map((e) => [e.type, e.result?.status])).toEqual([["reply", "gone"]]);
   });
+});
+
+const persistedDirs: string[] = [];
+afterEach(() => { for (const d of persistedDirs.splice(0)) rmSync(d, { recursive: true, force: true }); });
+const persistencePath = () => { const d = mkdtempSync(join(tmpdir(), "wd-inbox-")); persistedDirs.push(d); return join(d, "inbox.sqlite"); };
+
+describe("durable fallback intake", () => {
+  test("source IDs dedupe different batches and durable queues survive restart", async () => {
+    const path = persistencePath();
+    const box = new Inbox(); box.persistTo(path);
+    const linked = opened(box, "test", "L-abc123", { wake: ASKS });
+    const source = report({ event_id: "stable", type: "message" });
+    expect(box.add("test", [source])).toBe(1);
+    expect(box.add("test", [structuredClone(source)])).toBe(0);
+    box.close();
+    const restarted = new Inbox(); restarted.persistTo(path);
+    expect(restarted.add("test", [structuredClone(source)])).toBe(0);
+    expect((await restarted.next(linked.key.watch_id, linked.key.cap, 0)).events).toHaveLength(1);
+    restarted.close();
+    const again = new Inbox(); again.persistTo(path);
+    expect(again.add("test", [structuredClone(source)])).toBe(0);
+    expect((await again.next(linked.key.watch_id, linked.key.cap, 0)).events).toEqual([]);
+    expect(again.state(linked.key.watch_id)?.rounds).toBe(1);
+    again.close();
+  });
+
+  test("held tell intake survives restart before the card opens", async () => {
+    const path = persistencePath();
+    const box = new Inbox(); box.persistTo(path);
+    const source = report({ event_id: "held", type: "message" });
+    box.add("test", [source]); box.close();
+    const restarted = new Inbox(); restarted.persistTo(path);
+    restarted.add("test", [structuredClone(source)]);
+    const linked = opened(restarted, "test", "L-abc123");
+    expect((await restarted.next(linked.key.watch_id, linked.key.cap, 0)).events.map(e => e.excerpt)).toEqual([source.excerpt]);
+    restarted.close();
+  });
+
+  test("objective transition routes to its explicit supervisor without a worker pane", async () => {
+    const box = new Inbox();
+    const alpha = opened(box, "test", "L-alpha");
+    const beta = opened(box, "test", "L-beta");
+    const source = report({ event_id: "beta:7", pane_id: null, type: "message", objective: "beta", recipient_lease: "L-beta", transition: { task: "same", seq: 7, kind: "ready" }, lease: "L-alpha" });
+    box.add("test", [source]); box.add("test", [structuredClone(source)]);
+    expect((await box.next(alpha.key.watch_id, alpha.key.cap, 0)).events).toEqual([]);
+    expect((await box.next(beta.key.watch_id, beta.key.cap, 0)).events).toHaveLength(1);
+  });
+});
+
+describe("inbox persistence failure and objective retention", () => {
+  test("database lock during next rolls back queue and rounds, including after source replay and restart", async () => {
+    const path = persistencePath();
+    const box = new Inbox(); box.persistTo(path);
+    const linked = opened(box, "test", "L-abc123");
+    const source = report({ event_id: "locked-next", type: "message" });
+    box.add("test", [source]);
+    const other = new Database(path);
+    try {
+      other.exec("BEGIN IMMEDIATE");
+      await expect(box.next(linked.key.watch_id, linked.key.cap, 0)).rejects.toThrow(/locked/);
+      expect(box.state(linked.key.watch_id)!.rounds).toBe(0);
+      other.exec("ROLLBACK");
+      expect(box.add("test", [structuredClone(source)])).toBe(0);
+      box.close();
+      const restarted = new Inbox(); restarted.persistTo(path);
+      expect(restarted.state(linked.key.watch_id)!.rounds).toBe(0);
+      expect((await restarted.next(linked.key.watch_id, linked.key.cap, 0)).events).toHaveLength(1);
+      expect(restarted.state(linked.key.watch_id)!.rounds).toBe(1);
+      restarted.close();
+    } finally { other.close(); box.close(); }
+  });
+
+  test("database lock during add, stop and message accounting restores authoritative memory", async () => {
+    const path = persistencePath();
+    const box = new Inbox(); box.persistTo(path);
+    const linked = opened(box, "test", "L-abc123");
+    const other = new Database(path);
+    const source = report({ event_id: "locked-add", type: "message" });
+    try {
+      other.exec("BEGIN IMMEDIATE");
+      expect(() => box.add("test", [source])).toThrow(/locked/);
+      expect(() => box.stop(linked.key.watch_id, linked.key.cap)).toThrow(/locked/);
+      expect(box.state(linked.key.watch_id)!.active).toBe(true);
+      other.exec("ROLLBACK");
+      expect(box.add("test", [source])).toBe(1);
+      await box.next(linked.key.watch_id, linked.key.cap, 0);
+      other.exec("BEGIN IMMEDIATE");
+      expect(() => box.noteMessage("test", "L-abc123")).toThrow(/locked/);
+      expect(box.allowMessage("test", "L-abc123").ok).toBe(true);
+      other.exec("ROLLBACK");
+      box.noteMessage("test", "L-abc123");
+      expect(box.allowMessage("test", "L-abc123").ok).toBe(false);
+    } finally { other.close(); box.close(); }
+  });
+
+  test("all 21 held objective transitions survive restart, legacy tell truncation and the tell TTL", async () => {
+    const path = persistencePath();
+    let now = Date.now();
+    const box = new Inbox(() => now); box.persistTo(path);
+    const transitions = Array.from({ length: 21 }, (_, i) => report({ event_id: `coord:beta:${i + 1}`, type: "message", pane_id: null, objective: "beta", recipient_lease: "L-abc123", transition: { task: "same", seq: i + 1, kind: "ready" }, excerpt: String(i + 1) }));
+    box.add("test", transitions);
+    box.add("test", Array.from({ length: 30 }, (_, i) => report({ event_id: `legacy:${i}`, type: "message" })));
+    box.close(); now += 2 * 3600_000;
+    const restarted = new Inbox(() => now); restarted.persistTo(path);
+    expect(restarted.add("test", structuredClone(transitions))).toBe(0);
+    const linked = opened(restarted, "test", "L-abc123");
+    const received = (await restarted.next(linked.key.watch_id, linked.key.cap, 0)).events;
+    expect(received.map(e => e.transition?.seq)).toEqual(Array.from({ length: 21 }, (_, i) => i + 1));
+    expect(received[0]!.excerpt).toBe("1");
+    restarted.close();
+  });
+
+  test("undelivered objective transitions survive a card ceiling and explicit stop", async () => {
+    const path = persistencePath();
+    const box = new Inbox(); box.persistTo(path);
+    const linked = opened(box, "test", "L-abc123", { maxRounds: 1 });
+    box.add("test", [1, 2, 3].map(seq => report({ event_id: `coord:${seq}`, type: "message", objective: "beta", transition: { task: "same", seq, kind: "ready" } })));
+    expect((await box.next(linked.key.watch_id, linked.key.cap, 0)).events.map(e => e.transition!.seq)).toEqual([1]);
+    const second = opened(box, "test", "L-abc123");
+    box.stop(second.key.watch_id, second.key.cap); box.close();
+    const restarted = new Inbox(); restarted.persistTo(path);
+    const third = opened(restarted, "test", "L-abc123");
+    expect((await restarted.next(third.key.watch_id, third.key.cap, 0)).events.map(e => e.transition!.seq)).toEqual([2, 3]);
+    restarted.close();
+  });
+});
+
+test("database lock during card replacement preserves the original credential and queued transitions", async () => {
+  const path = persistencePath();
+  const box = new Inbox(); box.persistTo(path);
+  const first = opened(box, "test", "L-abc123");
+  box.add("test", [report({ event_id: "replacement", type: "message", objective: "beta", transition: { task: "same", seq: 1, kind: "ready" } })]);
+  const other = new Database(path);
+  try {
+    other.exec("BEGIN IMMEDIATE");
+    expect(() => box.open("test", "L-abc123", { cap: first.key.cap })).toThrow(/locked/);
+    expect(box.state(first.key.watch_id)!.active).toBe(true);
+    other.exec("ROLLBACK");
+    expect((await box.next(first.key.watch_id, first.key.cap, 0)).events).toHaveLength(1);
+  } finally { other.close(); box.close(); }
 });

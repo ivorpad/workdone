@@ -7,6 +7,7 @@ import { menuExcerpt } from "../gateway/attention.ts";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { answerKeys, goAhead, isPermissionDialog, parseDialog } from "../gateway/dialog.ts";
 import { Gateway } from "../gateway/gateway.ts";
+import { tryLock } from "../gateway/state-lock.ts";
 
 // Screens captured from Claude Code, Codex and cursor-agent on 28-09 (tests/fixtures/screens).
 const screen = (name: string) => readFileSync(join(import.meta.dir, "fixtures/screens", `${name}.txt`), "utf8");
@@ -506,14 +507,44 @@ describe("approveMenus", () => {
     expect(t.pressed).toEqual([]);
   });
 
-  test("a pane another process is answering is left alone; a lock a dead process left is not", async () => {
+  test("an aged lock with an unknown owner stays busy without approving", async () => {
     const t = setup([screen("claude-ask-rule"), screen("claude-ask-after")]);
     const lock = join(t.state, "answer-w1_p1.lock");
     mkdirSync(lock);
     expect(await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).toEqual({ approved: [], status: null, busy: true });
     expect(t.pressed).toEqual([]);
     utimesSync(lock, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+    expect(await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).toEqual({ approved: [], status: null, busy: true });
+    expect(t.pressed).toEqual([]);
+    expect(existsSync(lock)).toBe(true);
+  });
+
+  test("an aged lock with a live identifiable owner stays busy without double approval", async () => {
+    const t = setup([screen("claude-ask-rule"), screen("claude-ask-after")]);
+    const lock = join(t.state, "answer-w1_p1.lock");
+    const release = tryLock(lock)!;
+    try {
+      utimesSync(lock, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        expect(await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).toEqual({ approved: [], status: null, busy: true });
+      }
+      expect(t.pressed).toEqual([]);
+      expect(existsSync(lock)).toBe(true);
+    } finally { release(); }
     expect((await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toHaveLength(1);
+    expect((await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toEqual([]);
+    expect(t.pressed).toEqual(["1"]);
+  });
+
+  test("an exited identifiable owner is reclaimed on the first zero-wait attempt", async () => {
+    const t = setup([screen("claude-ask-rule"), screen("claude-ask-after")]);
+    const lock = join(t.state, "answer-w1_p1.lock");
+    const child = Bun.spawn([process.execPath, "-e", `import { tryLock } from ${JSON.stringify(join(import.meta.dir, "../gateway/state-lock.ts"))}; if (!tryLock(process.argv[1])) process.exit(1);`, lock], { stdout: "pipe", stderr: "pipe" });
+    expect(await child.exited).toBe(0);
+    expect(await new Response(child.stderr).text()).toBe("");
+    expect(JSON.parse(readFileSync(join(lock, "owner.json"), "utf8")).pid).toBe(child.pid);
+    expect((await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toHaveLength(1);
+    expect((await approveMenus(t.cfg, t.herdr, "w1:p1", "watch_poll", { waitMs: 0 })).approved).toEqual([]);
     expect(t.pressed).toEqual(["1"]);
     expect(existsSync(lock)).toBe(false);
   });

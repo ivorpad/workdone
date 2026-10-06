@@ -397,3 +397,56 @@ describe("reply: true results on agent.finished", () => {
     expect(events[0].data.result).toBeUndefined();
   });
 });
+
+describe("native objective transitions", () => {
+  const coordSubscription = (objective: string, changes: Record<string, unknown> = {}) => ({ name: "coord.changed", arguments: { machine: "test", objective }, delivery: { mode: "webhook", url: "https://callbacks.example.com/mock", secret }, ...changes });
+  const transitionReport = (objective: string, seq: number, pane_id: string | null = null): Report => report({ event_id: `coord:${objective}:${seq}`, pane_id, type: "message", objective, recipient_lease: `L-${objective}`, lease: "L-alpha-worker", reply_to: null, transition: { task: "same-task", seq, kind: "ready" } });
+
+  test("alpha release wakes only beta's objective subscription, including an unbound waiter and colliding task IDs", async () => {
+    const checked: unknown[] = [];
+    const f = fixture({ callbackHosts: ["callbacks.example.com"], authorize: async (p: EventPrincipal, args: unknown, resource: unknown) => { checked.push({ principal: p.id, args, resource }); return true; } });
+    const alpha = await f.service.subscribe(principal, coordSubscription("alpha"));
+    const beta = await f.service.subscribe(principal, coordSubscription("beta"));
+    // An observer is notified only after explicitly establishing its own subscription.
+    const observer = await f.service.subscribe({ ...principal, id: "observer" }, coordSubscription("beta"));
+    await f.service.subscribe({ ...principal, id: "agent-observer" }, { name: "agent.message", arguments: { machine: "test" }, delivery: coordSubscription("beta").delivery });
+    const before = f.sent.length;
+    expect(await f.service.addReports("test", [transitionReport("beta", 7), transitionReport("beta", 8, "w-worker:p1")])).toBe(4);
+    await f.service.flush();
+    const events = f.sent.slice(before);
+    expect(events).toHaveLength(4);
+    expect(new Set(events.map(e => e.headers["X-MCP-Subscription-Id"]))).toEqual(new Set([beta.id, observer.id]));
+    expect(events.some(e => e.headers["X-MCP-Subscription-Id"] === alpha.id)).toBe(false);
+    for (const request of events) {
+      const event = JSON.parse(request.body);
+      expect(event.name).toBe("coord.changed");
+      expect(event.data).toEqual({ machine: "test", objective: "beta", task: "same-task", seq: expect.any(Number), kind: "ready" });
+      expect(event.data.pane_id).toBeUndefined();
+      expect(event.data.recipient_lease).toBeUndefined();
+      expect(event.data.token).toBeUndefined();
+    }
+    expect(checked.some((c: any) => c.resource?.objective === "beta")).toBe(true);
+    // A different objective with the same task and seq is a distinct occurrence.
+    expect(await f.service.addReports("test", [transitionReport("alpha", 7)])).toBe(1);
+    await f.service.flush();
+    expect(f.sent.at(-1)!.headers["X-MCP-Subscription-Id"]).toBe(alpha.id);
+    expect(await f.service.addReports("test", [transitionReport("beta", 7)])).toBe(0);
+  });
+
+  test("objective filters cannot be used on agent events, and task targets cannot be used on objective events", async () => {
+    const f = fixture({ callbackHosts: ["callbacks.example.com"] });
+    await expect(f.service.subscribe(principal, coordSubscription("beta", { arguments: { target: "worker" } }))).rejects.toThrow();
+    await expect(f.service.subscribe(principal, coordSubscription("beta", { name: "agent.message" }))).rejects.toThrow();
+    expect(f.sent).toHaveLength(0);
+    expect(EVENTS.find(e => e.name === "coord.changed")!.delivery).toEqual(["webhook"]);
+  });
+
+  test("objective read revocation suppresses delivery and malformed transitions retain source intake for retry", async () => {
+    const f = fixture({ callbackHosts: ["callbacks.example.com"] });
+    await f.service.subscribe(principal, coordSubscription("beta"));
+    await f.service.addReports("test", [transitionReport("beta", 1)]);
+    f.revoke(); await f.service.flush();
+    expect(f.sent).toHaveLength(1);
+    await expect(f.service.addReports("test", [report({ objective: "beta", event_id: "bad-transition" })])).rejects.toThrow("Invalid coordination transition");
+  });
+});

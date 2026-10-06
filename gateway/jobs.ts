@@ -4,12 +4,14 @@
 // exit code. watch_poll reports a run once when it ends, and the notifier sends that
 // to the phone like a finished agent turn.
 
+import { StateStore } from "./state.ts";
+import { pollWaiting, pollWatched, withReports, type Found } from "./watcher.ts";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { GatewayError, expandHome, type GatewayConfig } from "./config.ts";
+import { GatewayError, expandHome, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { childEnv } from "./process.ts";
-import { optInt, optStr, str, type Op } from "./params.ts";
+import { optInt, optStr, str, type Op, type Params } from "./params.ts";
 
 export interface BrowserConfig {
   command: string[];
@@ -221,4 +223,26 @@ export function jobOps(cfg: GatewayConfig): Record<string, Op> {
       return view(cfg, id, false);
     },
   };
+}
+
+// Explicit reliable mode for new MCP notifiers. Old callers and the standalone
+// watcher keep one-shot delivery. Ack is idempotent and only removes named IDs.
+export async function watchPoll(cfg: GatewayConfig, herdr: HerdrCall, params: Params): Promise<Found & { delivery?: "ack" }> {
+  const waitMs = optInt(params, "wait_ms", 0, 25_000) ?? 0;
+  if (params.delivery !== undefined && params.delivery !== "ack") throw new GatewayError("invalid_params", "delivery must be ack when supplied");
+  const reliable = params.delivery === "ack";
+  const ids = params.ack;
+  if (ids !== undefined && (!reliable || !Array.isArray(ids) || ids.length > 10_000 || !ids.every(id => typeof id === "string" && id.length > 0 && id.length <= 200))) throw new GatewayError("invalid_params", "ack requires reliable mode and a list of event IDs");
+  const store = new StateStore(cfg.stateDir);
+  if (ids !== undefined) store.acknowledgeReports(ids as string[]);
+  const agents = () => pollWatched(cfg, herdr, Date.now(), reliable);
+  const jobs = () => pollJobs(cfg);
+  let found: Found;
+  if (waitMs > 0) found = await pollWaiting(cfg, herdr, waitMs, agents, jobs, params.tells === true);
+  else {
+    const a = await agents();
+    const j = jobs();
+    found = withReports({ messages: [...a.messages, ...j.messages], remaining: a.remaining + j.remaining }, a.reports);
+  }
+  return reliable ? { ...found, delivery: "ack" } : found;
 }

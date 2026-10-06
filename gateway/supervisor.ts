@@ -20,8 +20,13 @@ export interface SupervisorObservation {
   ahead?: number | null;
   upstream?: string | null;
   activity?: string;
-  // A bound worker's coordination task version (coord.ts): its own progress.
+  // A bound worker's coordination task (coord.ts): progress moves only on substantive
+  // work; version is merge metadata and moves on heartbeats too, so it is never progress.
+  task_progress?: number;
   task_version?: number;
+  // Which task and binding the turn belonged to: progress counters of different tasks or
+  // runs are not comparable.
+  task_identity?: { objective: string; id: string; binding: string };
   attention?: "question" | "dialog" | null;
   owner_required?: boolean;
   prompt_running?: boolean;
@@ -36,12 +41,14 @@ export interface SupervisorOptions {
   // A reply: true result has not been delivered yet.
   result_pending?: boolean;
   // The coordination task this agent owns (coord.ts), if any.
-  task?: { id: string; status: string; version?: number; blocker: string | null; unmet_deps: string[] };
+  // commit: the worker's result commit, which makes it a coding task whose publication
+  // has to show before its agent is prunable.
+  task?: { id: string; status: string; version?: number; progress?: number; blocker: string | null; unmet_deps: string[]; commit?: string | null };
 }
 
 export const SUPERVISOR_ACTIONS = ["continue", "nudge_ship_slice", "lower_or_change_model_effort", "handoff", "verify_checkpoint", "ask_owner", "prune_close"] as const;
 export type SupervisorAction = (typeof SUPERVISOR_ACTIONS)[number];
-export type SupervisorState = "progressing" | "stalled" | "repetitive_loop" | "blocked" | "waiting_dependency" | "checkpoint_ready" | "landed" | "unknown";
+export type SupervisorState = "progressing" | "stalled" | "repetitive_loop" | "blocked" | "waiting_dependency" | "checkpoint_ready" | "accepted" | "landed" | "unknown";
 export interface SupervisorDiagnosis {
   state: SupervisorState;
   recommendations: Array<{ action: SupervisorAction; reasons: string[]; evidence: string[] }>;
@@ -68,16 +75,20 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
     [`task=${opts.task.id}`, `task_status=${opts.task.status}`, `unmet_deps=${opts.task.unmet_deps.join(",") || "none"}`, ...(opts.task.blocker ? [`blocker=${opts.task.blocker}`] : [])]);
   }
 
-  // Never compare across restarts or unknown session identities.
-  const prior = current.session ? history.filter((o) => o.session === current.session) : [];
+  // Never compare across restarts or unknown session identities, nor, for a bound worker,
+  // across tasks or runs: a new task's first turns are not a stall of the old one's.
+  const same_task = (o: SupervisorObservation) => !opts.task || (!!o.task_identity && !!current.task_identity
+    && o.task_identity.objective === current.task_identity.objective && o.task_identity.id === current.task_identity.id && o.task_identity.binding === current.task_identity.binding);
+  const prior = current.session ? history.filter((o) => o.session === current.session && same_task(o)) : [];
   const recorded = prior.filter((o) => o.turn !== undefined);
   const last = recorded.at(-1);
   // The current observation can itself be a turn record (the one that just ended).
   const turns = current.turn !== undefined && current.turn !== last?.turn ? [...recorded, current] : recorded;
   const nudge = current.session ? opts.nudges?.filter((n) => n.session === current.session).at(-1) : undefined;
   // A bound worker shares its repo with others, so HEAD and the tree move for all of them:
-  // its own task version is the evidence. Everyone else keeps commit and diff.
-  const keys = opts.task ? (["task_version"] as const) : (["commit", "diff"] as const);
+  // its own task progress is the evidence (history without it is unknown, never HEAD or
+  // version). Everyone else keeps commit and diff.
+  const keys = opts.task ? (["task_progress"] as const) : (["commit", "diff"] as const);
   const known = (o: SupervisorObservation) => keys.every((k) => o[k] !== undefined);
   const same = (a: SupervisorObservation, b: SupervisorObservation) => keys.every((k) => a[k] === b[k]);
   const differs = (a: SupervisorObservation, b: SupervisorObservation) =>
@@ -119,21 +130,36 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
   }
 
   if (SETTLED.has(current.status) && !current.prompt_running) {
-    // The supervisor accepted its task: done, whatever other workers left in the shared tree.
-    if (opts.task?.status === "complete") {
-      return result("landed", "prune_close", "Its coordination task was accepted complete. Close the agent (prunable_agents gives what to close).", [`task=${opts.task.id}`, "task_status=complete", `status=${current.status}`]);
+    const upstream = current.upstream ?? last?.upstream;
+    const ahead = current.upstream ? current.ahead : last?.upstream ? last.ahead : undefined;
+    const publication = upstream ? `upstream=${upstream} ahead=${ahead ?? "unknown"}` : "upstream=none";
+    // Published: the branch has an upstream and nothing on it is ahead of it.
+    const unpublished = !upstream ? "no upstream, so publication is unknown" : typeof ahead !== "number" ? "ahead of upstream is unknown" : ahead > 0 ? `${ahead} commit${ahead > 1 ? "s" : ""} not pushed to ${upstream}` : null;
+    if (opts.task) {
+      const t = opts.task;
+      const evidence = [`task=${t.id}`, `task_status=${t.status}`, `status=${current.status}`, ...(t.commit ? [`task_commit=${short(t.commit)}`, publication] : [])];
+      if (t.status !== "complete") {
+        return result("checkpoint_ready", "verify_checkpoint", `The agent has settled; its task is ${t.status}, not accepted. Not prunable until the supervisor accepts it complete.`, evidence);
+      }
+      if (opts.result_pending) return result("accepted", "verify_checkpoint", "Its task was accepted, but a reply: true result is still owed. Not prunable yet.", evidence);
+      // Accepted is not published: a task that produced a commit needs that shown too.
+      if (t.commit && unpublished) {
+        return result("accepted", "verify_checkpoint", `Its task was accepted complete, but its commit is not shown published: ${unpublished}. Not prunable until it is pushed (or the supervisor closes it deliberately).`, evidence);
+      }
+      return t.commit
+        ? result("landed", "prune_close", "Its task was accepted complete and its branch is published. Close the agent (prunable_agents gives what to close).", evidence)
+        : result("accepted", "prune_close", "Its task was accepted complete; it produced no commit, so there is nothing to publish. Close the agent (prunable_agents gives what to close).", evidence);
     }
     // A baseline from another session (an agent restarted in the pane) says nothing about this one.
     const ours = opts.baseline && (opts.baseline.session == null || opts.baseline.session === current.session);
     const base = ours ? opts.baseline!.commit : undefined;
     const head = current.commit ?? last?.commit;
     const clean = current.clean ?? last?.clean;
-    const evidence = [`status=${current.status}`, "prompt_running=false", `baseline=${short(base)}`, `commit=${short(head)}`, `clean=${clean ?? "unknown"}`,
-      ...(current.upstream ? [`upstream=${current.upstream} ahead=${current.ahead ?? "unknown"}`] : current.commit ? ["upstream=none"] : [])];
-    if (base && head && head !== base && clean === true && !opts.result_pending) {
-      return result("landed", "prune_close", "A commit beyond the start landed and the working tree is clean: the bounded unit is done. Check it, then close the agent (prunable_agents gives what to close).", evidence);
+    const evidence = [`status=${current.status}`, "prompt_running=false", `baseline=${short(base)}`, `commit=${short(head)}`, `clean=${clean ?? "unknown"}`, ...(head ? [publication] : [])];
+    if (base && head && head !== base && clean === true && !opts.result_pending && !unpublished) {
+      return result("landed", "prune_close", "A commit beyond the start landed, is pushed, and the working tree is clean: the bounded unit is done. Check it, then close the agent (prunable_agents gives what to close).", evidence);
     }
-    const why = !base || !head ? "no baseline or commit to compare" : head === base ? "no commit beyond the start yet" : clean !== true ? "uncommitted changes remain" : "a reply: true result is still owed";
+    const why = !base || !head ? "no baseline or commit to compare" : head === base ? "no commit beyond the start yet" : clean !== true ? "uncommitted changes remain" : opts.result_pending ? "a reply: true result is still owed" : `not published: ${unpublished}`;
     return result("checkpoint_ready", "verify_checkpoint", `The agent has settled; verify its checkpoint before assigning more work. Not prunable: ${why}.`, evidence);
   }
 

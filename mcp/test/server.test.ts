@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { parseConfig, sshArgs } from "../src/config.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
-import { createHandler, logRpc } from "../src/server.ts";
+import { createEventService, createHandler, logRpc } from "../src/server.ts";
 import { TOOLS } from "../src/tools.ts";
 
 // Registered next to TOOLS by registerConfirm.
@@ -195,5 +195,40 @@ describe("rpc log", () => {
       { event: "client_hello", method: "server/discover", protocolHeader: "2026-07-28", meta: envelope },
     ]);
     expect(lines.join("\n")).not.toContain("secret");
+  });
+});
+
+describe("objective event authorization", () => {
+  test("subscription and delivery recheck canonical objective read access without a pane lookup", async () => {
+    const requests: Array<[string, string, Record<string, unknown>]> = [];
+    let exists = true;
+    let allowed = true;
+    let delivered = 0;
+    const call: CallGateway = async (machine, op, params) => {
+      requests.push([machine, op, params]);
+      return exists ? { ok: true, result: { objectives: [{ id: "beta" }] } } : { ok: false, error: { code: "unknown_objective", message: "missing" } };
+    };
+    const auth = { allowedMachines: async () => allowed ? ["test"] : [], isAuthorized: async () => allowed } as any;
+    const config = { ...cfg, events: { statePath: ":memory:", callbackHosts: ["callbacks.example.com"] } };
+    const service = createEventService(config, call, auth, { now: () => 1000, log: () => {}, sender: async (_url, _headers, body) => { const event = JSON.parse(body); if (event.type !== "verification") delivered++; return { status: 200, body: JSON.stringify({ challenge: event.challenge }) }; } })!;
+    const identity = { id: "observer", issuer: "https://issuer.example.test", subject: "observer", scopes: ["workdone"], tokenExpiresAt: 1000000 };
+    const subscription = { name: "coord.changed", arguments: { machine: "test", objective: "beta" }, delivery: { mode: "webhook", url: "https://callbacks.example.com/mock", secret: `whsec_${Buffer.alloc(32, 3).toString("base64")}` } };
+    try {
+      await service.subscribe(identity, subscription);
+      expect(requests).toEqual([["test", "coord_snapshot", { objective: "beta", view: "resume" }], ["test", "coord_snapshot", { objective: "beta", view: "resume" }]]);
+      const source = { event_id: "beta1", objective: "beta", transition: { task: "same", seq: 1, kind: "ready" }, pane_id: null, type: "message" as const, agent: null, kind: null, cwd: null, excerpt: null, lease: null, reply_to: null, message: "hint" };
+      await service.addReports("test", [source]);
+      await service.flush();
+      expect(delivered).toBe(1);
+      expect(requests.at(-1)![1]).toBe("coord_snapshot");
+      exists = false;
+      await service.addReports("test", [{ ...source, event_id: "beta2" }]);
+      await service.flush();
+      expect(delivered).toBe(1);
+      await expect(service.subscribe(identity, subscription)).rejects.toThrow(/authorized/);
+      allowed = false;
+      await expect(service.subscribe(identity, subscription)).rejects.toThrow(/authorized/);
+      expect(requests.every(([, op]) => op === "coord_snapshot")).toBe(true);
+    } finally { await service.close(); }
   });
 });

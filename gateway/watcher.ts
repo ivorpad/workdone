@@ -16,7 +16,7 @@ import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-op
 import { parseDialog, type Dialog } from "./dialog.ts";
 import { asksOwner, dialogExcerpt, replyExcerpt, screenReply } from "./attention.ts";
 import { activityDigest, checkpoint } from "./checkpoint.ts";
-import { runEnded } from "./coord.ts";
+import { currentTaskBinding, runEnded } from "./coord.ts";
 import { notifyTransitions } from "./coord-ops.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
@@ -124,7 +124,10 @@ export interface Report {
   // Optional for gateways from before native MCP Events.
   event_id?: string;
   occurred_at?: string;
-  pane_id: string;
+  pane_id: string | null;
+  objective?: string;
+  recipient_lease?: string;
+  transition?: { task: string; seq: number; kind: string };
   // "message": an agent wrote to its thread with tell.
   type: Note["type"] | "message";
   agent: string | null;
@@ -232,13 +235,17 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
 
 // One pass over the watch list: returns the messages to send and how many agents are
 // still watched, and records drops, state changes and the last event of each agent.
-export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number): Promise<Found> {
+export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number, reliable = false): Promise<Found> {
   const store = new StateStore(cfg.stateDir);
-  const watched = store.watched();
+  const initial = store.transaction(() => ({ watched: store.watched(), queued: reliable ? store.outbox() : [], told: store.told() }));
+  const watched = initial.watched;
+  if (initial.queued.length) return { messages: [], remaining: Object.keys(watched).length, reports: initial.queued };
   // A tell is collected even with nothing watched: a chat subscribed to agent.message
   // may be listening without holding a watch.
-  if (Object.keys(watched).length === 0 && !store.hasTold()) return { messages: [], remaining: 0, reports: [] };
-  const agents: any[] = (await herdr("agent.list", {})).agents ?? [];
+  if (Object.keys(watched).length === 0 && !initial.told.length) return { messages: [], remaining: 0, reports: [] };
+  // Objective-only transitions need no worker or live Herdr session.
+  const needsAgents = Object.keys(watched).length > 0 || initial.told.some(t => !t.objective);
+  const agents: any[] = needsAgents ? (await herdr("agent.list", {})).agents ?? [] : [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
   const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; menu: Dialog | null; approved: Approval[]; bg: { pid: number; stopped: boolean } | null }> = [];
@@ -272,95 +279,84 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     }
     decided.push({ paneId, w, agent, bg, d, menu, approved });
   }
-  // Record decisions first, and only for entries nobody rewrote since the read above:
-  // a prompt or a watch that landed meanwhile knows more than this pass.
-  const applied = new Set<string>();
-  const dropped: string[] = [];
-  const remaining = store.updateWatched((fresh) => {
-    for (const { paneId, w, d } of decided) {
-      const cur = fresh[paneId];
-      if (!cur || cur.rev !== w.rev) continue;
-      applied.add(paneId);
-      if (d.drop) {
-        delete fresh[paneId];
-        if (d.event === "gone") dropped.push(paneId);
-        if (cur.managed) showWatched(herdr, paneId, false);
-      } else if (d.set) fresh[paneId] = { ...cur, ...d.set };
-    }
-    return Object.keys(fresh).length;
-  });
-  store.clearSupervision(dropped);
-  // Excerpts can take a couple of seconds (a transcript trails the status), so they come after.
-  const messages: string[] = [];
-  const reports: Report[] = [];
-  const leases = store.leases();
-  // Messages agents sent with tell: to the thread holding them, not to the phone.
-  for (const t of store.takeTold()) {
-    const w = watched[t.pane_id];
-    const agent = byPane.get(t.pane_id);
-    const name = agent?.name ?? w?.name ?? null;
-    reports.push({ event_id: randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: leaseOf(leases, t.pane_id, now), reply_to: null, message: `${name ?? t.pane_id} says: ${clip(t.text, 400)}` });
-  }
-  const events: Array<[string, NonNullable<Watched["last_event"]>]> = [];
-  const resolved = new Map<string, TurnResult>();
-  for (const { paneId, w, agent, d, bg, menu, approved } of decided) {
-    if (!applied.has(paneId)) continue;
-    if (approved.length) events.push([paneId, { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(approved) }]);
-    if (!d.event) continue;
-    const note: Note = bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
-    const text = message(w, agent, paneId, note);
-    messages.push(text);
-    const eventId = randomUUID();
-    // A turn that ended (or the agent's exit) is evidence for the supervisor, and resolves a
-    // result someone asked for. A question keeps the result pending: it is not final.
-    const ended = note.type === "finished" || note.type === "question";
-    const resolves = !!w.result_request && (note.type === "finished" || note.type === "gone");
+  // Read transcripts/checkpoints before the commit; no network wait holds the
+  // state lock. A concurrent prompt or poll fences these decisions by revision.
+  const prepared = await Promise.all(decided.map(async entry => {
+    const { w, agent, d, bg, menu } = entry;
+    const note: Note | null = !d.event ? null : bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
+    const ended = note?.type === "finished" || note?.type === "question";
+    const resolves = !!w.result_request && (note?.type === "finished" || note?.type === "gone");
     const cp = (ended && w.managed) || resolves ? await checkpoint(cfg, agent?.foreground_cwd ?? agent?.cwd ?? w.cwd).catch(() => null) : null;
-    // A bound coordination run that ended its turn without reporting, or went away, is
-    // recoverable protocol state, never complete (coord.ts runEnded).
-    if (note.type === "finished" || note.type === "gone") {
-      const how = note.type === "finished" ? "finished" : "gone";
-      const ran = store.updateCoord((c) => ({ changes: runEnded(c, paneId, how, new Date(now).toISOString()), store: c }));
-      if (ran.changes.length) notifyTransitions(store, ran.store, ran.changes);
-    }
-    if (ended && w.managed) {
-      const bound = Object.values(store.coord().objectives).flatMap((o) => Object.values(o.tasks)).find((t) => t.binding?.pane_id === paneId && t.status !== "complete");
-      store.recordTurn(paneId, {
-        turn: eventId, at: new Date(now).toISOString(), session: seenState(agent).session ?? null, status: note.type,
-        ...(bound ? { task_version: bound.version } : {}),
-        ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, changed: cp.changed, ahead: cp.ahead, upstream: cp.upstream } : {}),
-        activity: activityDigest(note.text ?? note.excerpt),
-      });
-    }
-    const result: TurnResult | undefined = resolves ? {
-      result_id: w.result_request!.id, requested_at: w.result_request!.at,
-      status: note.type === "gone" ? "gone" : note.text?.startsWith("[interrupted]") ? "interrupted" : "finished",
-      summary: resultLine(note.text), commit: cp?.commit ?? null, tree: cp?.tree ?? null, clean: cp?.clean ?? null,
-      changed: cp?.changed ?? null, branch: cp?.branch ?? null, kind: w.launch?.kind ?? agent?.agent ?? w.kind ?? null,
-      model: w.launch?.model ?? null, model_id: w.launch?.model_id ?? null, effort: w.launch?.effort ?? null,
-    } : undefined;
-    if (result) resolved.set(paneId, result);
-    reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
-    events.push([paneId, { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt }]);
-  }
-  if (events.length) {
-    store.updateWatched((fresh) => {
-      // Delivered once, by ID: a write since this pass's read can't make it owed again.
-      // The result stays readable (get_agent watch.last_result) in case the event is missed.
-      for (const [id, res] of resolved) {
-        if (!fresh[id]) continue;
-        if (fresh[id]!.result_request?.id === res.result_id) delete fresh[id]!.result_request;
-        fresh[id] = { ...fresh[id]!, last_result: res };
+    return { ...entry, note, ended, resolves, cp };
+  }));
+  const hidden: string[] = [];
+  const found = store.transaction(() => {
+    const messages: string[] = [];
+    const reports: Report[] = [];
+    const leases = store.leases();
+    const told = store.takeTold();
+    const dropped: string[] = [];
+    const remaining = store.updateWatched(fresh => {
+      for (const { paneId, w, agent, d, menu, approved, note, ended, resolves, cp } of prepared) {
+        const cur = fresh[paneId];
+        if (!cur || cur.rev !== w.rev) continue;
+        if (d.drop) {
+          delete fresh[paneId];
+          if (d.event === "gone") dropped.push(paneId);
+          if (cur.managed) hidden.push(paneId);
+        } else if (d.set || d.event || approved.length) fresh[paneId] = { ...cur, ...d.set, rev: randomUUID() };
+        if (approved.length && fresh[paneId]) fresh[paneId]!.last_event = { type: "approved", at: new Date(now).toISOString(), excerpt: approvedExcerpt(approved) };
+        if (!note) continue;
+        const text = message(w, agent, paneId, note);
+        const eventId = randomUUID();
+        if (note.type === "finished" || note.type === "gone") {
+          const ran = store.updateCoord(c => ({ changes: runEnded(c, paneId, note.type as "finished" | "gone", new Date(now).toISOString()), store: c }));
+          if (ran.changes.length) notifyTransitions(store, ran.store, ran.changes);
+        }
+        if (ended && w.managed) {
+          const bound = currentTaskBinding(store.coord(), paneId, seenState(agent).session ?? w.session);
+          store.recordTurn(paneId, {
+            turn: eventId, at: new Date(now).toISOString(), session: seenState(agent).session ?? null, status: note.type,
+            ...(bound?.t.binding ? { task_version: bound.t.version, task_progress: bound.t.progress ?? 0,
+              task_identity: { objective: bound.o.id, id: bound.t.id, binding: bound.t.binding.id } } : {}),
+            ...(cp ? { commit: cp.commit, tree: cp.tree, diff: cp.diff, clean: cp.clean, changed: cp.changed, ahead: cp.ahead, upstream: cp.upstream } : {}),
+            activity: activityDigest(note.text ?? note.excerpt),
+          });
+        }
+        const result: TurnResult | undefined = resolves ? {
+          result_id: w.result_request!.id, requested_at: w.result_request!.at,
+          status: note.type === "gone" ? "gone" : note.text?.startsWith("[interrupted]") ? "interrupted" : "finished",
+          summary: resultLine(note.text), commit: cp?.commit ?? null, tree: cp?.tree ?? null, clean: cp?.clean ?? null,
+          changed: cp?.changed ?? null, branch: cp?.branch ?? null, kind: w.launch?.kind ?? agent?.agent ?? w.kind ?? null,
+          model: w.launch?.model ?? null, model_id: w.launch?.model_id ?? null, effort: w.launch?.effort ?? null,
+        } : undefined;
+        reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
+        messages.push(text);
+        if (fresh[paneId]) {
+          if (result && fresh[paneId]!.result_request?.id === result.result_id) delete fresh[paneId]!.result_request;
+          if (result) fresh[paneId]!.last_result = result;
+          fresh[paneId]!.last_event = { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt };
+          if (note.type !== "blocked") delete fresh[paneId]!.reply_to;
+        }
       }
-      for (const [id, e] of events) {
-        if (!fresh[id] || fresh[id]!.rev !== watched[id]?.rev) continue;
-        fresh[id] = { ...fresh[id], last_event: e };
-        // The owed answer was reported; a menu mid-turn doesn't settle it.
-        if (e.type !== "blocked" && e.type !== "approved") delete fresh[id]!.reply_to;
-      }
+      return Object.keys(fresh).length;
     });
-  }
-  return { messages, remaining, reports };
+    store.clearSupervision(dropped);
+    // takeTold is safe here: queue consumption and report enqueue are one commit.
+    for (const t of told) {
+      const w = t.pane_id ? watched[t.pane_id] : undefined;
+      const agent = t.pane_id ? byPane.get(t.pane_id) : undefined;
+      const name = agent?.name ?? w?.name ?? null;
+      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
+    }
+    if (reliable) {
+      store.enqueueReports(reports);
+      return { messages, remaining, reports: store.outbox() };
+    }
+    return { messages, remaining, reports };
+  });
+  for (const paneId of hidden) showWatched(herdr, paneId, false);
+  return found;
 }
 
 export interface Found {

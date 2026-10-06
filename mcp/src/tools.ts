@@ -32,6 +32,9 @@ const effort = z.string().optional().describe("Reasoning effort, one of that mod
 const reply = z.boolean().optional().describe(
   "Opt-in, default false. Deliver this agent's next final result once, when it finishes or exits: agent.finished carries data.result with the returned result_id (native Events), or a linked watch card wakes with it as the reply. A question or menu does not end it. Ask the agent in the prompt to end its final answer with a line starting RESULT: so data.result.summary is set. Then stop: don't poll or wait_agent for it. Asking again while one is pending returns the same result_id. WorkDone holds the event until this chat has made no WorkDone call for 90 s, since ChatGPT drops events that arrive mid-turn; get_agent watch.last_result has the last delivered result if it still never showed.",
 );
+const commandId = z.string().regex(/^[\w.:-]{1,80}$/).optional().describe(
+  "For a prompt to a task-bound agent: your id for this send, kept when you retry. The same id and text again returns the recorded outcome instead of sending twice; while that send is in flight or in doubt (dispatch_unknown) nothing is resent. Ignored for agents with no task.",
+);
 const task = z.object({ objective: z.string(), id: z.string() }).optional().describe(
   "Opt-in coordination binding (docs/coordination.md): bind this coordination task to this agent's run, under the objective's lease. Each prompt WorkDone then sends that agent carries a bounded task slice: acceptance, dependencies, resources, latest evidence, next action, and the exact workdone-task --token command for its reports. Omit it for ordinary one-off work: the prompt goes in exactly as written. An agent already bound gets its slice without it.",
 );
@@ -99,7 +102,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   supervisor_status: {
     title: "Supervisor status",
-    description: "Read-only orchestration advice for watched agents, from evidence: the commit, tree and diff digest recorded at each finished turn, the live git state, and status and turn progression. state is progressing, stalled (two finished turns with no new commit or diff), repetitive_loop (the same answer too), blocked, checkpoint_ready, landed or unknown; each recommendation has reasons and evidence. Actions: continue; nudge_ship_slice (call supervisor_nudge, once per agent session); after that nudge, handoff or lower_or_change_model_effort, never a second nudge; prune_close only when a commit beyond the agent's start landed and its tree is clean (then prunable_agents and close); ask_owner; verify_checkpoint. A reviewer's stall is a handoff back to you: never spawn a reviewer for a reviewer, and don't retry the same failing operation. Elapsed time alone is never a stall. This tool changes nothing.",
+    description: "Read-only orchestration advice for watched agents, from evidence: the commit, tree and diff digest recorded at each finished turn, the live git state, and status and turn progression. state is progressing, stalled (two finished turns with no new commit or diff; for a bound worker, no task progress), repetitive_loop (the same answer too), blocked, waiting_dependency, checkpoint_ready, accepted (its task was accepted complete), landed (its commit is pushed) or unknown; each recommendation has reasons and evidence. Actions: continue; nudge_ship_slice (call supervisor_nudge, once per agent session); after that nudge, handoff or lower_or_change_model_effort, never a second nudge; prune_close only when a commit beyond the agent's start is pushed (upstream, nothing ahead) and its tree is clean, or its coordination task was accepted complete (and any commit it produced is pushed), with no result still owed (then prunable_agents and close); ask_owner; verify_checkpoint. A reviewer's stall is a handoff back to you: never spawn a reviewer for a reviewer, and don't retry the same failing operation. Elapsed time alone is never a stall. This tool changes nothing.",
     input: {},
     annotations: READ,
   },
@@ -114,7 +117,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   coord_update: {
     title: "Plan and merge coordination state",
-    description: "The supervisor's writes to one objective, which this conversation's lease then owns (take_over: true moves one from another thread, only when the user says so). tasks is a list of partial task upserts by id: title (required when new), status, owner (the agent's name; it reports from its pane with workdone-task), deps (task ids of this objective, no cycles), acceptance, evidence and artifacts (appended), blocker, next_action, or remove: true. Only the supervisor sets complete, after checking acceptance against evidence; that frees the task's resources. resources maps a resource name to the task holding it, or null to free it. Pass expected_version (objective) or tasks[].expected_version (one task) from the snapshot to refuse a stale merge (version_conflict). ack_seq acknowledges transitions you handled (ready, needs_acceptance, blocked_human, missing_report, worker_gone, resource_stale); notifications about them are hints, the snapshot is the truth. A gone worker's resources stay stale until you free them with null once that process is surely stopped. Reassigning owner invalidates the old run's token. Bind a task to an agent run with task on spawn_agent or prompt_agent. Workers publish their own deltas and results; don't relay their prose here. Returns the new snapshot.",
+    description: "The supervisor's writes to one objective, which this conversation's lease then owns (take_over: true moves one from another thread, only when the user says so). tasks is a list of partial task upserts by id: title (required when new), status, owner (the agent's name; it reports from its pane with workdone-task), deps (task ids of this objective, no cycles), acceptance, evidence and artifacts (appended), blocker, next_action, or remove: true. Only the supervisor sets complete, after checking acceptance against evidence; it is refused while the task has an unresolved blocker unless the same merge passes blocker: null. Complete frees what the task's current run holds; a lease an earlier or gone run holds stays stale. resources maps a resource name to the task holding it, or null to free it; moving a lease another run holds needs {task, expected_generation}. Pass expected_version (objective) or tasks[].expected_version (one task) from the snapshot to refuse a stale merge (version_conflict). ack_seq acknowledges transitions you handled (ready, needs_acceptance, blocked_human, missing_report, worker_gone, resource_stale, dispatch_unknown); notifications about them are hints, the snapshot is the truth. A gone worker's resources stay stale until you free them with null once that process is surely stopped. Reassigning owner invalidates the old run's token. Bind a task to an agent run with task on spawn_agent or prompt_agent. Workers publish their own deltas and results; don't relay their prose here. Returns the new snapshot.",
     input: {
       objective: z.string().describe("Short lowercase id, e.g. relay-pwc."),
       title: z.string().optional().describe("The objective, in a sentence (on create)."),
@@ -126,9 +129,13 @@ export const TOOLS: Record<string, ToolDef> = {
         evidence: z.array(z.string()).optional(), artifacts: z.array(z.string()).optional(),
         blocker: z.string().nullable().optional(), blocker_kind: z.enum(["dependency", "resource", "defect", "human"]).nullable().optional(),
         next_action: z.string().nullable().optional(), expected_version: z.number().int().min(0).optional().describe("This task's version from the snapshot: a conflict scoped to this task."), remove: z.boolean().optional(),
+        dispatch: z.enum(["delivered", "lost"]).optional().describe("After reading the agent: whether a prompt in flight or in doubt (dispatch_unknown) reached it. Either frees the pane; lost resends nothing by itself."),
       })).max(100).optional(),
       ack_seq: z.number().int().min(0).optional().describe("The seq of the last transition you handled; resume shows only later ones."),
-      resources: z.record(z.string(), z.string().nullable()).optional(),
+      resources: z.record(z.string(), z.union([
+        z.string(), z.null(),
+        z.object({ task: z.string().nullable(), expected_generation: z.number().int().min(0) }),
+      ])).optional().describe("Resource name to the task holding it, null to free it (the only way to clear a stale lease), or {task, expected_generation} to move or free a live lease only if it is still at the generation you read."),
       expected_version: z.number().int().min(0).optional(),
       take_over: z.boolean().optional(),
     },
@@ -174,6 +181,7 @@ export const TOOLS: Record<string, ToolDef> = {
       timeout_ms: timeoutMs,
       reply,
       task,
+      command_id: commandId,
     },
     annotations: WRITE,
   },
@@ -224,7 +232,7 @@ export const TOOLS: Record<string, ToolDef> = {
     title: "Steer working agent",
     description:
       "Send a message to an agent while it works, e.g. a correction or 'stop after this step'. WorkDone types it the way that agent takes a mid-turn message: most queue it until the current tool call ends; some send it at once (delivery says which). An idle agent gets it as a normal prompt. Fails with agent_blocked when a menu is up, so a message never answers one.",
-    input: { target, text: z.string().min(1).describe("The message."), reply, task },
+    input: { target, text: z.string().min(1).describe("The message."), reply, task, command_id: commandId },
     annotations: WRITE,
   },
   send_agent_keys: {

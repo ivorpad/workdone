@@ -2,9 +2,11 @@
 // the bridge created, and which agents to report on when they finish or need the owner.
 // Also the audit log, and the lock that keeps two processes from answering one menu.
 
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { STATE_FILES, readState, recoverState, commitState } from "./state-journal.ts";
+import { tryLock } from "./state-lock.ts";
 import { randomUUID } from "node:crypto";
-import type { TurnResult } from "./watcher.ts";
+import type { Report, TurnResult } from "./watcher.ts";
 import { normalizeStore, type CoordStore } from "./coord.ts";
 import { resolve } from "node:path";
 
@@ -14,9 +16,13 @@ export type CreatedKind = "panes" | "tabs" | "workspaces";
 // once that turn is reported. A managed entry (watch_agent, or an agent started
 // through the bridge) reports every turn and stays until the agent exits.
 export interface Told {
-  pane_id: string;
+  pane_id: string | null;
   text: string;
   at: string;
+  event_id?: string;
+  objective?: string;
+  recipient_lease?: string;
+  transition?: { task: string; seq: number; kind: string };
 }
 
 export interface Watched {
@@ -50,7 +56,7 @@ export interface Watched {
   // A caller asked for this agent's next final result (reply: true). Resolved once, by
   // the first finished turn or the agent's exit; a question or menu leaves it pending.
   result_request?: ResultRequest;
-  // The last result delivered for this agent, for a caller whose event never showed.
+  // The last result resolved for this agent, for a caller whose event never showed.
   last_result?: TurnResult;
 }
 
@@ -87,9 +93,11 @@ export interface TurnRecord {
   upstream?: string | null;
   // Digest of the turn's final text, to tell the same answer repeated.
   activity?: string;
-  // The bound coordination task's version: a bound worker's progress, where several
-  // workers share one repo and HEAD moves for all of them.
+  // Metadata revision and substantive progress are distinct: shared-repo HEAD
+  // changes do not establish progress for an individual coordination task.
   task_version?: number;
+  task_progress?: number;
+  task_identity?: { objective: string; id: string; binding: string };
 }
 
 export interface Supervision {
@@ -133,20 +141,44 @@ const newRev = () => Math.random().toString(36).slice(2, 10);
 export class StateStore {
   constructor(private dir: string) {}
 
+  private staged: Map<string, unknown> | null = null;
+
   private read(file: string): unknown {
-    try {
-      return JSON.parse(readFileSync(resolve(this.dir, file), "utf8"));
-    } catch {
-      return undefined;
-    }
+    if (!this.staged) return this.locked(() => this.read(file));
+    return this.staged.has(file) ? this.staged.get(file) : readState(this.dir, file);
   }
 
-  private write(file: string, value: unknown) {
-    mkdirSync(this.dir, { recursive: true, mode: 0o700 });
-    const path = resolve(this.dir, file);
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(value), { mode: 0o600 });
-    renameSync(tmp, path);
+  private write(file: string, value: unknown): void {
+    if (!this.staged) return this.locked(() => this.write(file, value));
+    this.staged.set(file, JSON.parse(JSON.stringify(value)));
+  }
+
+  // Synchronous state changes and their notifications share one commit. Nested
+  // helpers reuse the transaction. Never hold it over Herdr/network calls.
+  transaction<T>(fn: () => T): T { return this.locked(fn); }
+
+  outbox(): Report[] { return (this.read("outbox.json") as Report[] | undefined) ?? []; }
+
+  enqueueReports(reports: Report[]) {
+    this.locked(() => {
+      const queued = this.outbox();
+      const ids = new Set(queued.map(r => r.event_id));
+      for (const report of reports) {
+        if (!report.event_id) throw new Error("Outbox reports require a stable event ID");
+        if (!ids.has(report.event_id)) { queued.push(report); ids.add(report.event_id); }
+      }
+      if (queued.length > 10_000) throw new Error("Gateway outbox limit reached; acknowledge intake before consuming more state");
+      this.write("outbox.json", queued);
+    });
+  }
+
+  acknowledgeReports(ids: string[]) {
+    this.locked(() => {
+      const acknowledged = new Set(ids);
+      const queued = this.outbox();
+      const remaining = queued.filter(r => !acknowledged.has(r.event_id!));
+      if (remaining.length !== queued.length) this.write("outbox.json", remaining);
+    });
   }
 
   created(kind: CreatedKind): string[] {
@@ -155,11 +187,11 @@ export class StateStore {
   }
 
   remember(kind: CreatedKind, id: string) {
-    this.write(`created-${kind}.json`, [...this.created(kind).filter((x) => x !== id), id].slice(-200));
+    this.locked(() => this.write(`created-${kind}.json`, [...this.created(kind).filter((x) => x !== id), id].slice(-200)));
   }
 
   forget(kind: CreatedKind, id: string) {
-    this.write(`created-${kind}.json`, this.created(kind).filter((x) => x !== id));
+    this.locked(() => this.write(`created-${kind}.json`, this.created(kind).filter((x) => x !== id)));
   }
 
   // The workspace pane exec opens its tabs in.
@@ -177,9 +209,13 @@ export class StateStore {
     this.locked(() => {
       const v = this.read("told.json");
       const cur = Array.isArray(v) ? (v as Told[]) : [];
-      this.write("told.json", [...cur, m].slice(-50));
+      if (m.event_id && cur.some(t => t.event_id === m.event_id)) return;
+      if (cur.length >= 10_000) throw new Error("Gateway told queue limit reached");
+      this.write("told.json", [...cur, { ...m, event_id: m.event_id ?? randomUUID() }]);
     });
   }
+
+  told(): Told[] { return (this.read("told.json") as Told[] | undefined) ?? []; }
 
   takeTold(): Told[] {
     return this.locked(() => {
@@ -230,31 +266,31 @@ export class StateStore {
     });
   }
 
-  // A directory as the lock: mkdir either creates it or fails. The lock is held for a
-  // read and a write. One older than 10 s was left by a process that died holding it;
-  // after 3 s of waiting the caller goes ahead without it rather than fail the op.
+  // Fail closed on contention or invalid state. Legacy JSON stays readable, and
+  // only ENOENT initializes it. Recovery finishes an interrupted committed journal.
   private locked<T>(fn: () => T): T {
+    if (this.staged) return fn();
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const lock = resolve(this.dir, "watch.lock");
-    let held = false;
-    for (const deadline = Date.now() + 3000; !held && Date.now() < deadline; ) {
-      try {
-        mkdirSync(lock);
-        held = true;
-      } catch (err: any) {
-        if (err?.code !== "EEXIST") break;
-        try {
-          if (Date.now() - statSync(lock).mtimeMs > 10_000) rmdirSync(lock);
-        } catch {
-          // gone already
-        }
-        Bun.sleepSync(10);
-      }
-    }
+    let release: (() => void) | null = null;
+    const deadline = Date.now() + 3000;
+    do {
+      release = tryLock(lock);
+      if (!release) Bun.sleepSync(10);
+    } while (!release && Date.now() < deadline);
+    if (!release) throw new Error("Gateway state lock is held; refusing mutation");
     try {
-      return fn();
+      recoverState(this.dir);
+      // Validate the canonical store before any write, including sibling files.
+      for (const file of STATE_FILES) readState(this.dir, file);
+      this.staged = new Map();
+      const out = fn();
+      if (out instanceof Promise) throw new Error("State transactions must be synchronous");
+      commitState(this.dir, this.staged);
+      return out;
     } finally {
-      if (held) rmdirSync(lock);
+      this.staged = null;
+      release();
     }
   }
 
@@ -430,39 +466,17 @@ export class StateStore {
     });
   }
 
-  // One process at a time answers a pane's menu: the notifier's poll and a tool call
-  // can find the same menu, and keys pressed twice land in whatever the agent shows
-  // next. null when another process still holds the pane after waitMs. A lock older
-  // than 60 s was left by a process that died holding it.
+  // Menu locks use the same owner checks; age never authorizes a second answer.
   async withPane<T>(paneId: string, waitMs: number, fn: () => Promise<T>): Promise<T | null> {
     mkdirSync(this.dir, { recursive: true, mode: 0o700 });
     const lock = resolve(this.dir, `answer-${paneId.replace(/[^A-Za-z0-9_.-]/g, "_")}.lock`);
-    let held = false;
-    for (const deadline = Date.now() + waitMs; !held; ) {
-      try {
-        mkdirSync(lock);
-        held = true;
-      } catch (err: any) {
-        if (err?.code !== "EEXIST") break;
-        let gone = false;
-        try {
-          if (Date.now() - statSync(lock).mtimeMs > 60_000) {
-            rmdirSync(lock);
-            gone = true;
-          }
-        } catch {
-          gone = true;
-        }
-        if (gone) continue;
-        if (Date.now() >= deadline) return null;
-        await Bun.sleep(100);
-      }
+    const deadline = Date.now() + waitMs;
+    let release: (() => void) | null;
+    while (!(release = tryLock(lock))) {
+      if (Date.now() >= deadline) return null;
+      await Bun.sleep(Math.min(100, Math.max(1, deadline - Date.now())));
     }
-    try {
-      return await fn();
-    } finally {
-      if (held) rmdirSync(lock);
-    }
+    try { return await fn(); } finally { release(); }
   }
 
   audit(entry: Record<string, unknown>) {

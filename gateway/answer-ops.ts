@@ -19,7 +19,7 @@ import type { Gateway } from "./gateway.ts";
 import { str, type Op } from "./params.ts";
 import { StateStore } from "./state.ts";
 import { lastLines, resultView, textOf } from "./views.ts";
-import { bindAndSlice } from "./coord-ops.ts";
+import { dispatchSlice, INTENT, sendOutcome } from "./coord-ops.ts";
 
 // Pauses between keys, around typed text, and before reading the result. Tests set them to 0.
 export const timing = { key: 250, text: 450, settle: 1500 };
@@ -244,34 +244,55 @@ export function answerOps(g: Gateway): Record<string, Op> {
       if (text.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${g.cfg.maxPromptChars} characters`);
       if (agent.agent_status !== "working") {
         if (agent.agent_status === "blocked") throw new GatewayError("agent_blocked", "the agent is showing a menu: answer it with answer_agent first (choices.go_ahead is the option that lets it carry on)");
-        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease, task: params.task }) };
+        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease, task: params.task, command_id: params.command_id, [INTENT]: (params as any)[INTENT] ?? { op: "steer_agent", text } }) };
       }
       // A menu can come up between Herdr's status and the keys: enter would answer it.
       const d = parseDialog(await menuScreen(g.herdr, agent.pane_id));
       if (d) throw new GatewayError("agent_blocked", `the agent is showing a menu: ${lastLines(d.text, 6)}. Answer it with answer_agent first`);
       // A queued steer is read when the agent's current tool call ends, so this slice can
       // be older than the state by then (docs/coordination.md).
-      const slice = bindAndSlice(g, agent, params);
       const asked = g.askResult(agent.pane_id, agent, params);
+      const drop = () => { if (asked && !asked.already_pending) g.state.dropResult(agent.pane_id, asked.result_id); };
+      let prepared: ReturnType<typeof dispatchSlice>;
       try {
-        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text: slice ? oneLine(`${text} ${slice}`) : text });
+        prepared = dispatchSlice(g, agent, params, text, true, "steer_agent");
       } catch (err) {
-        if (asked && !asked.already_pending) g.state.dropResult(agent.pane_id, asked.result_id);
+        drop();
         throw err;
       }
-      await Bun.sleep(timing.text);
-      const enters = STEER_ENTERS[agent.agent] ?? 1;
-      for (let i = 0; i < enters; i++) {
-        await press(g.herdr, agent.pane_id, ["enter"]);
-        if (i + 1 < enters) await Bun.sleep(timing.text);
+      if (prepared && "replay" in prepared) {
+        drop();
+        return { steered: false, duplicate: true, dispatch: prepared.replay, note: "this command_id was already delivered; nothing was sent again" };
       }
-      const res = await after(g.herdr, agent.pane_id);
-      return {
-        steered: true,
-        delivery: enters > 1 ? "sent now" : "queued: it reaches the agent after its current tool call",
-        ...res,
-        ...(asked ? { result_request: resultView(asked) } : {}),
-      };
+      const dispatch = prepared;
+      try {
+        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text: dispatch ? oneLine(`${text} ${dispatch.slice}`) : text });
+      } catch (err) {
+        drop();
+        dispatch?.settle(sendOutcome(err));
+        throw err;
+      }
+      // The text is typed: from here a failure leaves it unknown whether it was submitted.
+      try {
+        await Bun.sleep(timing.text);
+        const enters = STEER_ENTERS[agent.agent] ?? 1;
+        for (let i = 0; i < enters; i++) {
+          await press(g.herdr, agent.pane_id, ["enter"]);
+          if (i + 1 < enters) await Bun.sleep(timing.text);
+        }
+        const sentState = dispatch?.settle("delivered");
+        const res = await after(g.herdr, agent.pane_id);
+        return {
+          steered: true,
+          delivery: enters > 1 ? "sent now" : "queued: it reaches the agent after its current tool call",
+          ...res,
+          ...(asked ? { result_request: resultView(asked) } : {}),
+          ...(sentState ? { dispatch: sentState } : {}),
+        };
+      } catch (err) {
+        dispatch?.settle("unknown");
+        throw err;
+      }
     },
   };
 }

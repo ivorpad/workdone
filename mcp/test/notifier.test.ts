@@ -183,3 +183,74 @@ describe("offline machines fail fast", () => {
     expect(await call("mac", "bridge_status", {})).toEqual({ ok: true, result: { up: true } });
   });
 });
+
+describe("reliable source acknowledgment", () => {
+  const r = (id: string): Report => ({ event_id: id, occurred_at: "2026-01-01T00:00:00Z", pane_id: "w1:p1", type: "finished", agent: "worker", kind: "codex", cwd: "/work", excerpt: "done", lease: null, reply_to: null, message: "done" });
+
+  test("ack is sent only after all durable sinks succeed, then duplicate ack is safe", async () => {
+    const calls: Record<string, unknown>[] = [];
+    let failures = 1;
+    let stored = false;
+    const source = [r("stable1"), r("stable2")];
+    const n = startNotifier(async (_m, _op, params) => {
+      calls.push(params);
+      if (params.ack) {
+        expect(stored).toBe(true);
+        expect(params.ack).toEqual(["stable1", "stable2"]);
+        return { ok: true, result: { delivery: "ack", remaining: 0 } };
+      }
+      return { ok: true, result: { delivery: "ack", reports: structuredClone(source), remaining: 0 } };
+    }, ["test"], null, 1, 0, async () => {
+      if (failures-- > 0) throw new Error("durable intake failed");
+      stored = true;
+    });
+    await n.idle();
+    expect(calls).toEqual([{ wait_ms: 0, delivery: "ack" }, { wait_ms: 0, delivery: "ack", ack: ["stable1", "stable2"] }]);
+  });
+
+  test("restart after partial intake replays stable IDs instead of acknowledging failed intake", async () => {
+    const committed = new Set<string>();
+    let retained = [r("one"), r("two")];
+    const call: CallGateway = async (_m, _op, params) => {
+      if (Array.isArray(params.ack)) retained = retained.filter(r => !(params.ack as string[]).includes(r.event_id!));
+      return { ok: true, result: { delivery: "ack", remaining: 0, reports: structuredClone(retained) } };
+    };
+    const first = startNotifier(call, ["test"], null, 3600_000, 0, async reportsMachine => { committed.add("one"); throw new Error(`interrupted intake ${reportsMachine}`); });
+    await Bun.sleep(10);
+    first.stop(); await first.idle();
+    expect(retained.map(r => r.event_id)).toEqual(["one", "two"]);
+    const second = startNotifier(call, ["test"], null, 1, 0, async (_m, reports) => { for (const report of reports) committed.add(report.event_id!); });
+    await second.idle();
+    expect(committed.size).toBe(2);
+    expect(retained).toEqual([]);
+  });
+
+  test("a lost ack response retries identical IDs without replaying phone messages", async () => {
+    let acked = false;
+    let firstAck = true;
+    const phones: unknown[] = [];
+    const ids: unknown[] = [];
+    const n = startNotifier(async (_m, op, params) => {
+      if (op === "notify") { phones.push(params.message); return { ok: true, result: {} }; }
+      if (params.ack) {
+        ids.push(params.ack);
+        acked = true;
+        if (firstAck) { firstAck = false; return { ok: false, error: { code: "gateway_unreachable", message: "lost response" } }; }
+      }
+      return { ok: true, result: { delivery: "ack", remaining: 0, reports: acked ? [] : [r("stable")], messages: acked ? [] : ["phone"] } };
+    }, ["test"], "test", 1, 0, async () => {});
+    await n.idle();
+    expect(ids).toEqual([["stable"], ["stable"]]);
+    expect(phones).toEqual(["phone"]);
+  });
+
+  test("fallback dedupes reconstructed batch arrays by stable source ID", async () => {
+    const batches: Report[][] = [];
+    let attempts = 0;
+    const sink = createReportSink({ addReports: async () => { if (++attempts < 3) throw new Error("native unavailable"); return 1; } }, (_m, rs) => { batches.push(rs); });
+    await expect(sink("test", [r("one")])).rejects.toThrow();
+    await expect(sink("test", [r("one"), r("two")])).rejects.toThrow();
+    await sink("test", [r("one"), r("two")]);
+    expect(batches.map(b => b.map(r => r.event_id))).toEqual([["one"], ["two"]]);
+  });
+});

@@ -10,6 +10,8 @@ import { sshGateway, type CallGateway } from "./gateway-client.ts";
 import { inbox } from "./inbox.ts";
 import { startNotifier, WAIT_MS } from "./notifier.ts";
 import { buildServer } from "./tools.ts";
+import { resolve } from "node:path";
+import { homedir } from "node:os";
 import type { Report } from "../../gateway/watcher.ts";
 
 // Records what the client says about itself on initialize or server/discover: its protocol
@@ -39,13 +41,17 @@ export function logRpc(msgs: unknown, protocolHeader: string | null, log: (line:
 export interface HandlerServices { auth?: AuthService; events?: EventsService }
 
 export function createReportSink(events?: Pick<EventsService, "addReports">, fallback: (machine: string, reports: Report[]) => void = (m, r) => { inbox.add(m, r); }) {
-  const handled = new WeakSet<object>();
+  const handled = new Set<string>();
   return async (machine: string, reports: Report[]) => {
     try { if (events) await events.addReports(machine, reports); }
     finally {
-      // Intake retries reuse this batch. Give cards their events once even when
-      // native persistence fails, while leaving phone delivery independent.
-      if (!handled.has(reports)) { handled.add(reports); fallback(machine, reports); }
+      // Source replay reconstructs batch objects. Identity is the source ID,
+      // never array identity. Inbox also persists IDs alongside its queues.
+      const fresh = reports.filter(r => !r.event_id || !handled.has(JSON.stringify([machine, r.event_id])));
+      if (fresh.length) {
+        fallback(machine, fresh);
+        for (const r of fresh) if (r.event_id) handled.add(JSON.stringify([machine, r.event_id]));
+      }
     }
   };
 }
@@ -64,9 +70,24 @@ export function createEventService(cfg: OvhConfig, call: CallGateway, auth: Auth
       // unfiltered subscriptions before exposing an agent's report.
       if (report) {
         if (!machines.includes(report.machine)) return false;
+        if (report.objective) {
+          const checked = await call(report.machine, "coord_snapshot", { objective: report.objective, view: "resume" });
+          if (!checked.ok && unavailable.has(checked.error.code)) throw new Error("Objective authorization is temporarily unavailable.");
+          return checked.ok && Array.isArray((checked.result as any)?.objectives) && (checked.result as any).objectives.some((o: any) => o.id === report.objective || o.objective === report.objective) && await auth.isAuthorized(principal, report.machine);
+        }
         const checked = await call(report.machine, "get_agent", { target: report.pane_id });
         if (!checked.ok && unavailable.has(checked.error.code)) throw new Error("Agent authorization is temporarily unavailable.");
         return checked.ok && (checked.result as any)?.pane_id === report.pane_id && await auth.isAuthorized(principal, report.machine);
+      }
+      if (args.objective) {
+        let transient = false;
+        for (const machine of args.machine ? [args.machine] : machines) {
+          const checked = await call(machine, "coord_snapshot", { objective: args.objective, view: "resume" });
+          if (checked.ok && Array.isArray((checked.result as any)?.objectives) && (checked.result as any).objectives.some((o: any) => o.id === args.objective || o.objective === args.objective) && await auth.isAuthorized(principal, machine)) return true;
+          if (!checked.ok && unavailable.has(checked.error.code)) transient = true;
+        }
+        if (transient) throw new Error("Objective authorization is temporarily unavailable.");
+        return false;
       }
       if (args.target) {
         let transient = false;
@@ -199,11 +220,12 @@ export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (ma
 if (import.meta.main) {
   const path = process.env.HERDR_MCP_CONFIG ?? "/etc/herdr-mcp/ovh.json";
   const cfg = parseConfig(await Bun.file(path).json());
+  inbox.persistTo(cfg.events ? `${cfg.events.statePath}.inbox.sqlite` : resolve(process.env.XDG_STATE_HOME ?? resolve(homedir(), ".local/state"), "workdone", "mcp-inbox.sqlite"));
   const call = sshGateway(cfg);
   const auth = cfg.auth ? new AuthService(cfg.auth, Object.keys(cfg.machines)) : undefined;
   // A new agent.message subscription starts polling its machines, which may have nothing watched.
   const onSubscribed = (name: string, args: { machine?: string }) => {
-    if (name === "agent.message") for (const m of args.machine ? [args.machine] : Object.keys(cfg.machines)) notifier?.markPending(m);
+    if (name === "agent.message" || name === "coord.changed") for (const m of args.machine ? [args.machine] : Object.keys(cfg.machines)) notifier?.markPending(m);
   };
   const events = auth ? createEventService(cfg, call, auth, { onSubscribed }) : undefined;
   const notifier = cfg.notify || events ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events), (m) => events?.wantsMessages(m) ?? false) : null;
@@ -220,6 +242,7 @@ if (import.meta.main) {
     notifier?.stop();
     await notifier?.idle();
     await events?.close();
+    inbox.close();
     process.exit(0);
   };
   process.on("SIGTERM", stop);

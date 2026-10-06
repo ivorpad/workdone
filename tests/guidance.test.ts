@@ -48,3 +48,31 @@ test("plugin versions moved with the new tool and payload", () => {
   atLeast("plugin/herdr-remote/.codex-plugin/plugin.json", "0.12.0");
   atLeast("plugin/workdone-events/.codex-plugin/plugin.json", "0.3.0");
 });
+
+test("packaged skills teach attempt fencing, acceptance and objective event limits", () => {
+  for (const text of [skill, eventsSkill]) {
+    expect(text).toMatch(/(opt-in|one-off)/);
+    expect(text).toContain("accepted");
+    expect(text).toContain("published to an upstream with nothing ahead");
+    expect(text).toMatch(/(no owed result|no result still owed|not prune with an owed result|not prune while a result is owed)/);
+    expect(text).toContain("task_progress");
+    expect(text).toContain("task_identity");
+    expect(text).toContain("command_id");
+    expect(text).toContain("attempt's retry lifetime");
+    expect(text).toContain("dispatch_unknown");
+    expect(text).toContain("dispatch: delivered");
+    expect(text).toContain("lost");
+    expect(text).toContain("name@generation");
+    expect(text).toContain("expected_generation");
+    expect(text).toContain("unresolved blocker");
+    expect(text).toContain("blocker: null");
+    expect(text).toContain("coord.changed");
+    expect(text).toMatch(/`machine` and `objective` filters/);
+    expect(text).toContain("data-only");
+    expect(text).toContain("Host wake behavior for `coord.changed` is unverified");
+    expect(text).toContain("best effort");
+  }
+  const event = EVENTS.find(e => e.name === "coord.changed")!;
+  expect(Object.keys(event.inputSchema.properties!)).toEqual(["machine", "objective"]);
+  expect(Object.keys(event.payloadSchema.properties!)).not.toContain("lease");
+});

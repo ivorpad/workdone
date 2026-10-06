@@ -7,15 +7,24 @@ WorkDone keeps the state of multi-agent work (objectives, tasks, owners, depende
 Each gateway keeps `coord.json` in its state directory, written under the same lock as `watch.json` and `leases.json`:
 
 - **Objective**: any bounded outcome (an issue, an epic, a research job). It has one supervisor, the lease of the ChatGPT thread that plans it. `take_over: true` moves it to another thread and keeps every task.
-- **Task**: one executable slice. Fields: `status` (`queued`, `executing`, `waiting_dependency`, `verifying`, `blocked`, `complete`), `owner`, `deps` (task ids, no cycles), `acceptance`, `evidence`, `artifacts`, `blocker` with `blocker_kind`, `next_action`, `result`, and `version`. Each worker has one current slice, and independent workers run in parallel. There is no global lock.
+- **Task**: one executable slice. Fields: `status` (`queued`, `executing`, `waiting_dependency`, `verifying`, `blocked`, `complete`), `owner`, `deps` (task ids, no cycles), `acceptance`, `evidence`, `artifacts`, `blocker` with `blocker_kind`, `next_action`, `result`, `version` and `progress`. `version` moves on anything a supervisor merge could conflict with; `progress` only on substantive work (status, evidence, artifacts, result, blocker, waits, resources held). A heartbeat report moves neither. Each worker has one current slice, and independent workers run in parallel. There is no global lock.
   - `blocker_kind` is one of `dependency`, `resource`, `defect` (needs a `next_action`) or `human`. Only `human` means a person has to act. Approval policies stay separate.
-- **Binding**: a task's tie to one agent run. It holds a pane, a Herdr session, a `generation` and a token hash. Reassigning the owner or binding again increments the generation, and the old token stops working.
-- **Transitions**: a per-objective log with sequence numbers (`ready`, `needs_acceptance`, `blocked_human`, `missing_report`, `worker_gone`, `resource_stale`). The supervisor acknowledges with `ack_seq`. Anything unacknowledged shows in the resume view. A tell-route notification goes out as a hint and is never proof the supervisor processed the transition.
-- **Resources**: machine-wide (`coord.json` → `resources`), so `e2e` or a browser port conflicts across objectives too. Every grant has a generation. A holder that has gone away or expired shows as `stale` and is not granted to anyone else until the supervisor frees it explicitly, because the old process may still be using it.
+- **Binding** (an attempt): a task's tie to one agent run. It holds a pane, a Herdr session, a `generation` and a token hash. Reassigning the owner or binding again increments the generation, and the old token stops working.
+  - Each pane has one **current** binding (`coord.json` → `current`): the one most recently bound there. Slices, supervision, `get_agent` and turn attribution all resolve the pane through `currentTaskBinding`. An earlier binding on the pane (a task left in `verifying` when the worker moved on) is history. Its token can still add evidence to its own task, but that task never becomes the pane's current one again, even after the current task completes or is reassigned. A binding issued to another Herdr session is not current for a restarted agent.
+- **Transitions**: a per-objective log with sequence numbers (`ready`, `needs_acceptance`, `blocked_human`, `missing_report`, `worker_gone`, `resource_stale`, `dispatch_unknown`). Each names its own objective: a resource released in one objective can make another objective's task ready, and that transition is logged and notified there. The notification goes to that objective's supervisor lease with event id `coord:<objective>:<seq>`, never to whichever worker pane caused it, and a newly ready task with no worker still reaches its supervisor. The supervisor acknowledges with `ack_seq`. Anything unacknowledged shows in the resume view. A notification is a hint and never proof the supervisor processed the transition.
+- **Resources**: machine-wide (`coord.json` → `resources`), so `e2e` or a browser port conflicts across objectives too. Every grant has a generation and names the binding (attempt) that holds it. Only that attempt renews or releases it. A later run of the same task is a different holder: rebinding to the same pane and session carries the lease over (same process); rebinding anywhere else marks it `stale` at once. A stale lease is never granted again, not even to the same task, until the supervisor frees it with `null`, because the old process may still be using it. Moving a live lease to another task needs `{task, expected_generation}`. Completing or removing a task frees only what its current run holds; anything an earlier run holds stays stale. A worker releases with `name@generation` so a late release can't free a grant it acquired again since.
 
 ## Turn contract
 
 - **Supervisor binds** with `task: {objective, id}` on `spawn_agent`, `prompt_agent` or `steer_agent`, under the objective's lease. The gateway assigns the pane and issues a token.
+- **Dispatch**: a prompt that carries a slice is a dispatch with an outcome, recorded under its `command_id` (the caller's, or one the gateway makes) with a hash of the operation, pane, task and the caller's text as sent, before the provenance stamp (whose minute changes between retries). Receipts live as long as their attempt and are never evicted; an attempt that has used 1000 is refused (`commands_full`) before anything is sent, and a rebind starts a new attempt and a new retry lifetime.
+  - A new binding is pending until Herdr accepts the prompt, or until a report arrives with its token (proof of delivery).
+  - A definitive Herdr refusal (`agent_busy`, `agent_not_ready`, ...) drops the pending binding and touches nothing else, so a report or merge written meanwhile survives.
+  - A transport failure after sending (`herdr_timeout`, `herdr_closed`, ...) makes the binding current with `protocol: dispatch_unknown` and status left as it was, not executing.
+  - While a dispatch is in flight or in doubt, nothing else goes to that pane through WorkDone, bound or plain. That includes a retry with a new `command_id`, and holds across a gateway restart. A report from the run, or `coord_update` with `dispatch: delivered | lost` on the task after reading the agent, settles it.
+  - The same `command_id` and text again returns the recorded outcome without sending; other text under that id is `command_conflict`.
+  - A settle for an attempt that was superseded meanwhile changes nothing.
+- **Readiness**: a prompt to a bound run executes its task, so it is refused with `deps_unmet` while any dependency is incomplete. That holds whether the prompt names the task or just goes to the pane bound to it. Binding with no prompt (`spawn_agent` without one) is still allowed. Prompts to agents with no binding are unchanged.
 - **Slice at delivery**: every prompt WorkDone sends to a bound pane with an open task gets a bounded slice appended, read when the prompt goes in. The slice contains:
   - objective, task, run and generation, plus versions;
   - acceptance;
@@ -34,11 +43,13 @@ Each gateway keeps `coord.json` in its state directory, written under the same l
 ## Writes and retries
 
 - Supervisor merges take `expected_version`, either per objective or per task, so a conflict is scoped to the task it touches.
-- Worker reports take `report_id`. A repeat returns the first result without applying it again.
+- Worker reports take `report_id`. Receipts belong to the attempt (binding) and are kept for its whole life, up to 1000; past that the next new id is refused with `receipts_full` before anything changes, and the supervisor rebinds. The same id with the same payload returns the first receipt and changes nothing; the same id with other content is `report_conflict`.
+- Once a result has put a task in `verifying`, a worker report can't take it back to `executing`, `waiting_dependency` or `blocked` (`regressive_report`). Evidence and blockers still go in. Reopening is the supervisor's `coord_update` status change.
 - A stale generation, a session that changed in the bound pane, or a reassigned owner is refused with `stale_binding`, and nothing is written.
-- A result never erases an explicit blocker.
+- A result never erases an explicit blocker. A blocker stays visible in the resume view (`blocked_human`, `blocked_other`) whatever the status, and acceptance entries carry it. `complete` is refused with `unresolved_blocker` unless the same merge sets `blocker: null`.
 - Ready propagation: when a task completes, every dependent that waited on dependencies and now has none outstanding goes to `queued`, with one `ready` transition. A resource release does the same for its waiters.
-- Progress for a bound worker is its task version, not the shared repo HEAD. Several workers share one tree, so `landed` accepts a complete task without a clean tree.
+- Progress for a bound worker is its task `progress`, compared only between turns of the same task and binding (`task_identity` on turn records), never the shared repo HEAD or `version`. Turn history without those fields is unknown, not a stall.
+- A bound agent is prunable only once its task is accepted `complete`, no `reply: true` result is owed, and, if the task produced a commit, the branch shows it published (an upstream with nothing ahead). A task with no commit is `accepted` and prunable without implying anything was published. An unbound agent's `landed` likewise needs its commit pushed, not just committed.
 
 ## Acceptance
 
@@ -56,7 +67,17 @@ Unit and gateway tests (`tests/coord.test.ts`, `tests/turn-contract.test.ts`):
 - lost notification recovered from the resume view
 - result keeps an explicit blocker
 - two bound workers run in parallel
-- the supervisor prefers task version over shared HEAD
+- the supervisor prefers task progress over shared HEAD
+
+Regressions from the 2026-10-06 review (`tests/coord-regressions.test.ts`, `tests/coord-regressions-gateway.test.ts`):
+
+- a verifying task and the pane's next task, in one objective and across two; session restart; v2 store migration
+- stale and earlier-attempt leases, fenced reassignment and release, complete or remove with an old holder, v2 lease migration
+- a release in one objective readies another's waiter, notified to that supervisor; an unbound ready task reaches its supervisor
+- refused, unknown and concurrent dispatch, prompt and steer; deps on named and implicit prompts; caller `command_id` replay; pane held by an in-flight or crashed dispatch
+- partial result with a human or defect blocker; complete refused until resolved
+- replay after result, receipts per attempt, more than 500 reports, capacity refusal
+- heartbeats, next_action-only reports, another task's turns, publication and owed results
 
 Live checks on the Mac: a bound Claude agent reports from its own shell tool, a repeated `report_id` changes nothing, and an unbound prompt reaches Herdr unchanged.
 
