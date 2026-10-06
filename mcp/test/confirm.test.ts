@@ -19,6 +19,10 @@ const fake: CallGateway = async (machine, op, params) => {
     if (params.confirm !== true) return { ok: false, error: { code: "needs_confirmation", message: "this menu asks to run a git push, which is the owner's call", details: { dialog_id: currentDialogId, menu: "Run git push origin main?\n1. Yes\n2. No" } } };
     return { ok: true, result: { answered: 1 } };
   }
+  if (op === "close" && params.confirm !== true) {
+    return { ok: false, error: { code: "needs_confirmation", message: `this closes pane ${params.id} (research ${params.id}), which is the owner's call: close only when they asked to close or clean it up; finished or prunable is not that`, details: { panes: [params.id] } } };
+  }
+  if (op === "close") return { ok: true, result: { closed: params.kind, id: params.id } };
   if (op === "exec" && String(params.command).includes("git push") && params.confirm !== true) {
     return { ok: false, error: { code: "needs_confirmation", message: "this command runs a git push, which is the owner's call: ask them, then call again with confirm: true" } };
   }
@@ -111,6 +115,25 @@ describe("confirm by click", () => {
     expect(calls.length).toBe(before);
     const shown = (await c.callTool({ name: "request_confirmation", arguments: { pending } })) as any;
     expect(shown.isError).toBe(true);
+    await c.close();
+  });
+
+  test("a close the owner did not ask for is held for their click, not run", async () => {
+    const c = await client();
+    const close = { machine: "mac", kind: "pane", id: "w1:p9", lease: "L-abc123" };
+    const r = (await c.callTool({ name: "close", arguments: close })) as any;
+    const { code, message, pending } = text(r).error;
+    expect(code).toBe("needs_confirmation");
+    expect(message).toContain(`request_confirmation with pending "${pending}"`);
+    expect(message).toContain("prunable or prune_close is not that");
+    const card = (await c.callTool({ name: "request_confirmation", arguments: { pending } })) as any;
+    expect(card.structuredContent).toMatchObject({ op: "close", reason: "closes pane w1:p9 (research w1:p9)", detail: "close pane w1:p9" });
+    const ran = (await c.callTool({ name: "confirm_pending", arguments: { pending, approve: true } })) as any;
+    expect(ran.structuredContent.status).toBe("ran");
+    expect(calls.at(-1)).toEqual(["mac", "close", { kind: "pane", id: "w1:p9", lease: "L-abc123", confirm: true }]);
+    // The owner said "close it" in chat: confirm goes through with the call.
+    await c.callTool({ name: "close", arguments: { ...close, confirm: true } });
+    expect(calls.at(-1)).toEqual(["mac", "close", { kind: "pane", id: "w1:p9", lease: "L-abc123", confirm: true }]);
     await c.close();
   });
 

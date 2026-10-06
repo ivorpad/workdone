@@ -10,7 +10,8 @@ import type { Report, TurnResult } from "./watcher.ts";
 import { normalizeStore, type CoordStore } from "./coord.ts";
 import { resolve } from "node:path";
 
-export type CreatedKind = "panes" | "tabs" | "workspaces";
+// disposable: panes spawned with disposable: true, which close without the owner's go-ahead.
+export type CreatedKind = "panes" | "tabs" | "workspaces" | "disposable";
 
 // A watched agent, keyed by pane ID. prompt_agent watches one turn: the entry goes
 // once that turn is reported. A managed entry (watch_agent, or an agent started

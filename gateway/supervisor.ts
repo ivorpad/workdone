@@ -147,8 +147,8 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
         return result("accepted", "verify_checkpoint", `Its task was accepted complete, but its commit is not shown published: ${unpublished}. Not prunable until it is pushed (or the supervisor closes it deliberately).`, evidence);
       }
       return t.commit
-        ? result("landed", "prune_close", "Its task was accepted complete and its branch is published. Close the agent (prunable_agents gives what to close).", evidence)
-        : result("accepted", "prune_close", "Its task was accepted complete; it produced no commit, so there is nothing to publish. Close the agent (prunable_agents gives what to close).", evidence);
+        ? result("landed", "prune_close", "Its task was accepted complete and its branch is published. Leave the agent open unless the owner asks to close or clean it up, or it was spawned disposable (prunable_agents gives what to close).", evidence)
+        : result("accepted", "prune_close", "Its task was accepted complete; it produced no commit, so there is nothing to publish. Leave the agent open unless the owner asks to close or clean it up, or it was spawned disposable (prunable_agents gives what to close).", evidence);
     }
     // A baseline from another session (an agent restarted in the pane) says nothing about this one.
     const ours = opts.baseline && (opts.baseline.session == null || opts.baseline.session === current.session);
@@ -157,7 +157,7 @@ export function supervise(current: SupervisorObservation, history: readonly Supe
     const clean = current.clean ?? last?.clean;
     const evidence = [`status=${current.status}`, "prompt_running=false", `baseline=${short(base)}`, `commit=${short(head)}`, `clean=${clean ?? "unknown"}`, ...(head ? [publication] : [])];
     if (base && head && head !== base && clean === true && !opts.result_pending && !unpublished) {
-      return result("landed", "prune_close", "A commit beyond the start landed, is pushed, and the working tree is clean: the bounded unit is done. Check it, then close the agent (prunable_agents gives what to close).", evidence);
+      return result("landed", "prune_close", "A commit beyond the start landed, is pushed, and the working tree is clean: the bounded unit is done. Check it. Leave the agent open unless the owner asks to close or clean it up, or it was spawned disposable (prunable_agents gives what to close).", evidence);
     }
     const why = !base || !head ? "no baseline or commit to compare" : head === base ? "no commit beyond the start yet" : clean !== true ? "uncommitted changes remain" : opts.result_pending ? "a reply: true result is still owed" : `not published: ${unpublished}`;
     return result("checkpoint_ready", "verify_checkpoint", `The agent has settled; verify its checkpoint before assigning more work. Not prunable: ${why}.`, evidence);

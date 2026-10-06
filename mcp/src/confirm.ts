@@ -30,7 +30,7 @@ const MIME = "text/html;profile=mcp-app";
 const HTML = await Bun.file(new URL("./confirm.html", import.meta.url)).text();
 
 // Tools whose gateway op can answer needs_confirmation.
-export const GATED = new Set(["exec", "answer_agent", "send_pane_input", "run_command_in_pane"]);
+export const GATED = new Set(["exec", "answer_agent", "send_pane_input", "run_command_in_pane", "close", "remove_worktree"]);
 export const PENDING_TTL_MS = 15 * 60_000;
 const MAX_PENDING = 50;
 
@@ -48,6 +48,8 @@ function detail(op: string, p: Record<string, any>): string {
   if (op === "exec") return [p.cwd ? `cd ${p.cwd}` : p.repo ? `(repo ${p.repo})` : "", p.command].filter(Boolean).join("\n");
   if (op === "run_command_in_pane") return `${p.pane_id}: ${p.command}`;
   if (op === "send_pane_input") return `${p.pane_id}: ${[p.text, ...(p.keys ?? [])].filter((x) => x != null).join(" + ")}`;
+  if (op === "close") return `close ${p.kind} ${p.id}`;
+  if (op === "remove_worktree") return `remove worktree workspace ${p.workspace_id}`;
   if (op === "answer_agent") return `${p.target}: option ${p.options?.join(", ") ?? p.option}${p.text ? ` "${p.text}"` : ""}`;
   return JSON.stringify(p);
 }
@@ -97,13 +99,24 @@ export function holdIfGated(pending: PendingCalls, machine: string, op: string, 
   const reason = res.error.message
     .replace(/, which is the owner's call.*$/, "")
     .replace(/^this (?:command|input) runs a /, "runs ")
-    .replace(/^this menu asks to run a /, "answers a menu that runs ");
+    .replace(/^this menu asks to run a /, "answers a menu that runs ")
+    .replace(/^this closes /, "closes ");
   const dialogId = res.error.details?.dialog_id;
   if (op === "answer_agent" && dialogId) rest.expected_dialog_id = dialogId;
   // Older gateways cannot bind a held answer to a menu. Do not create a card that
   // could approve a different command after the agent advances.
   if (op === "answer_agent" && !rest.expected_dialog_id) return res;
   const id = pending.hold(machine, op, rest, reason, res.error.details?.menu);
+  if (op === "close" || op === "remove_worktree") {
+    return {
+      ok: false,
+      error: {
+        code: "needs_confirmation",
+        message: `This call ${reason} and needs the owner's go-ahead. Call ${op} again with confirm: true only if they explicitly asked to close or clean this up; finished, prunable or prune_close is not that. Otherwise leave it open, or call request_confirmation with pending "${id}" to show an Approve button.`,
+        pending: id,
+      },
+    };
+  }
   return {
     ok: false,
     error: {

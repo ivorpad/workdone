@@ -43,12 +43,14 @@ async function agentsAndPanes(g: Gateway): Promise<{ agents: any[]; panes: any[]
 
 // What to close to get rid of one pane and nothing else: the workspace or tab the
 // bridge made for it when the pane is alone there, else the pane. null when the bridge
-// did not make the pane and close_any is off.
-function closeFor(g: Gateway, pane: any, all: any[]): { kind: "pane" | "tab" | "workspace"; id: string } | null {
+// did not make the pane and close_any is off. disposable: it closes without the
+// owner's go-ahead (spawned disposable: true); otherwise close needs it.
+function closeFor(g: Gateway, pane: any, all: any[]): { kind: "pane" | "tab" | "workspace"; id: string; disposable: boolean } | null {
   const alone = (key: "workspace_id" | "tab_id") => all.every((p) => p.pane_id === pane.pane_id || p[key] !== pane[key]);
-  if (g.state.created("workspaces").includes(pane.workspace_id) && alone("workspace_id")) return { kind: "workspace", id: pane.workspace_id };
-  if (g.state.created("tabs").includes(pane.tab_id) && alone("tab_id")) return { kind: "tab", id: pane.tab_id };
-  if (g.state.created("panes").includes(pane.pane_id) || g.cfg.allowCloseAny) return { kind: "pane", id: pane.pane_id };
+  const disposable = g.state.created("disposable").includes(pane.pane_id);
+  if (g.state.created("workspaces").includes(pane.workspace_id) && alone("workspace_id")) return { kind: "workspace", id: pane.workspace_id, disposable };
+  if (g.state.created("tabs").includes(pane.tab_id) && alone("tab_id")) return { kind: "tab", id: pane.tab_id, disposable };
+  if (g.state.created("panes").includes(pane.pane_id) || g.cfg.allowCloseAny) return { kind: "pane", id: pane.pane_id, disposable };
   return null;
 }
 
@@ -168,7 +170,7 @@ async function waitAgents(g: Gateway, params: Params) {
 }
 
 const NUDGE_TEXT = "WorkDone supervisor: your last turns left the commit and the working tree unchanged. Finish the smallest complete slice you can verify (run its checks, and commit if this task commits), or stop and say exactly what blocks you. End your answer with one line starting RESULT:.";
-const NUDGE_POLICY = "At most one supervisor_nudge per agent session, only when recommended. After it: handoff or lower_or_change_model_effort, never a second nudge, a retry of the same error or a new reviewer. prune_close only after a commit beyond the start landed with a clean tree.";
+const NUDGE_POLICY = "At most one supervisor_nudge per agent session, only when recommended. After it: handoff or lower_or_change_model_effort, never a second nudge, a retry of the same error or a new reviewer. prune_close means finished, not close it: close only when the owner asked to close or clean up, or the agent was spawned disposable.";
 
 // One agent's supervisor view: live git state against the watcher's turn records.
 async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, sup: Record<string, Supervision>) {
@@ -404,11 +406,12 @@ export function agentOps(g: Gateway): Record<string, Op> {
       return background.length ? { counts, agents: items, background } : { counts, agents: items };
     },
 
-    // Which agents are finished and safe to close, and what to close for each. Done
-    // means settled, not asking anything, no prompt running, its last turn already
-    // reported to the owner, and idle for min_idle_minutes. exited lists panes the
-    // bridge made whose agent is gone and whose shell runs nothing. Changes nothing but
-    // a "done" note in Herdr's sidebar on each done agent.
+    // Which agents are finished, and what to close for each if the owner asks to clean
+    // up: being listed here is not permission to close. Done means settled, not asking
+    // anything, no prompt running, its last turn already reported to the owner, and
+    // idle for min_idle_minutes. exited lists panes the bridge made whose agent is gone
+    // and whose shell runs nothing. Changes nothing but a "done" note in Herdr's
+    // sidebar on each done agent.
     async prunable_agents(params) {
       const minIdle = optInt(params, "min_idle_minutes", 0, 24 * 60) ?? 10;
       const now = Date.now();
@@ -466,6 +469,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const role = optEnum(params, "role", ["worker", "reviewer"] as const, "worker");
       if (params.reply !== undefined && typeof params.reply !== "boolean") throw new GatewayError("invalid_params", "reply must be true or false");
       const watch = optBool(params, "watch", true);
+      const disposable = optBool(params, "disposable", false);
       const prompt = optStr(params, "prompt");
       if (prompt && prompt.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `prompt exceeds ${g.cfg.maxPromptChars} characters`);
       const deadline = Date.now() + g.cfg.maxWaitMs - 5000;
@@ -493,6 +497,9 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const paneId: string | undefined = placed?.pane?.pane_id;
       if (!paneId) throw new GatewayError("spawn_failed", "Herdr did not return a pane for the new agent");
       g.recordLaunch("spawn_agent", paneId, name, launch);
+      // Recorded before anything runs in it: only an agent spawned disposable may be
+      // closed later without the owner's go-ahead.
+      if (disposable) g.state.remember("disposable", paneId);
 
       // A new pane's shell can take a few seconds to reach its prompt, and Herdr won't
       // start an agent before that. agent_not_ready means the agent started but sits at
@@ -525,7 +532,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
         await g.startSupervision(paneId, placed.pane.cwd, started);
         showWatched(g.herdr, paneId, true);
       }
-      const out: Record<string, unknown> = { ...placed, name, kind, model, launched: launch, status, watching: watch, ...(approved.length ? { auto_approved: approved } : {}) };
+      const out: Record<string, unknown> = { ...placed, name, kind, model, launched: launch, status, watching: watch, ...(disposable ? { disposable } : {}), ...(approved.length ? { auto_approved: approved } : {}) };
       if (status === "blocked") {
         out.note = "the agent is showing a menu WorkDone did not answer: get_agent shows it as choices";
       } else if (prompt && status !== "idle" && status !== "done") {

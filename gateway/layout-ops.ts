@@ -17,6 +17,20 @@ function need<T extends string>(params: Params, key: string, values: readonly T[
 
 const CREATED: Record<"pane" | "tab" | "workspace", CreatedKind> = { pane: "panes", tab: "tabs", workspace: "workspaces" };
 
+// Before anything that kills panes (close, remove_worktree). Finished, prunable or
+// prune_close is not the owner saying close it. Only a pane spawned disposable goes
+// without their go-ahead: the console's click, or confirm: true from a chat where they
+// asked (or the approval card). Returns the disposable ones, to forget once closed.
+export function ownerMayClose(g: Gateway, what: string, panes: any[], params: Params): string[] {
+  const disposable = new Set(g.state.created("disposable"));
+  const kept = panes.filter((p) => !disposable.has(p.pane_id));
+  if (kept.length && params.origin !== "console" && params.confirm !== true) {
+    const names = kept.map((p) => (p.agent ? `${p.name ?? p.agent} ${p.pane_id}` : p.pane_id)).join(", ");
+    throw new GatewayError("needs_confirmation", `this closes ${what} (${names}), which is the owner's call: close only when they asked to close or clean it up; finished or prunable is not that`, { panes: kept.map((p) => p.pane_id) });
+  }
+  return panes.map((p) => p.pane_id).filter((id) => disposable.has(id));
+}
+
 export function layoutOps(g: Gateway): Record<string, Op> {
   const inScope = (p: any) => paneInScope(p, g.cfg.allowedRoots);
 
@@ -150,9 +164,12 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       const result = res.move_result ?? res;
       const moved = result.pane;
       // A pane that changes workspace gets a new ID; keep the bridge's record pointing at it.
-      if (moved?.pane_id && moved.pane_id !== pane.pane_id && g.state.created("panes").includes(pane.pane_id)) {
-        g.state.forget("panes", pane.pane_id);
-        g.state.remember("panes", moved.pane_id);
+      if (moved?.pane_id && moved.pane_id !== pane.pane_id) {
+        for (const k of ["panes", "disposable"] as const) {
+          if (!g.state.created(k).includes(pane.pane_id)) continue;
+          g.state.forget(k, pane.pane_id);
+          g.state.remember(k, moved.pane_id);
+        }
       }
       if (result.created_workspace?.workspace_id) g.state.remember("workspaces", result.created_workspace.workspace_id);
       if (result.created_tab?.tab_id) g.state.remember("tabs", result.created_tab.tab_id);
@@ -164,15 +181,19 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       const id = str(params, "id", TARGET_RE);
       const ours = g.state.created(CREATED[kind]).includes(id);
       if (!ours && !g.cfg.allowCloseAny) throw new GatewayError(`not_bridge_${kind}`, `${kind} ${id} was not created by this bridge`);
+      let panes: any[];
       if (kind === "pane") {
-        await g.scopedPane(id);
-        await g.herdr("pane.close", { pane_id: id });
+        panes = [await g.scopedPane(id)];
       } else {
-        const { allInScope } = await members(kind, id);
+        const { visible, allInScope } = await members(kind, id);
         if (!allInScope) throw new GatewayError("outside_scope", `${kind} ${id} also holds panes outside the allowed roots`);
-        await g.herdr(`${kind}.close`, kind === "tab" ? { tab_id: id } : { workspace_id: id });
+        panes = visible;
       }
+      const disposable = ownerMayClose(g, `${kind} ${id}`, panes, params);
+      if (kind === "pane") await g.herdr("pane.close", { pane_id: id });
+      else await g.herdr(`${kind}.close`, kind === "tab" ? { tab_id: id } : { workspace_id: id });
       g.state.forget(CREATED[kind], id);
+      for (const p of disposable) g.state.forget("disposable", p);
       return { closed: kind, id };
     },
 

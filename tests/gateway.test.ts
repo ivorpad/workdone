@@ -91,7 +91,8 @@ describe("ops", () => {
     await expect(gw.handle("close", { kind: "pane", id: "w1:p2" })).rejects.toMatchObject({ code: "not_bridge_pane" });
     await gw.handle("split_pane", { pane_id: "w1:p2", repo: "app" });
     panes["w1:p9"] = { pane_id: "w1:p9", cwd: "/srv/allowed/app" };
-    await gw.handle("close", { kind: "pane", id: "w1:p9" });
+    await expect(gw.handle("close", { kind: "pane", id: "w1:p9" })).rejects.toMatchObject({ code: "needs_confirmation" });
+    await gw.handle("close", { kind: "pane", id: "w1:p9", confirm: true });
     expect(sent.at(-1)).toEqual(["pane.close", { pane_id: "w1:p9" }]);
   });
 });

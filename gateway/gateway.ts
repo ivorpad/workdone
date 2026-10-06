@@ -17,7 +17,7 @@ import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
 import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
-import { layoutOps } from "./layout-ops.ts";
+import { layoutOps, ownerMayClose } from "./layout-ops.ts";
 import { leaseOps } from "./leases.ts";
 import { findModel, modelArgs } from "./models.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
@@ -503,7 +503,10 @@ export class Gateway {
         if (panes.length === 0 || !panes.every((p: any) => paneInScope(p, cfg.allowedRoots))) {
           throw new GatewayError("workspace_not_found", `workspace ${workspaceId} not found`);
         }
-        return await this.herdr("worktree.remove", { workspace_id: workspaceId, force: false }, 60_000);
+        const disposable = ownerMayClose(this, `worktree workspace ${workspaceId}`, panes, params);
+        const res = await this.herdr("worktree.remove", { workspace_id: workspaceId, force: false }, 60_000);
+        for (const p of disposable) this.state.forget("disposable", p);
+        return res;
       }
 
       default:

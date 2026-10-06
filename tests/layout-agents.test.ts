@@ -154,15 +154,66 @@ describe("layout", () => {
   test("close: bridge-made things only, unless allowCloseAny", async () => {
     const { gw, sent } = gateway();
     const made: any = await gw.handle("create_workspace", { repo: "app", label: "scratch" });
-    await gw.handle("close", { kind: "workspace", id: made.workspace.workspace_id });
+    await gw.handle("close", { kind: "workspace", id: made.workspace.workspace_id, confirm: true });
     expect(sent.at(-1)).toEqual(["workspace.close", { workspace_id: made.workspace.workspace_id }]);
     await expect(gw.handle("close", { kind: "workspace", id: "w1" })).rejects.toMatchObject({ code: "not_bridge_workspace" });
     const any = gateway({ allowCloseAny: true });
-    await any.gw.handle("close", { kind: "tab", id: "w1:t1" });
+    await any.gw.handle("close", { kind: "tab", id: "w1:t1", confirm: true });
     expect(any.sent.at(-1)).toEqual(["tab.close", { tab_id: "w1:t1" }]);
     // w3 also holds a pane outside the roots: closing it would kill that pane.
     await expect(any.gw.handle("close", { kind: "workspace", id: "w3" })).rejects.toMatchObject({ code: "outside_scope" });
     await expect(any.gw.handle("close", { kind: "workspace", id: "w2" })).rejects.toMatchObject({ code: "workspace_not_found" });
+  });
+  test("close needs the owner's go-ahead for anything not spawned disposable", async () => {
+    const { gw, sent } = gateway();
+    const made: any = await gw.handle("create_workspace", { repo: "app" });
+    const pane = made.pane.pane_id;
+    const before = sent.length;
+    await expect(gw.handle("close", { kind: "pane", id: pane })).rejects.toMatchObject({ code: "needs_confirmation", details: { panes: [pane] } });
+    expect(sent.slice(before).map(([m]) => m)).not.toContain("pane.close");
+    // The owner's click in the console.
+    await gw.handle("close", { kind: "pane", id: pane, origin: "console" });
+    expect(sent.at(-1)).toEqual(["pane.close", { pane_id: pane }]);
+    // confirm: true, from a chat where the owner asked or from the approval card.
+    const other: any = await gw.handle("create_workspace", { repo: "app" });
+    await gw.handle("close", { kind: "pane", id: other.pane.pane_id, confirm: true });
+    expect(sent.at(-1)).toEqual(["pane.close", { pane_id: other.pane.pane_id }]);
+    // close_any widens what may be closed, not who decides.
+    const any = gateway({ allowCloseAny: true });
+    await expect(any.gw.handle("close", { kind: "pane", id: "w1:p1" })).rejects.toThrow(/claude w1:p1/);
+  });
+  test("an agent spawned disposable closes without asking, and only it", async () => {
+    const { gw, sent, panes, state } = gateway();
+    const throwaway: any = await gw.handle("spawn_agent", { kind: "claude", name: "scratch", repo: "app", disposable: true });
+    expect(throwaway.disposable).toBe(true);
+    const ws = throwaway.workspace.workspace_id;
+    const disposable = () => JSON.parse(readFileSync(join(state, "created-disposable.json"), "utf8"));
+    expect(disposable()).toEqual([throwaway.pane.pane_id]);
+    // A second pane in that workspace that was not spawned disposable keeps it open.
+    panes[`${ws}:p2`] = { pane_id: `${ws}:p2`, workspace_id: ws, tab_id: `${ws}:t1`, cwd: "/srv/allowed/app", agent: "claude", agent_status: "idle" };
+    await expect(gw.handle("close", { kind: "workspace", id: ws })).rejects.toMatchObject({ code: "needs_confirmation", details: { panes: [`${ws}:p2`] } });
+    delete panes[`${ws}:p2`];
+    await gw.handle("close", { kind: "workspace", id: ws });
+    expect(sent.at(-1)).toEqual(["workspace.close", { workspace_id: ws }]);
+    expect(disposable()).toEqual([]);
+    // Spawned without disposable: prunable_agents offers a close, and close still asks.
+    screen = "All tests pass.\n";
+    const kept: any = await gw.handle("spawn_agent", { kind: "claude", name: "research", repo: "app" });
+    expect(kept.disposable).toBeUndefined();
+    const res: any = await gw.handle("prunable_agents", { min_idle_minutes: 0 });
+    const done = res.done.find((d: any) => d.pane_id === kept.pane.pane_id);
+    expect(done.close).toEqual({ kind: "workspace", id: kept.workspace.workspace_id, disposable: false });
+    await expect(gw.handle("close", done.close)).rejects.toMatchObject({ code: "needs_confirmation" });
+  });
+  test("remove_worktree asks the owner like close, unless the worktree's agent was spawned disposable", async () => {
+    const { gw, sent } = gateway({ allowWorktreeRemove: true });
+    await expect(gw.handle("remove_worktree", { workspace_id: "w1" })).rejects.toMatchObject({ code: "needs_confirmation", details: { panes: ["w1:p1", "w1:p2"] } });
+    expect(sent.map(([m]) => m)).not.toContain("worktree.remove");
+    await gw.handle("remove_worktree", { workspace_id: "w1", confirm: true });
+    expect(sent.at(-1)).toEqual(["worktree.remove", { workspace_id: "w1", force: false }]);
+    const throwaway: any = await gw.handle("spawn_agent", { kind: "claude", name: "scratch", repo: "app", disposable: true });
+    await gw.handle("remove_worktree", { workspace_id: throwaway.workspace.workspace_id });
+    expect(sent.at(-1)).toEqual(["worktree.remove", { workspace_id: throwaway.workspace.workspace_id, force: false }]);
   });
   test("rename checks names and labels", async () => {
     const { gw, sent } = gateway();
@@ -686,7 +737,7 @@ describe("prunable_agents", () => {
       shells[b.pane.pane_id] = busy.pid;
       await Bun.sleep(100);
       const res: any = await gw.handle("prunable_agents", {});
-      expect(res.exited).toEqual([{ pane_id: a.pane.pane_id, cwd: "/srv/allowed/app", label: null, close: { kind: "workspace", id: a.workspace.workspace_id } }]);
+      expect(res.exited).toEqual([{ pane_id: a.pane.pane_id, cwd: "/srv/allowed/app", label: null, close: { kind: "workspace", id: a.workspace.workspace_id, disposable: false } }]);
     } finally {
       idle.kill();
       busy.kill();

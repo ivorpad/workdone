@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Binding, CommandReceipt, Dispatch, Receipt } from "./coord.ts";
 
-export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json"] as const;
+export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json"] as const;
 const files = new Set<string>(STATE_FILES);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === "string");
