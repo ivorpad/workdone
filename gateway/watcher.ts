@@ -138,6 +138,8 @@ export interface Report {
   // The thread this turn answers (see Watched.reply_to), when a thread asked for it.
   reply_to: string | null;
   message: string;
+  // "owner": a note the owner typed in the console. Set by the gateway only; an agent's tell never carries it.
+  origin?: "owner";
   // Menu data for agent.asks. The receiver must re-read before answering it.
   choices?: ReturnType<typeof dialogView>;
   // Present once, on the turn end that resolves a reply: true request.
@@ -347,7 +349,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       const w = t.pane_id ? watched[t.pane_id] : undefined;
       const agent = t.pane_id ? byPane.get(t.pane_id) : undefined;
       const name = agent?.name ?? w?.name ?? null;
-      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
+      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: t.origin === "owner" ? `Owner note from the console about ${name ?? t.pane_id}: ${clip(t.text, 400)}` : `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.origin === "owner" ? { origin: "owner" as const } : {}), ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
     }
     if (reliable) {
       store.enqueueReports(reports);

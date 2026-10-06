@@ -192,6 +192,16 @@ export function leaseOps(g: Gateway) {
     return { valid: true, label: l.label, panes: [...l.panes] };
   }
 
+  // Internal, for the console: every live lease with only its tail, its label and its
+  // panes, and which one is the caller's. A lease ID is a credential; never returned whole.
+  async function lease_list(params: Params) {
+    const mine = optStr(params, "lease");
+    const t = now();
+    return {
+      leases: Object.entries(g.state.leases()).filter(([, l]) => live(l, t)).map(([id, l]) => ({ tail: "…" + id.slice(-4), label: l.label, panes: [...l.panes], used: l.used, mine: id === mine })),
+    };
+  }
+
   // For views: which thread holds each pane.
   function labels(): Map<string, string> {
     const t = now();
@@ -211,5 +221,5 @@ export function leaseOps(g: Gateway) {
     return id;
   }
 
-  return { check, after, claim_agents, release_agents, lease_check, labels, requireLive };
+  return { check, after, claim_agents, release_agents, lease_check, lease_list, labels, requireLive };
 }

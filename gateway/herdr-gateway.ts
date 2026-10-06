@@ -30,6 +30,8 @@ export function auditDetail(params: Record<string, any>) {
   for (const k of ["option", "options"]) if (params[k] !== undefined) d[k] = params[k];
   // A gated call that went ahead: the owner's yes, in chat or by the approval card.
   if (params.confirm === true) d.confirm = true;
+  // A lease takeover: the console's feed flags it, since it moves an agent between controllers.
+  if (params.take_over === true) d.take_over = true;
   if (typeof params.expected_dialog_id === "string" && /^[a-f0-9]{64}$/.test(params.expected_dialog_id)) d.expected_dialog_id = params.expected_dialog_id;
   if (["ask", "permissions", "all_permissions", "default"].includes(params.mode)) d.mode = params.mode;
   if (typeof params.ttl_seconds === "number") d.ttl_seconds = params.ttl_seconds;

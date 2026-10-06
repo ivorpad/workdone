@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WorkDone Console</title>
+<style>
+:root{
+  --bg:#f4f5f7; --panel:#fff; --panel-2:#eceef2; --line:#d9dce3; --fg:#171a21; --muted:#5d6472;
+  --accent:#2f5bd8; --accent-soft:#e3eafc; --on-accent:#fff;
+  --ok:#1f7a45; --ok-soft:#dff3e6; --warn:#9a5b00; --warn-soft:#fbecd0; --bad:#b3261e; --bad-soft:#fbe0dd; --idle:#6b7280; --idle-soft:#e6e8ec;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){:root{
+  --bg:#0f1218; --panel:#171b23; --panel-2:#1f242e; --line:#2a303c; --fg:#e7eaf0; --muted:#8e97a8;
+  --accent:#7d9bff; --accent-soft:#222c4d; --on-accent:#0f1218;
+  --ok:#5cc88a; --ok-soft:#173326; --warn:#e6b45a; --warn-soft:#3a2c12; --bad:#ff8a80; --bad-soft:#3c1b19; --idle:#98a0b0; --idle-soft:#262b35;
+  color-scheme:dark}}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans)}
+button,textarea,input{font:inherit;color:inherit}
+button{cursor:pointer}
+.wrap{max-width:1320px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between}
+h1{font-size:18px;font-weight:650;margin:0}
+.machines{display:flex;gap:6px;flex-wrap:wrap;font:12px var(--mono);color:var(--muted)}
+.machines span,.live{display:inline-flex;gap:6px;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--idle);display:inline-block}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 10px;font-size:13px}
+.btn:hover:not(:disabled){border-color:var(--accent)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn:focus-visible,.row:focus-visible,.chip:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+.btn.danger{color:var(--bad)}
+.pill{font:11px var(--mono);padding:1px 7px;border-radius:4px;white-space:nowrap;display:inline-block}
+.pill.working{background:var(--accent-soft);color:var(--accent)}
+.pill.blocked,.pill.bad,.pill.act{background:var(--bad-soft);color:var(--bad)}
+.pill.done,.pill.ok{background:var(--ok-soft);color:var(--ok)}
+.pill.idle,.pill.unknown{background:var(--idle-soft);color:var(--idle)}
+.pill.warn,.pill.check,.pill.stalled{background:var(--warn-soft);color:var(--warn)}
+.needs li>.pill{align-self:start;justify-self:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;min-width:0}
+.panel>h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0;padding:10px 14px;font-weight:600;display:flex;justify-content:space-between;gap:8px;align-items:center}
+.empty{padding:6px 14px 14px;color:var(--muted)}
+.needs ul{list-style:none;margin:0;padding:0 6px 8px}
+.needs li{padding:8px;border-radius:6px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px}
+.needs li+li{border-top:1px solid var(--line)}
+.needs b{font-weight:600}
+.needs .detail{color:var(--muted);overflow-wrap:anywhere;white-space:pre-wrap;font-size:13px}
+.needs .acts{grid-column:2;display:flex;gap:6px;flex-wrap:wrap}
+.menu{grid-column:2;font:12px var(--mono);background:var(--panel-2);border-radius:6px;padding:8px 10px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}
+.main{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;align-items:start}
+@media (max-width:900px){.main{grid-template-columns:minmax(0,1fr)}}
+.side{display:flex;flex-direction:column;gap:12px;min-width:0}
+.chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 10px}
+.chip{border:1px solid var(--line);background:transparent;border-radius:999px;padding:2px 10px;font-size:12px}
+.chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.group-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:8px 14px;background:var(--panel-2);border-top:1px solid var(--line)}
+.group-h b{font-weight:600}.group-h span{font:11px var(--mono);color:var(--muted)}
+.row{display:grid;grid-template-columns:minmax(0,1.3fr) auto minmax(0,1fr);gap:4px 10px;align-items:center;padding:8px 14px;border:0;border-top:1px solid var(--line);border-left:3px solid transparent;width:100%;text-align:left;background:transparent}
+.row:hover{background:var(--panel-2)}
+.row[aria-selected="true"]{background:var(--accent-soft);border-left-color:var(--accent)}
+.row .nm{min-width:0}.row .nm b{font-weight:600;overflow-wrap:anywhere}
+.row .nm small{display:block;font:11px var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.row .why{font-size:12.5px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
+.row .why.bad{color:var(--bad)}.row .why.warn{color:var(--warn)}
+@media (max-width:560px){.row{grid-template-columns:minmax(0,1fr) auto}.row .why{grid-column:1/-1}}
+.detail{padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
+.detail h3{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere}
+dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font-size:13px}
+dt{color:var(--muted)}dd{margin:0;overflow-wrap:anywhere}dd.m{font:12px var(--mono)}
+.quote{font:12px var(--mono);background:var(--panel-2);border-radius:6px;padding:8px 10px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow:auto}
+.control{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;border:1px solid var(--line);border-radius:6px;padding:8px 10px}
+textarea{width:100%;min-height:64px;resize:vertical;background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:6px 8px}
+.field{display:flex;flex-direction:column;gap:6px}
+.field label{font-size:12px;color:var(--muted)}
+.row-acts{display:flex;gap:6px;flex-wrap:wrap}
+.hint{font-size:12px;color:var(--muted)}
+.obj{padding:8px 14px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:4px}
+.obj b{font-weight:600}.obj small{color:var(--muted)}
+.task{font-size:13px;overflow-wrap:anywhere}
+.claim{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;padding:7px 14px;border-top:1px solid var(--line)}
+.claim code{font:12px var(--mono);overflow-wrap:anywhere}.claim small{color:var(--muted);grid-column:1/-1;overflow-wrap:anywhere}
+.feed{max-height:340px;overflow:auto;border-top:1px solid var(--line)}
+.ev{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:8px;padding:5px 14px;font-size:12.5px;align-items:baseline}
+.ev time{font:11px var(--mono);color:var(--muted)}
+.ev .src{font:11px var(--mono);padding:0 6px;border-radius:3px;background:var(--idle-soft);color:var(--idle)}
+.ev .src.chatgpt{background:var(--accent-soft);color:var(--accent)}.ev .src.console{background:var(--ok-soft);color:var(--ok)}.ev .src.gateway{background:var(--warn-soft);color:var(--warn)}
+.ev.flag{background:var(--warn-soft)}.ev span.t{overflow-wrap:anywhere}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(16px + env(safe-area-inset-bottom,0px));background:var(--fg);color:var(--bg);padding:8px 14px;border-radius:8px;max-width:min(90vw,560px);z-index:5}
+.toast.bad{background:var(--bad);color:var(--on-accent)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>WorkDone Console</h1>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+      <div class="machines" id="machines" aria-label="Machines"></div>
+      <span class="live" id="live"><i class="dot"></i><span id="live-t">connecting</span></span>
+      <button class="btn" id="refresh" type="button">Refresh</button>
+    </div>
+  </header>
+  <section class="panel needs" aria-labelledby="needs-h">
+    <h2 id="needs-h"><span>Needs you</span><span id="needs-n" class="pill idle"></span></h2>
+    <ul id="needs"></ul>
+  </section>
+  <div class="main">
+    <section class="panel" aria-labelledby="ag-h">
+      <h2 id="ag-h"><span>Agents by objective</span><span id="ag-n" class="pill idle"></span></h2>
+      <div class="chips" id="chips"></div>
+      <div id="groups"></div>
+    </section>
+    <div class="side">
+      <section class="panel" aria-labelledby="dt-h"><h2 id="dt-h">Selected agent</h2><div class="detail" id="detail"></div></section>
+      <section class="panel" aria-labelledby="ob-h"><h2 id="ob-h">Objectives</h2><div id="objectives"></div></section>
+      <section class="panel" aria-labelledby="cl-h"><h2 id="cl-h">Singleton files held</h2><div id="claims"></div></section>
+      <section class="panel" aria-labelledby="fd-h"><h2 id="fd-h"><span>Who touched what</span><button class="chip" id="flagged" type="button" aria-pressed="false">Flagged only</button></h2><div class="feed" id="feed"></div></section>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" hidden role="status"></div>
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const clip = (s, n) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n - 1) + "…" : t; };
+let S = null;            // last /api/state
+let feed = [];           // events, oldest first
+let sel = null;          // "machine:pane_id"
+let filter = "all";
+let flaggedOnly = false;
+const drafts = {};       // textarea text kept across redraws
+const armedClose = {};   // pane keys whose Close was clicked once
+const key = (m, p) => m + ":" + p;
+const agents = () => S ? Object.entries(S.machines).flatMap(([m, ms]) => (ms.agents || []).map((a) => ({ ...a, machine: m }))) : [];
+
+function toast(msg, bad) {
+  const t = $("toast"); t.textContent = msg; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false;
+  clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 3500);
+}
+
+async function post(body) {
+  const res = await fetch("/api/act", { method: "POST", headers: { "content-type": "application/json", "x-workdone-console": "1" }, body: JSON.stringify(body) });
+  const out = await res.json().catch(() => ({ ok: false, error: { code: "bad_response", message: "the console answered with something that is not JSON" } }));
+  return out;
+}
+async function act(body, done) {
+  const out = await post(body);
+  if (out.ok) { if (done) done(out.result); }
+  else if (out.error && out.error.code === "needs_confirmation") toast("Held for your approval in Needs you.");
+  else toast(((out.error && out.error.code) || "error") + ": " + ((out.error && out.error.message) || ""), true);
+  await load(true);
+  return out;
+}
+
+async function load(fresh) {
+  try {
+    const res = await fetch("/api/state" + (fresh ? "?fresh=1" : ""), { headers: { accept: "application/json" } });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    S = await res.json();
+    const seen = new Set(feed.map((e) => e.id));
+    for (const e of S.events || []) if (!seen.has(e.id)) feed.push(e);
+    feed.sort((a, b) => a.at.localeCompare(b.at) || a.id - b.id);
+    feed = feed.slice(-300);
+    setLive(true);
+    render();
+  } catch (e) { setLive(false, String(e.message || e)); }
+}
+function setLive(on, why) {
+  $("live").querySelector(".dot").className = "dot " + (on ? "ok" : "bad");
+  $("live-t").textContent = on ? "live" : "reconnecting" + (why ? " (" + clip(why, 40) + ")" : "");
+}
+
+function render() {
+  if (!S) return;
+  // A redraw would drop the caret of someone typing a message: the detail pane waits until they leave the box.
+  const typing = document.activeElement && document.activeElement.tagName === "TEXTAREA";
+  renderMachines(); renderNeeds(); renderChips(); renderGroups(); if (!typing) renderDetail(); renderObjectives(); renderClaims(); renderFeed();
+}
+
+function renderMachines() {
+  $("machines").innerHTML = Object.entries(S.machines).map(([m, s]) => {
+    const n = s.ok ? (s.agents || []).length + " agents" : "offline";
+    return '<span><i class="dot ' + (s.ok ? "ok" : "bad") + '"></i>' + esc(m) + " · " + esc(n) + "</span>";
+  }).join("");
+}
+
+function renderNeeds() {
+  const list = S.needs || [];
+  $("needs-n").textContent = list.length ? list.length + (list.length === 1 ? " item" : " items") : "none";
+  if (!list.length) { $("needs").innerHTML = '<li><div class="empty" style="grid-column:1/-1;padding:4px 8px">Nothing is waiting on you.</div></li>'; return; }
+  $("needs").innerHTML = list.map((n, i) => {
+    const target = n.pane_id ? ' data-m="' + esc(n.machine) + '" data-p="' + esc(n.pane_id) + '"' : "";
+    let body = "";
+    if (n.kind === "menu" && n.menu) {
+      body += '<div class="menu">' + esc(n.menu.text) + "</div>";
+      body += '<div class="acts">' + n.menu.options.map((o) => '<button type="button" class="btn' + (o.n === n.menu.go_ahead ? " primary" : "") + '" data-need="' + i + '" data-opt="' + o.n + '"' + (o.free_text ? ' data-free="1"' : "") + ">" + esc(o.n + ". " + o.label) + "</button>").join("") + "</div>";
+      if (n.menu.gated) body += '<div class="hint" style="grid-column:2">Gated: ' + esc(n.menu.gated) + ". You will confirm it once more before it runs.</div>";
+    } else if (n.kind === "approve") {
+      body += '<div class="acts"><button type="button" class="btn primary" data-approve="' + esc(n.pending) + '">Approve</button><button type="button" class="btn" data-decline="' + esc(n.pending) + '">Decline</button></div>';
+    } else if (n.pane_id) {
+      body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button></div>';
+    }
+    return "<li" + target + '><span class="pill ' + esc(n.level) + '">' + (n.level === "act" ? "act" : "check") + '</span><div><b>' + esc(n.title) + '</b><div class="detail">' + (n.kind === "menu" ? "" : esc(n.detail)) + "</div></div>" + body + "</li>";
+  }).join("");
+}
+
+const FILTERS = {
+  all: () => true,
+  needs: (a) => (S.needs || []).some((n) => n.machine === a.machine && n.pane_id === a.pane_id),
+  blocked: (a) => a.status === "blocked" || a.attention === "dialog",
+  stalled: (a) => a.supervisor && (a.supervisor.state === "stalled" || a.supervisor.state === "repetitive_loop"),
+};
+function renderChips() {
+  const defs = [["all", "All"], ["needs", "Needs you"], ["blocked", "Blocked"], ["stalled", "Stalled"]];
+  const all = agents();
+  $("chips").innerHTML = defs.map(([k, l]) => '<button type="button" class="chip" data-f="' + k + '" aria-pressed="' + (filter === k) + '">' + l + " " + all.filter(FILTERS[k]).length + "</button>").join("");
+}
+function why(a) {
+  const sup = a.supervisor && a.supervisor.recommendations && a.supervisor.recommendations[0];
+  if (a.attention === "dialog") return ["Waiting on a menu", "bad"];
+  if (a.attention === "question") return ["Asked you something", "warn"];
+  if (a.supervisor && (a.supervisor.state === "stalled" || a.supervisor.state === "repetitive_loop")) return [a.supervisor.state + (sup ? ": " + sup.action : ""), "warn"];
+  if (a.task) return [a.task.objective + " " + a.task.id + " · " + a.task.status, ""];
+  return [clip(a.last_reply && a.last_reply.text, 90) || "", ""];
+}
+function pill(a) {
+  if (a.attention === "dialog") return '<span class="pill blocked">menu</span>';
+  if (a.attention === "question") return '<span class="pill warn">question</span>';
+  if (a.supervisor && a.supervisor.state === "stalled") return '<span class="pill stalled">stalled</span>';
+  return '<span class="pill ' + esc(a.status || "unknown") + '">' + esc(a.status || "unknown") + "</span>";
+}
+function renderGroups() {
+  const list = agents().filter(FILTERS[filter]);
+  $("ag-n").textContent = list.length + " of " + agents().length;
+  const names = [...new Set(list.map((a) => (a.task && a.task.objective) || "No objective"))];
+  $("groups").innerHTML = list.length ? names.map((o) => {
+    const g = list.filter((a) => ((a.task && a.task.objective) || "No objective") === o);
+    return '<div class="group-h"><b>' + esc(o) + "</b><span>" + g.length + " agent" + (g.length === 1 ? "" : "s") + "</span></div>" + g.map((a) => {
+      const [w, c] = why(a);
+      const k = key(a.machine, a.pane_id);
+      const ctl = a.control && a.control.by === "console" ? "console" : a.control && a.control.by === "thread" ? "thread: " + clip(a.control.label, 24) : "";
+      return '<button type="button" class="row" data-open="' + esc(k) + '" aria-selected="' + (k === sel) + '"><div class="nm"><b>' + esc(a.name || a.pane_id) + "</b><small>" + esc(a.machine) + " · " + esc(a.agent || "") + (ctl ? " · " + esc(ctl) : "") + "</small></div>" + pill(a) + '<div class="why ' + c + '">' + esc(w) + "</div></button>";
+    }).join("");
+  }).join("") : '<div class="empty">No agents match this filter.</div>';
+}
+
+function renderDetail() {
+  const a = agents().find((x) => key(x.machine, x.pane_id) === sel);
+  const box = $("detail");
+  if (!a) { box.innerHTML = '<div class="empty" style="padding:0">Pick an agent from the list.</div>'; return; }
+  const k = key(a.machine, a.pane_id);
+  const ctl = a.control || { by: "none" };
+  const mine = ctl.by === "console";
+  let controlHtml;
+  if (mine) controlHtml = '<div><b>Steered by</b> the console</div><div class="row-acts"><button type="button" class="btn" data-release="' + esc(k) + '">Release</button></div>';
+  else if (ctl.by === "thread") controlHtml = '<div><b>Steered by</b> ChatGPT thread “' + esc(ctl.label) + '”</div><div class="row-acts"><button type="button" class="btn" data-claim="' + esc(k) + '" data-take="1">Take over from that thread</button></div>';
+  else controlHtml = '<div><b>Steered by</b> nobody</div><div class="row-acts"><button type="button" class="btn" data-claim="' + esc(k) + '">Take control</button></div>';
+  const working = a.status === "working", menu = a.attention === "dialog";
+  const canSend = mine && !menu;
+  const sendLabel = working ? "Steer" : "Send prompt";
+  const hint = !mine ? "Take control first. Until then a ChatGPT thread or nobody steers this agent." : menu ? "The agent shows a menu. Answer it under Needs you first." : working ? "Queued until the agent's current tool call ends." : "Starts a new turn.";
+  const sup = a.supervisor && a.supervisor.recommendations && a.supervisor.recommendations[0];
+  const canNudge = sup && sup.action === "nudge_ship_slice";
+  const d = drafts[k] || {};
+  box.innerHTML =
+    '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>' + esc(a.name || a.pane_id) + "</h3>" + pill(a) + "</div>" +
+    '<div class="control">' + controlHtml + "</div>" +
+    "<dl><dt>Machine</dt><dd class=m>" + esc(a.machine) + " · " + esc(a.pane_id) + "</dd><dt>CLI</dt><dd class=m>" + esc(a.agent || "") + (a.watch && a.watch.launch ? " · " + esc([a.watch.launch.model, a.watch.launch.effort].filter(Boolean).join(" ")) : "") + "</dd>" +
+    (a.task ? "<dt>Task</dt><dd>" + esc(a.task.objective + " " + a.task.id + " · " + a.task.status + (a.task.blocker ? " · blocked: " + a.task.blocker : "")) + "</dd>" : "") +
+    (a.git ? "<dt>Git</dt><dd class=m>" + esc([a.git.branch, a.git.clean === false ? (a.git.changed || "?") + " changed" : a.git.clean ? "clean" : ""].filter(Boolean).join(" · ")) + "</dd>" : "") +
+    (sup ? "<dt>Supervisor</dt><dd>" + esc(a.supervisor.state + ": " + sup.action) + "</dd>" : "") +
+    "<dt>Directory</dt><dd class=m>" + esc(a.cwd || "") + "</dd></dl>" +
+    '<div class="quote">' + esc(clip(a.dialog || (a.last_reply && a.last_reply.text) || (a.screen_tail || ""), 1200) || "No reply yet.") + "</div>" +
+    '<div class="field"><label for="send">Message to the agent</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + '</button>' +
+    (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '"' + (mine ? "" : " disabled") + ">Send the one nudge</button>" : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
+    '<div class="field"><label for="note">Note for the chat (about this agent)</label><textarea id="note" data-draft="' + esc(k) + ':note">' + esc(d.note || "") + '</textarea><div class="row-acts"><button type="button" class="btn" data-note="' + esc(k) + '">Leave note</button></div><div class="hint" id="note-result">Goes to the chat that holds this agent. It says below whether anything can deliver it.</div></div>' +
+    '<div class="row-acts"><button type="button" class="btn danger" data-close="' + esc(k) + '"' + (mine ? "" : " disabled") + ">" + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
+}
+
+function renderObjectives() {
+  const rows = Object.entries(S.machines).flatMap(([m, s]) => (s.objectives || []).map((o) => ({ ...o, machine: m })));
+  $("objectives").innerHTML = rows.length ? rows.map((o) => {
+    const n = (x) => (o[x] || []).length;
+    const items = [].concat((o.blocked_human || []).map((t) => ["bad", "needs a person", t]), (o.needs_acceptance || []).map((t) => ["check", "awaits acceptance", t]), (o.blocked_other || []).map((t) => ["warn", "blocked: " + (t.kind || "other"), t]), (o.protocol || []).map((t) => ["warn", t.protocol, t]));
+    return '<div class="obj"><b>' + esc(o.id) + ' <small>' + esc(o.machine) + '</small></b><small>' + n("executing") + " executing · " + n("ready") + " ready · " + n("waiting") + " waiting · " + (n("blocked_human") + n("blocked_other")) + " blocked · " + n("needs_acceptance") + " to accept" + (o.pending_transitions && o.pending_transitions.length ? " · " + o.pending_transitions.length + " unacknowledged" : "") + "</small>" +
+      items.map(([c, l, t]) => '<div class="task"><span class="pill ' + c + '">' + esc(l) + "</span> " + esc(t.id + " " + clip(t.blocker || t.title || "", 140)) + "</div>").join("") + "</div>";
+  }).join("") : '<div class="empty">No coordination objectives on any machine.</div>';
+}
+
+function renderClaims() {
+  const rows = Object.entries(S.machines).flatMap(([m, s]) => (s.claims || []).map((c) => ({ ...c, machine: m })));
+  $("claims").innerHTML = rows.length ? rows.map((c) => '<div class="claim"><code>' + esc(c.path) + '</code><span class="pill warn">held</span><small>' + esc(c.holder) + " on " + esc(c.machine) + " · " + esc(c.repo) + (c.at ? " · " + esc(c.at) : "") + (c.note ? " · " + esc(c.note) : "") + "</small></div>").join("")
+    : '<div class="empty">No claims recorded. The console reads &lt;repo&gt;/.git/workdone-claims.json on each machine; nothing in WorkDone writes it yet.</div>';
+}
+
+function renderFeed() {
+  const rows = feed.filter((e) => e.kind !== "state" && (!flaggedOnly || e.flag)).slice().reverse();
+  $("feed").innerHTML = rows.length ? rows.map((e) => {
+    const t = new Date(e.at); const hh = isNaN(t) ? "" : String(t.getHours()).padStart(2, "0") + ":" + String(t.getMinutes()).padStart(2, "0") + ":" + String(t.getSeconds()).padStart(2, "0");
+    return '<div class="ev' + (e.flag ? " flag" : "") + '"><time>' + esc(hh) + '</time><span class="src ' + esc(e.source) + '">' + esc(e.source) + '</span><span class="t">' + (e.agent ? "<b>" + esc(e.agent) + "</b> " : "") + esc(e.text) + (e.machine ? " <small>(" + esc(e.machine) + ")</small>" : "") + "</span></div>";
+  }).join("") : '<div class="empty">Nothing yet.</div>';
+}
+
+document.addEventListener("input", (ev) => {
+  const t = ev.target;
+  if (t && t.dataset && t.dataset.draft) { const [k, f] = [t.dataset.draft.replace(/:(send|note)$/, ""), t.dataset.draft.split(":").pop()]; (drafts[k] = drafts[k] || {})[f] = t.value; }
+});
+const split = (k) => { const i = k.indexOf(":"); return [k.slice(0, i), k.slice(i + 1)]; };
+document.addEventListener("click", async (ev) => {
+  const t = ev.target.closest("button"); if (!t) return;
+  const d = t.dataset;
+  if (d.f) { filter = d.f; renderChips(); renderGroups(); return; }
+  if (d.open) { sel = d.open; renderGroups(); renderDetail(); return; }
+  if (t.id === "refresh") { await load(true); return; }
+  if (t.id === "flagged") { flaggedOnly = !flaggedOnly; t.setAttribute("aria-pressed", String(flaggedOnly)); renderFeed(); return; }
+  if (d.claim) { const [m, p] = split(d.claim); await act({ action: "claim", machine: m, target: p, take_over: d.take === "1" }, () => toast(d.take === "1" ? "Taken over. That thread now gets not_your_agent." : "You steer this agent now.")); return; }
+  if (d.release) { const [m, p] = split(d.release); await act({ action: "release", machine: m, target: p }, () => toast("Released. Nobody steers it until a thread claims it.")); return; }
+  if (d.send) {
+    const [m, p] = split(d.send); const a = agents().find((x) => x.machine === m && x.pane_id === p); const text = ($("send") || {}).value || "";
+    if (!text.trim()) return toast("Write the message first.", true);
+    await act({ action: a && a.status === "working" ? "steer" : "prompt", machine: m, target: p, text }, () => { (drafts[d.send] = drafts[d.send] || {}).send = ""; toast("Sent."); });
+    return;
+  }
+  if (d.nudge) { const [m, p] = split(d.nudge); await act({ action: "nudge", machine: m, target: p }, () => toast("Nudged. That was the one this session gets.")); return; }
+  if (d.note) {
+    const [m, p] = split(d.note); const text = ($("note") || {}).value || "";
+    if (!text.trim()) return toast("Write the note first.", true);
+    const out = await post({ action: "note", machine: m, target: p, text });
+    if (out.ok) { (drafts[d.note] = drafts[d.note] || {}).note = ""; await load(true); const r = $("note-result"); if (r) r.textContent = out.result.delivery; toast("Queued. " + out.result.delivery); }
+    else toast(((out.error && out.error.code) || "error") + ": " + ((out.error && out.error.message) || ""), true);
+    return;
+  }
+  if (d.close) {
+    if (!armedClose[d.close]) { armedClose[d.close] = true; renderDetail(); setTimeout(() => { delete armedClose[d.close]; renderDetail(); }, 5000); return; }
+    delete armedClose[d.close]; const [m, p] = split(d.close);
+    await act({ action: "close", machine: m, target: p }, () => { toast("Closed."); sel = null; });
+    return;
+  }
+  if (d.approve || d.decline) { const id = d.approve || d.decline; await act({ action: "confirm", machine: S.pending.find((x) => x.pending === id)?.machine || Object.keys(S.machines)[0], pending: id, approve: !!d.approve }, () => toast(d.approve ? "Approved and run." : "Declined.")); return; }
+  if (d.need !== undefined) {
+    const n = S.needs[+d.need]; if (!n || !n.menu) return;
+    let text = "";
+    if (d.free) { const box = window.prompt("Text for this option:"); if (box === null) return; text = box; }
+    await act({ action: "answer", machine: n.machine, target: n.pane_id, dialog_id: n.menu.dialog_id, option: +d.opt, ...(text ? { text } : {}) }, () => toast("Answered."));
+  }
+});
+
+function connect() {
+  const es = new EventSource("/api/events");
+  es.addEventListener("feed", (m) => { try { const e = JSON.parse(m.data); if (!feed.some((x) => x.id === e.id)) { feed.push(e); renderFeed(); } } catch {} });
+  es.addEventListener("state", () => load(false));
+  es.onopen = () => setLive(true);
+  es.onerror = () => setLive(false, "stream");
+}
+load(false).then(() => { if (!sel) { const first = agents()[0]; if (first) { sel = key(first.machine, first.pane_id); render(); } } });
+connect();
+setInterval(() => load(false), 20000);
+</script>
+</body>
+</html>

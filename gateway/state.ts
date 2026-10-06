@@ -2,7 +2,7 @@
 // the bridge created, and which agents to report on when they finish or need the owner.
 // Also the audit log, and the lock that keeps two processes from answering one menu.
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, readSync, statSync } from "node:fs";
 import { STATE_FILES, readState, recoverState, commitState } from "./state-journal.ts";
 import { tryLock } from "./state-lock.ts";
 import { randomUUID } from "node:crypto";
@@ -20,6 +20,8 @@ export interface Told {
   text: string;
   at: string;
   event_id?: string;
+  // "owner": typed by the owner in the WorkDone console (owner_note), not by an agent.
+  origin?: "owner";
   objective?: string;
   recipient_lease?: string;
   transition?: { task: string; seq: number; kind: string };
@@ -477,6 +479,28 @@ export class StateStore {
       await Bun.sleep(Math.min(100, Math.max(1, deadline - Date.now())));
     }
     try { return await fn(); } finally { release(); }
+  }
+
+  // The newest n audit lines, oldest first. Reads only the file's tail.
+  auditTail(n: number): Array<Record<string, unknown>> {
+    try {
+      const file = resolve(this.dir, "audit.jsonl");
+      const size = statSync(file).size;
+      const len = Math.min(size, 256 * 1024);
+      const fd = openSync(file, "r");
+      const buf = Buffer.alloc(len);
+      try { readSync(fd, buf, 0, len, size - len); } finally { closeSync(fd); }
+      const lines = buf.toString("utf8").split("\n").filter(Boolean);
+      // A tail read can start mid-line: that first fragment is dropped.
+      if (size > len) lines.shift();
+      const out: Array<Record<string, unknown>> = [];
+      for (const l of lines.slice(-n)) {
+        try { out.push(JSON.parse(l)); } catch { /* a torn line */ }
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   audit(entry: Record<string, unknown>) {

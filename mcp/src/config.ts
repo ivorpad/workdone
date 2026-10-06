@@ -22,6 +22,18 @@ export interface OvhConfig {
   notify: { machine: string; intervalMs: number } | null;
   auth: AuthConfig | null;
   events: { statePath: string; callbackHosts: string[] } | null;
+  console: ConsoleConfig | null;
+}
+
+// The owner's console: a third loopback listener, put on the tailnet by `tailscale serve`.
+// It can steer agents and approve gated calls, so it answers only requests that carry the
+// owner's tailnet identity (the Tailscale-User-Login header serve adds), or any loopback
+// request when devNoAuth is set, which is for a laptop and nothing else.
+export interface ConsoleConfig {
+  port: number;
+  ownerLogins: string[];
+  statePath: string;
+  devNoAuth: boolean;
 }
 
 export interface AuthConfig {
@@ -116,6 +128,7 @@ export function parseConfig(raw: unknown): OvhConfig {
     catch { throw new Error("events.callbackHosts must contain exact lowercase public DNS hostnames"); }
     events = { statePath: absolutePath(c.events.statePath, "events.statePath"), callbackHosts: validatedHosts };
   }
+  const consoleCfg = parseConsole(c?.console, c?.listen?.port, auth?.listenPort);
   return {
     listen: { host, port: Number.isInteger(c?.listen?.port) ? c.listen.port : 8787 },
     machines,
@@ -124,7 +137,19 @@ export function parseConfig(raw: unknown): OvhConfig {
     notify,
     auth,
     events,
+    console: consoleCfg,
   };
+}
+
+function parseConsole(raw: any, listenPort: unknown, authPort: number | undefined): ConsoleConfig | null {
+  if (raw == null) return null;
+  if (!Number.isInteger(raw.port) || raw.port < 1 || raw.port > 65535) throw new Error("console.port must be a port from 1 to 65535");
+  if (raw.port === (Number.isInteger(listenPort) ? listenPort : 8787) || raw.port === authPort) throw new Error("console.port must differ from the MCP listeners");
+  const devNoAuth = raw.devNoAuth === true;
+  const logins = raw.ownerLogins ?? [];
+  if (!Array.isArray(logins) || !logins.every((l) => typeof l === "string" && /^[^\s@]+@[^\s@]+$/.test(l))) throw new Error("console.ownerLogins must be tailnet login names such as you@example.com");
+  if (!devNoAuth && logins.length === 0) throw new Error("console needs ownerLogins (the tailnet identities allowed in), or devNoAuth: true for local use only");
+  return { port: raw.port, ownerLogins: logins.map((l: string) => l.toLowerCase()), statePath: absolutePath(raw.statePath, "console.statePath"), devNoAuth };
 }
 
 // Every option that matters is explicit, and -F /dev/null keeps any ssh_config

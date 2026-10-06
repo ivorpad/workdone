@@ -8,6 +8,8 @@ import { leaseActivity } from "./activity.ts";
 import { EventsService, type EventPrincipal, type EventsOptions } from "./events.ts";
 import { sshGateway, type CallGateway } from "./gateway-client.ts";
 import { inbox } from "./inbox.ts";
+import { pendingCalls } from "./confirm.ts";
+import { ConsoleBus, ConsoleLeases, createConsole } from "./console.ts";
 import { startNotifier, WAIT_MS } from "./notifier.ts";
 import { buildServer } from "./tools.ts";
 import { resolve } from "node:path";
@@ -40,7 +42,7 @@ export function logRpc(msgs: unknown, protocolHeader: string | null, log: (line:
 
 export interface HandlerServices { auth?: AuthService; events?: EventsService }
 
-export function createReportSink(events?: Pick<EventsService, "addReports">, fallback: (machine: string, reports: Report[]) => void = (m, r) => { inbox.add(m, r); }) {
+export function createReportSink(events?: Pick<EventsService, "addReports">, fallback: (machine: string, reports: Report[]) => void = (m, r) => { inbox.add(m, r); }, onFresh?: (machine: string, reports: Report[]) => void) {
   const handled = new Set<string>();
   return async (machine: string, reports: Report[]) => {
     try { if (events) await events.addReports(machine, reports); }
@@ -50,6 +52,7 @@ export function createReportSink(events?: Pick<EventsService, "addReports">, fal
       const fresh = reports.filter(r => !r.event_id || !handled.has(JSON.stringify([machine, r.event_id])));
       if (fresh.length) {
         fallback(machine, fresh);
+        onFresh?.(machine, fresh);
         for (const r of fresh) if (r.event_id) handled.add(JSON.stringify([machine, r.event_id]));
       }
     }
@@ -216,14 +219,14 @@ export function createHandler(cfg: OvhConfig, call: CallGateway, onWatch?: (mach
   };
 }
 
-export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (machine: string) => void, services: HandlerServices = {}) {
-  if (cfg.auth?.listenPort !== undefined) {
-    return [
-      { host: cfg.listen.host, port: cfg.listen.port, authenticated: false, handler: createHandler({ ...cfg, auth: null, events: null }, call, onWatch) },
-      { host: cfg.listen.host, port: cfg.auth.listenPort, authenticated: true, handler: createHandler(cfg, call, onWatch, services) },
-    ];
-  }
-  return [{ host: cfg.listen.host, port: cfg.listen.port, authenticated: !!cfg.auth, handler: createHandler(cfg, call, onWatch, services) }];
+export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (machine: string) => void, services: HandlerServices = {}, ownerConsole?: (req: Request) => Promise<Response>) {
+  const endpoints: Array<{ host: string; port: number; authenticated: boolean; handler: (req: Request) => Promise<Response> }> = cfg.auth?.listenPort !== undefined ? [
+    { host: cfg.listen.host, port: cfg.listen.port, authenticated: false, handler: createHandler({ ...cfg, auth: null, events: null }, call, onWatch) },
+    { host: cfg.listen.host, port: cfg.auth.listenPort, authenticated: true, handler: createHandler(cfg, call, onWatch, services) },
+  ] : [{ host: cfg.listen.host, port: cfg.listen.port, authenticated: !!cfg.auth, handler: createHandler(cfg, call, onWatch, services) }];
+  // The owner's console is its own loopback listener: it is not an MCP endpoint and is reached only through tailscale serve.
+  if (cfg.console && ownerConsole) endpoints.push({ host: cfg.listen.host, port: cfg.console.port, authenticated: true, handler: ownerConsole });
+  return endpoints;
 }
 
 if (import.meta.main) {
@@ -237,9 +240,15 @@ if (import.meta.main) {
     if (name === "agent.message" || name === "coord.changed") for (const m of args.machine ? [args.machine] : Object.keys(cfg.machines)) notifier?.markPending(m);
   };
   const events = auth ? createEventService(cfg, call, auth, { onSubscribed }) : undefined;
-  const notifier = cfg.notify || events ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events), (m) => events?.wantsMessages(m) ?? false) : null;
+  // The console hears every report the notifier takes and keeps the notifier polling while a page is open.
+  const bus = new ConsoleBus();
+  const ownerConsole = cfg.console ? createConsole({ cfg: { ...cfg, console: cfg.console }, call, pending: pendingCalls, bus, leases: new ConsoleLeases(cfg.console.statePath, call), wantsMessages: (m) => events?.wantsMessages(m) ?? false }) : undefined;
+  const wanted = (m: string) => (events?.wantsMessages(m) ?? false) || bus.hasClients();
+  const notifier = cfg.notify || events || ownerConsole ? startNotifier(call, Object.keys(cfg.machines), cfg.notify?.machine ?? null, cfg.notify?.intervalMs ?? 15_000, WAIT_MS, createReportSink(events, undefined, (m, r) => { bus.publishReports(m, r); ownerConsole?.soon(); }), wanted) : null;
+  bus.onConnect = () => { for (const m of Object.keys(cfg.machines)) notifier?.markPending(m); };
   events?.start();
-  const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events });
+  ownerConsole?.start();
+  const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events }, ownerConsole?.handler);
   const servers = endpoints.map(({ host, port, handler }) => Bun.serve({ hostname: host, port, fetch: handler, idleTimeout: 255 }));
   const machines = Object.fromEntries(Object.entries(cfg.machines).map(([name, t]) => [name, `${t.user}@${t.host}`]));
   console.log(JSON.stringify({ event: "listening", endpoints: endpoints.map(({ host, port, authenticated }) => ({ url: `http://${host}:${port}/mcp`, authenticated })), machines, notify: cfg.notify, events: !!events }));
@@ -248,6 +257,7 @@ if (import.meta.main) {
     if (stopping) return;
     stopping = true;
     for (const server of servers) server.stop();
+    ownerConsole?.stop();
     notifier?.stop();
     await notifier?.idle();
     await events?.close();

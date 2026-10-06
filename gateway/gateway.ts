@@ -63,7 +63,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -597,6 +597,9 @@ export function stamped(op: string, params: Params, lease: string | null, label:
   if (!key || typeof params[key] !== "string" || !params[key]) return params;
   const chat = typeof params.origin_chat === "string" && /^[\w.:-]{1,80}$/.test(params.origin_chat) ? ` ${params.origin_chat}` : "";
   const who = lease ? `lease …${lease.slice(-4)}${label ? ` "${label.replace(/["\n]/g, "").slice(0, 60)}"` : ""}` : "no lease";
-  const sig = `[Sent by the owner from their ChatGPT chat${chat} (${who}) through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. workdone-tell answers that chat.]`;
+  // The console has no chat to answer: its lease is its own, and the owner reads the reply there.
+  const sig = params.origin === "console"
+    ? `[Sent by the owner from the WorkDone console through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. No ChatGPT chat is waiting on this; reply here as usual.]`
+    : `[Sent by the owner from their ChatGPT chat${chat} (${who}) through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. workdone-tell answers that chat.]`;
   return { ...params, [key]: `${params[key]}\n\n${sig}` };
 }

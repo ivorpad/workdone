@@ -2,6 +2,8 @@
 // start, wait for ready, first prompt), watches that report every turn of an agent,
 // and what each agent needs from its owner.
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { dispatchSlice, paneTask } from "./coord-ops.ts";
@@ -254,6 +256,48 @@ export function agentOps(g: Gateway): Record<string, Op> {
       // Only the lease's tail: the agent prints this into its pane, which any chat can read,
       // and the whole lease would let that chat drive this one's agents.
       return { queued: true, lease: "…" + lease.slice(-4), note: "queued, not delivered yet: it reaches the chat (within about 20 s) only while that chat's link card is open, and is held up to an hour for one; if no reply comes, the chat is not listening" };
+    },
+
+    // Internal, run by the MCP server's console: a note the owner typed for the chat that
+    // holds an agent. It travels the tell path (so Events and cards deliver it as they do an
+    // agent's message) but carries origin: "owner", which only this op sets. The owner is
+    // typing, so the result says honestly whether anything can deliver it.
+    async owner_note(params) {
+      const paneId = str(params, "pane_id", TARGET_RE);
+      const text = str(params, "text").trim();
+      if (!text) throw new GatewayError("invalid_params", "text is empty");
+      if (text.length > 2000) throw new GatewayError("invalid_params", "text exceeds 2000 characters");
+      const agents: any[] = (await g.herdr("agent.list", {})).agents ?? [];
+      const agent = agents.find((x) => x.pane_id === paneId && paneInScope(x, g.cfg.allowedRoots));
+      if (!agent) throw new GatewayError("not_found", `agent ${paneId} not found`);
+      const held = [...g.leases.labels()].find(([p]) => p === paneId)?.[1] ?? null;
+      g.state.addTold({ pane_id: paneId, text, at: new Date().toISOString(), origin: "owner" });
+      g.state.audit({ op: "owner_note", ok: true, args: { pane_id: paneId, text: text.slice(0, 300) } });
+      return { queued: true, held_by: held, note: held ? "queued for the chat that holds this agent: a Work chat subscribed to agent.message gets it, a regular chat gets it only while its link card is open (held up to an hour)" : "no chat holds this agent: only a chat subscribed to agent.message events gets it, and if none is, nobody does" };
+    },
+
+    // Internal, for the console: the newest audit lines (args already trimmed by the audit
+    // writer, leases as tails), so it can show who touched what.
+    async audit_tail(params) {
+      return { entries: g.state.auditTail(optInt(params, "n", 1, 200) ?? 60) };
+    },
+
+    // Internal, for the console: files that more than one agent should not edit at once
+    // (a migration journal, the lockfile), as agents or a harness recorded them in each
+    // configured repo's .git/workdone-claims.json: {"claims":[{"path","holder","pane_id"?,"at","note"?}]}.
+    // Nothing in WorkDone writes that file. It is read as data and never acted on.
+    async claims() {
+      const out: Array<Record<string, unknown>> = [];
+      for (const [key, repo] of Object.entries(g.cfg.repos)) {
+        let raw: any;
+        try { raw = JSON.parse(readFileSync(join(repo.path, ".git", "workdone-claims.json"), "utf8")); } catch { continue; }
+        if (!Array.isArray(raw?.claims)) continue;
+        for (const c of raw.claims.slice(0, 100)) {
+          if (typeof c?.path !== "string" || typeof c?.holder !== "string") continue;
+          out.push({ repo: key, path: c.path.slice(0, 300), holder: c.holder.slice(0, 120), pane_id: typeof c.pane_id === "string" ? c.pane_id.slice(0, 40) : null, at: typeof c.at === "string" ? c.at.slice(0, 40) : null, note: typeof c.note === "string" ? c.note.slice(0, 200) : null });
+        }
+      }
+      return { claims: out };
     },
 
     // Internal, used by the MCP server's notifier rather than by ChatGPT.

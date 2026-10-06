@@ -64,6 +64,7 @@ The other direction, an agent telling ChatGPT something without being asked, dep
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Step-by-step deployment: placeholders, human steps, a check after each phase, known failures |
 | [docs/chatgpt-link.md](docs/chatgpt-link.md) | The two-way link between a chat and an agent, approval policies, what ChatGPT does and doesn't do |
 | [docs/mcp-events.md](docs/mcp-events.md) | Native MCP Events, OAuth and the callback network policy |
+| [docs/console.md](docs/console.md) | The owner's console: one page to see every agent, who steers it, and what waits on you |
 | [docs/loop-risks.md](docs/loop-risks.md) | Risks of letting a chat and its agents wake each other |
 | [plugin/herdr-remote/skills/herdr-remote/SKILL.md](plugin/herdr-remote/skills/herdr-remote/SKILL.md) | The instructions ChatGPT gets. They name the author's machines (`mac`, `ovh`, `syno`) and browser tools, so edit them for yours |
 | [skills/workdone-link/SKILL.md](skills/workdone-link/SKILL.md) | The skill for agents talking back to the linked chat |

@@ -155,6 +155,26 @@ describe("delivery", () => {
     expect(event.data).toEqual({ machine: "mac", pane_id: "w1:p1", agent: "worker", cwd: "/work/project", excerpt: "Which retry policy?" });
     expect(EVENTS.map(e => e.name)).toContain("agent.message");
   });
+  test("an owner's console note says so in data.origin, and an agent's tell cannot", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe({ name: "agent.message", arguments: { machine: "mac" } }));
+    await f.service.addReports("mac", [report({ type: "message", event_id: "note", excerpt: "ship it", origin: "owner", lease: null, reply_to: null })]);
+    await f.service.addReports("mac", [report({ type: "message", event_id: "tell", excerpt: "help", lease: null, reply_to: null })]);
+    await f.service.flush();
+    const [note, tell] = f.sent.slice(-2).map(r => JSON.parse(r.body));
+    expect(note.data).toMatchObject({ excerpt: "ship it", origin: "owner" });
+    expect("origin" in tell.data).toBe(false);
+    const schema = EVENTS.find(e => e.name === "agent.message")!.payloadSchema as any;
+    expect(schema.properties.origin).toMatchObject({ const: "owner" });
+    expect(schema.required).not.toContain("origin");
+  });
+  test("an origin on any other event is never delivered", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe({ name: "agent.finished", arguments: { machine: "mac" } }));
+    await f.service.addReports("mac", [report({ type: "finished", event_id: "fin", origin: "owner" })]);
+    await f.service.flush();
+    expect("origin" in JSON.parse(f.sent.at(-1)!.body).data).toBe(false);
+  });
   test("wantsMessages ends with the subscription", async () => {
     const f = fixture();
     await f.service.subscribe(principal, subscribe({ name: "agent.message", arguments: {}, ttlMs: 60_000 }));

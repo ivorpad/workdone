@@ -76,6 +76,12 @@ export class PendingCalls {
     return p;
   }
 
+  // Every held call, for the console's approval list. The same holds a chat can show on a card.
+  list(): Array<{ pending: string; machine: string; op: string; reason: string; detail: string; expires: string }> {
+    this.sweep();
+    return [...this.calls].map(([id, p]) => card(id, p));
+  }
+
   private sweep() {
     for (const [id, p] of this.calls) if (p.expires <= this.now()) this.calls.delete(id);
   }
