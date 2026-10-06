@@ -27,6 +27,34 @@ export interface Told {
   transition?: { task: string; seq: number; kind: string };
 }
 
+// Something an agent told the owner, kept on the gateway so it outlives any chat card or
+// console page: a tell, a turn that ended, an exit, a question, or the result of a reply: true request. Identity is kept
+// with it (which agent, its session, its task) so a later pane reuse can't be mistaken for it.
+export interface InboxEntry {
+  id: string;
+  // tell: an agent wrote to the owner. result: the answer to a reply: true request. finished, gone,
+  // question: a watched agent's turn ended, it exited, or it stopped asking something.
+  kind: "tell" | "result" | "finished" | "gone" | "question";
+  at: string;
+  pane_id: string | null;
+  agent: string | null;
+  agent_kind: string | null;
+  cwd: string | null;
+  session: string | null;
+  // The ChatGPT thread that held the agent when it was said (its whole lease; views show the tail).
+  lease: string | null;
+  task: { objective: string; id: string } | null;
+  text: string;
+  result?: TurnResult;
+  // unanswered until someone sends the agent a follow-up (prompt, steer or nudge) or the owner dismisses it.
+  status: "unanswered" | "answered" | "dismissed";
+  resolved_at?: string;
+  resolved_by?: string;
+}
+
+const INBOX_MAX = 500;
+const INBOX_KEEP_MS = 14 * 24 * 3600_000;
+
 export interface Watched {
   name: string | null;
   cwd: string | null;
@@ -231,6 +259,40 @@ export class StateStore {
   hasTold(): boolean {
     const v = this.read("told.json");
     return Array.isArray(v) && v.length > 0;
+  }
+
+  inbox(): InboxEntry[] { return (this.read("inbox.json") as InboxEntry[] | undefined) ?? []; }
+
+  hasOpenInbox(): boolean { return this.inbox().some((e) => e.status === "unanswered"); }
+
+  // Idempotent by id. Old resolved entries age out and the list is capped, resolved ones first.
+  inboxAdd(entry: InboxEntry, now = Date.now()) {
+    this.locked(() => {
+      const cur = this.inbox();
+      if (cur.some((e) => e.id === entry.id)) return;
+      let next = [...cur, entry].filter((e) => e.status === "unanswered" || now - Date.parse(e.resolved_at ?? e.at) < INBOX_KEEP_MS);
+      while (next.length > INBOX_MAX) {
+        const drop = next.findIndex((e) => e.status !== "unanswered");
+        next.splice(drop === -1 ? 0 : drop, 1);
+      }
+      this.write("inbox.json", next);
+    });
+  }
+
+  // Marks unanswered entries resolved, by id or for every entry of one agent (pane id or
+  // name, as a prompt's target may be either). Returns how many changed.
+  inboxResolve(match: { id?: string; target?: string }, status: "answered" | "dismissed", by: string, now = new Date()): number {
+    return this.locked(() => {
+      let n = 0;
+      const next = this.inbox().map((e) => {
+        const hit = e.status === "unanswered" && ((match.id !== undefined && e.id === match.id) || (match.target !== undefined && (e.pane_id === match.target || (e.agent !== null && e.agent === match.target))));
+        if (!hit) return e;
+        n++;
+        return { ...e, status, resolved_at: now.toISOString(), resolved_by: by };
+      });
+      if (n) this.write("inbox.json", next);
+      return n;
+    });
   }
 
   // Which ChatGPT thread may act on which panes: lease ID to its label and panes.

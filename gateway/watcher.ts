@@ -146,6 +146,16 @@ export interface Report {
   result?: TurnResult;
 }
 
+// An inbox entry's identity for a result, from what the watcher already holds (it runs inside the state lock, with no Herdr call).
+function inboxContext2(store: StateStore, paneId: string, agent: any, w: Watched, leases: Record<string, { panes: string[]; used: string }>, now: number) {
+  const session = seenState(agent).session ?? w.session ?? null;
+  const bound = currentTaskBinding(store.coord(), paneId, session ?? undefined);
+  return {
+    pane_id: paneId, agent: (agent?.name ?? w.name ?? null) as string | null, agent_kind: (agent?.agent ?? w.kind ?? null) as string | null, cwd: (w.cwd ?? agent?.cwd ?? null) as string | null,
+    session: session as string | null, lease: leaseOf(leases, paneId, now), task: bound ? { objective: bound.o.id, id: bound.t.id } : null,
+  };
+}
+
 // The live lease holding a pane (leases lapse a day after their last use, as in leases.ts).
 function leaseOf(leases: Record<string, { panes: string[]; used: string }>, paneId: string, now: number): string | null {
   for (const [id, l] of Object.entries(leases)) if (now - Date.parse(l.used) < 24 * 3600_000 && l.panes.includes(paneId)) return id;
@@ -332,6 +342,12 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
           changed: cp?.changed ?? null, branch: cp?.branch ?? null, kind: w.launch?.kind ?? agent?.agent ?? w.kind ?? null,
           model: w.launch?.model ?? null, model_id: w.launch?.model_id ?? null, effort: w.launch?.effort ?? null,
         } : undefined;
+                // Every turn end, exit or question goes in the owner's inbox from here, whichever chat is or isn't listening:
+        // the watcher is the one place that sees all of them.
+        if (result || note.type === "finished" || note.type === "gone" || note.type === "question") {
+          const ctx = inboxContext2(store, paneId, agent, w, leases, now);
+          store.inboxAdd({ id: eventId, kind: result ? "result" : (note.type as "finished" | "gone" | "question"), at: new Date(now).toISOString(), ...ctx, text: (result?.summary ?? note.excerpt ?? note.type).slice(0, 1000), ...(result ? { result } : {}), status: "unanswered" });
+        }
         reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
         messages.push(text);
         if (fresh[paneId]) {

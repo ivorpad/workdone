@@ -24,6 +24,7 @@ import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./p
 import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { raiseTerminal } from "./raise.ts";
+import { consoleOps } from "./console-ops.ts";
 import { agentReply } from "./transcript.ts";
 import { agentView, paneView, resultView, textOf, watchInfo, withWatch } from "./views.ts";
 
@@ -66,7 +67,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -157,6 +158,11 @@ export class Gateway {
     if (key && typeof params[key] === "string") (sent as any)[INTENT] = { op, text: params[key] };
     const result: any = await this.handle(op, sent);
     this.leases.after(op, lease, params, result);
+    // A follow-up to an agent answers what it told the owner: whoever sent it, console or thread.
+    if ((op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && typeof params.target === "string" && this.state.hasOpenInbox()) {
+      const by = params.origin === "console" ? "console" : lease ? `thread "${(this.state.leases()[lease]?.label ?? "").slice(0, 60)}"` : "caller without a lease";
+      this.state.inboxResolve({ target: params.target }, "answered", by);
+    }
     // The thread asked something and didn't wait: the agent's answer is owed to it.
     const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
     if (lease && (op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && result && !answered) {

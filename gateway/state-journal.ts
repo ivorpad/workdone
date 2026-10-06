@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Binding, CommandReceipt, Dispatch, Receipt } from "./coord.ts";
 
-export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json"] as const;
+export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json"] as const;
 const files = new Set<string>(STATE_FILES);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === "string");
@@ -114,6 +114,7 @@ export function validateState(file: string, value: unknown) {
   if (file.startsWith("created-")) valid = strings(value);
   else if (file === "told.json") valid = Array.isArray(value) && value.every(v => object(v) && nullableString(v.pane_id) && typeof v.text === "string" && typeof v.at === "string" && optional(v, "event_id", x => typeof x === "string") && optional(v, "objective", x => typeof x === "string") && optional(v, "recipient_lease", x => typeof x === "string") && optional(v, "transition", t => object(t) && typeof t.task === "string" && integer(t.seq) && typeof t.kind === "string"));
   else if (file === "outbox.json") valid = Array.isArray(value) && value.every(v => object(v) && typeof v.event_id === "string" && nullableString(v.pane_id) && typeof v.type === "string" && typeof v.message === "string" && nullableString(v.agent) && nullableString(v.kind) && nullableString(v.cwd) && nullableString(v.excerpt) && nullableString(v.lease) && nullableString(v.reply_to));
+  else if (file === "inbox.json") valid = Array.isArray(value) && value.every(v => object(v) && nonempty(v.id) && ["tell", "result", "finished", "gone", "question"].includes(v.kind) && timestamp(v.at) && nullableString(v.pane_id) && nullableString(v.agent) && typeof v.text === "string" && (v.status === "unanswered" || v.status === "answered" || v.status === "dismissed") && optional(v, "resolved_at", timestamp) && optional(v, "resolved_by", x => typeof x === "string"));
   else if (file === "exec-workspace.json") valid = object(value) && typeof value.id === "string";
   else if (file === "coord.json") valid = coordination(value);
   else if (file === "leases.json") valid = object(value) && Object.values(value).every(v => object(v) && Array.isArray(v.panes) && v.panes.every((p: unknown) => typeof p === "string") && typeof v.used === "string");

@@ -2,9 +2,11 @@
 // start, wait for ready, first prompt), watches that report every turn of an agent,
 // and what each agent needs from its owner.
 
+import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
+import { inboxContext, newInboxId } from "./console-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { dispatchSlice, paneTask } from "./coord-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
@@ -249,10 +251,16 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const agents: any[] = (await g.herdr("agent.list", {})).agents ?? [];
       if (!agents.some((x) => x.pane_id === paneId && paneInScope(x, g.cfg.allowedRoots))) throw new GatewayError("not_found", `agent ${paneId} not found`);
       const lease = Object.entries(g.state.leases()).find(([, l]) => l.panes.includes(paneId))?.[0];
-      g.state.addTold({ pane_id: paneId, text, at: new Date().toISOString() });
+      // Kept twice: the queue a chat is woken from, and the owner's inbox, which no chat or page has to be open for.
+      const at = new Date().toISOString();
+      const eventId = randomUUID();
+      g.state.transaction(() => {
+        g.state.addTold({ pane_id: paneId, text, at, event_id: eventId });
+        g.state.inboxAdd({ id: eventId, kind: "tell", at, ...inboxContext(g, paneId, agents.find((x) => x.pane_id === paneId)), text: text.slice(0, 2000), status: "unanswered" });
+      });
       // Without a link it can still reach a chat subscribed to agent.message events (a
       // ChatGPT Work chat). The gateway can't see those subscriptions, so it can't say.
-      if (!lease) return { queued: true, linked: false, note: "no chat has linked this agent: only a chat subscribed to agent.message events gets it, and if none is, nobody does" };
+      if (!lease) return { queued: true, linked: false, inbox: true, note: "no chat has linked this agent, so no chat is woken by it: only a chat subscribed to agent.message events gets it. It is kept in the owner's inbox either way, undelivered until someone answers" };
       // Only the lease's tail: the agent prints this into its pane, which any chat can read,
       // and the whole lease would let that chat drive this one's agents.
       return { queued: true, lease: "…" + lease.slice(-4), note: "queued, not delivered yet: it reaches the chat (within about 20 s) only while that chat's link card is open, and is held up to an hour for one; if no reply comes, the chat is not listening" };
