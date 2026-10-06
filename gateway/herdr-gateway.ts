@@ -20,7 +20,7 @@ import { StateStore } from "./state.ts";
 const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat", "origin"];
 
 // Read-only ops only the console calls, every few seconds.
-const CONSOLE_READS = new Set(["lease_list", "claims", "audit_tail"]);
+export const CONSOLE_READS = new Set(["console_snapshot", "inbox_list", "lease_list", "claims", "audit_tail"]);
 
 export function auditDetail(params: Record<string, any>) {
   const d: Record<string, unknown> = {};
