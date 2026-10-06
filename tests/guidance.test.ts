@@ -69,7 +69,8 @@ test("packaged skills teach attempt fencing, acceptance and objective event limi
     expect(text).toContain("coord.changed");
     expect(text).toMatch(/`machine` and `objective` filters/);
     expect(text).toContain("data-only");
-    expect(text).toContain("Host wake behavior for `coord.changed` is unverified");
+    expect(text).toContain("wake signal only");
+    expect(text).toContain("Ask for an automation instead");
     expect(text).toContain("best effort");
   }
   const event = EVENTS.find(e => e.name === "coord.changed")!;
