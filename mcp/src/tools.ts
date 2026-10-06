@@ -5,6 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { holdIfGated, pendingCalls, registerConfirm } from "./confirm.ts";
+import { registerImage } from "./image.ts";
 import { leaseActivity } from "./activity.ts";
 import { registerEvents, type EventsService, type EventPrincipal } from "./events.ts";
 import type { CallGateway } from "./gateway-client.ts";
@@ -491,7 +492,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.8.6" },
+    { name: "herdr-remote", version: "0.9.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
@@ -564,6 +565,7 @@ export function buildServer(call: CallGateway, machines: string[], defaultMachin
     }, async () => ({ content: [{ type: "text" as const, text: JSON.stringify({ id: principal.id }) }], structuredContent: { id: principal.id } }));
   }
   registerConfirm(server, call, render);
+  registerImage(server, machines, defaultMachine, call, render);
   registerEvents(server, events?.service, events?.principal);
   registerWakeTest(server);
   registerWatch(server, machines, defaultMachine, call, onWatch);

@@ -7,7 +7,7 @@
 // with its output sent to files, waits for the exit code, reads the output and closes the
 // tab. The workspace stays so the owner can watch.
 
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { GatewayError } from "./config.ts";
 import type { Gateway } from "./gateway.ts";
@@ -18,6 +18,15 @@ import { clipOutput } from "./process.ts";
 const LABEL = "workdone exec";
 // How often to look for the exit code, and how long ctrl+c gets before the tab is closed.
 export const paneTiming = { poll: 150, interrupt: 500 };
+
+// The main display as a JPEG at most 1600 px wide, which stays well under read_file's 3 MB.
+// Overridable so tests don't photograph the screen of the machine running them.
+export const screenCapture = {
+  platform: process.platform as string,
+  command: (file: string) => `screencapture -x -m -t jpg ${q(file)} && sips -Z 1600 -s formatOptions 70 ${q(file)} >/dev/null`,
+};
+const SHOTS_DIR = "workdone-screenshots";
+const KEEP_SHOTS = 20;
 
 // Single quotes for zsh, safe for any path.
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -37,7 +46,7 @@ export function paneExecOps(g: Gateway): Record<string, Op> {
     return id;
   }
 
-  return {
+  const ops: Record<string, Op> = {
     async exec(params) {
       const { command, stdin, cwd, timeoutMs } = execParams(g.cfg, params, (key) => g.repo(key).path);
       const started = Date.now();
@@ -91,5 +100,25 @@ export function paneExecOps(g: Gateway): Record<string, Op> {
         rmSync(dir, { recursive: true, force: true });
       }
     },
+
+    // A pane, not the gateway's own process: the pane's shell descends from the owner's
+    // terminal, which holds macOS Screen Recording permission; an ssh login has none. The
+    // file lands in the first allowed root, so show_image and read_file can open it again.
+    async screenshot() {
+      if (screenCapture.platform !== "darwin") throw new GatewayError("capability_disabled", "screenshots need macOS");
+      // Before capturing: the image comes back through read_file.
+      if (!g.cfg.allowFileRead) throw new GatewayError("capability_disabled", "file reads are disabled in the gateway config");
+      const dir = resolve(g.cfg.allowedRoots[0]!, SHOTS_DIR);
+      mkdirSync(dir, { recursive: true, mode: 0o700 });
+      const file = resolve(dir, `screen-${new Date().toISOString().replace(/[:.]/g, "-")}.jpg`);
+      const res: any = await ops.exec!({ command: screenCapture.command(file), timeout_ms: 30_000 });
+      if (res.exit_code !== 0 || !existsSync(file)) {
+        throw new GatewayError("screenshot_failed", `${String(res.stderr ?? "").trim().slice(-300) || "screencapture made no file"}. The terminal running Herdr needs Screen Recording permission (System Settings > Privacy & Security).`);
+      }
+      const shots = readdirSync(dir).filter((n) => /^screen-.*\.jpg$/.test(n)).sort();
+      for (const old of shots.slice(0, Math.max(0, shots.length - KEEP_SHOTS))) rmSync(resolve(dir, old), { force: true });
+      return await g.handle("read_file", { path: file, as: "image" });
+    },
   };
+  return ops;
 }

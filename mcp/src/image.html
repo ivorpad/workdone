@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b6b6b; --line: #e3e3e3; --stop: #b42318;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1f1f1f; --fg: #ececec; --muted: #a0a0a0; --line: #3a3a3a; --stop: #f97066;
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1f1f1f; --fg: #ececec; --muted: #a0a0a0; --line: #3a3a3a; --stop: #f97066;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { padding: 12px 16px; }
+  img { display: block; max-width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; }
+  .note { color: var(--muted); font-size: 12.5px; margin-top: 6px; word-break: break-all; }
+  .bad { color: var(--stop); font-weight: 600; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <div id="loading" class="note">Loading…</div>
+  <img id="img" alt="" hidden>
+  <div id="caption" class="note" hidden></div>
+  <div id="error" class="bad" hidden></div>
+</main>
+<script>
+  // MCP Apps view: JSON-RPC over postMessage with the host (ChatGPT).
+  const $ = (id) => document.getElementById(id);
+  let nextId = 1;
+  const waiting = new Map();
+
+  function request(method, params) {
+    const id = nextId++;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        waiting.delete(id);
+        reject(new Error(method + " timed out"));
+      }, 10000);
+      waiting.set(id, { resolve, reject, timer });
+      try {
+        window.parent.postMessage({ jsonrpc: "2.0", id, method, params }, "*");
+      } catch (e) {
+        waiting.delete(id);
+        clearTimeout(timer);
+        reject(e);
+      }
+    });
+  }
+  function notify(method, params) {
+    window.parent.postMessage({ jsonrpc: "2.0", method, params }, "*");
+  }
+
+  window.addEventListener("message", (event) => {
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== "2.0") return;
+    if (msg.id !== undefined && waiting.has(msg.id) && !msg.method) {
+      const w = waiting.get(msg.id);
+      waiting.delete(msg.id);
+      clearTimeout(w.timer);
+      msg.error ? w.reject(new Error(msg.error.message || "request failed")) : w.resolve(msg.result);
+      return;
+    }
+    if (msg.method === "ui/notifications/tool-result") show(msg.params);
+    if (msg.method === "ui/notifications/host-context-changed") theme(msg.params);
+  });
+
+  function theme(ctx) {
+    if (ctx && (ctx.theme === "light" || ctx.theme === "dark")) document.documentElement.dataset.theme = ctx.theme;
+  }
+
+  function fail(text) {
+    $("img").hidden = true;
+    $("error").textContent = text;
+    $("error").hidden = false;
+  }
+
+  // The bytes come in _meta, which only this card sees. A data: URL first; if the host's
+  // CSP refuses it, a blob: URL; if that fails too, say so rather than show a broken image.
+  function show(result) {
+    $("loading").hidden = true;
+    const img = result && result._meta && result._meta["workdone/image"];
+    const s = (result && result.structuredContent) || {};
+    if (!img || typeof img.data !== "string") {
+      const text = result && result.content && result.content[0] && result.content[0].text;
+      fail(text || "No image.");
+      return;
+    }
+    $("caption").textContent = [s.machine, s.path].filter(Boolean).join(": ") + (s.size ? " · " + Math.round(s.size / 1024) + " KB" : "");
+    $("caption").hidden = false;
+    const el = $("img");
+    el.alt = s.path || "image";
+    let tried = "data";
+    el.onerror = () => {
+      if (tried === "data" && typeof Blob === "function" && typeof URL.createObjectURL === "function") {
+        tried = "blob";
+        try {
+          const bin = atob(img.data);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          el.src = URL.createObjectURL(new Blob([bytes], { type: img.mime }));
+          return;
+        } catch (e) {}
+      }
+      fail("This chat can't display the image here. ChatGPT still received it.");
+    };
+    el.src = "data:" + img.mime + ";base64," + img.data;
+    el.hidden = false;
+  }
+
+  // The content's height, not the document's: that one never drops below the frame's.
+  const main = document.querySelector("main");
+  new ResizeObserver(() => {
+    notify("ui/notifications/size-changed", { height: Math.ceil(main.getBoundingClientRect().height) });
+  }).observe(main);
+
+  request("ui/initialize", {
+    appInfo: { name: "workdone-image", version: "1.0.0" },
+    appCapabilities: {},
+    protocolVersion: "2026-01-26",
+  }).then((init) => {
+    theme(init && init.hostContext);
+    notify("ui/notifications/initialized", {});
+  }).catch((e) => {
+    $("loading").hidden = true;
+    fail("This card needs a host with MCP Apps: " + e.message);
+  });
+</script>
+</body>
+</html>

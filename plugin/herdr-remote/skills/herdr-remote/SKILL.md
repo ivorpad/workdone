@@ -167,6 +167,7 @@ Everything a tool returns lands in this conversation. Ask for the part you need:
 - `exec` returns its result in the same call, and no agent or pane is involved: it cannot be waiting on an approval or a prompt. Read the result before answering, and never tell the user an `exec` is still running or stuck in an agent's pane. A command that runs past `timeout_ms` comes back with `timed_out: true`.
 - Show what came back. The user does not see tool results, only your reply, so put the output they asked for in a code block with the exit code: all of it when it is short, the part that matters when it is long (say what you left out). Don't replace output with a summary unless they asked for one.
 - `read_file` reads text, converts PDF and Office files to Markdown, and returns images. Page long files with `offset` and `next_offset`. `list_dir` and `search_files` find things.
+- `show_image` shows an image (png, jpg, gif, webp, up to 3 MB) to the owner in the chat and gives it to you as well. `read_file` gives the image only to you. Use `show_image` for screenshots and anything else the owner should look at. `screenshot` captures a Mac's main display and shows it the same way. Use it only when the owner asks to see their screen, because it captures everything on it.
 - `write_file` defaults to `mode: "create"`, which refuses to overwrite. Say what you are about to overwrite before using `mode: "overwrite"`. `delete_path` moves things into the gateway's trash folder, so a deletion can be undone.
 
 ## Browser and Jev (on `ovh`)

@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, realpathSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
-import { paneTiming } from "../gateway/pane-exec.ts";
+import { paneTiming, screenCapture } from "../gateway/pane-exec.ts";
 
 paneTiming.poll = 10;
 paneTiming.interrupt = 10;
@@ -33,7 +33,7 @@ function setup() {
         return {};
     }
   };
-  const cfg = loadConfig({ allowedRoots: [root], stateDir: mkdtempSync(join(tmpdir(), "herdr-pexec-state-")), allowExec: true, execInPane: true });
+  const cfg = loadConfig({ allowedRoots: [root], stateDir: mkdtempSync(join(tmpdir(), "herdr-pexec-state-")), allowExec: true, allowFileRead: true, execInPane: true });
   return { gw: new Gateway(cfg, herdr), calls, root };
 }
 
@@ -74,4 +74,80 @@ test("the exec workspace is reused while Herdr still has it", async () => {
   };
   await gw.handle("exec", { command: "true" });
   expect(calls.filter(([m]) => m === "workspace.create")).toHaveLength(1);
+});
+
+test("a screenshot is taken in a pane, kept under the first root and returned as an image", async () => {
+  const { gw, calls, root } = setup();
+  const saved = { ...screenCapture };
+  // A stand-in for screencapture: writes a small JPEG-named file where it was asked to.
+  screenCapture.platform = "darwin";
+  screenCapture.command = (file) => `printf 'jpegbytes' > '${file}'`;
+  try {
+    const res: any = await gw.handle("screenshot", {});
+    expect(res.kind).toBe("image");
+    expect(res.path).toMatch(new RegExp(`^${root}/workdone-screenshots/screen-.*\\.jpg$`));
+    expect(res.image).toEqual({ mime: "image/jpeg", data: Buffer.from("jpegbytes").toString("base64") });
+    expect(calls.some(([m, p]) => m === "pane.send_input" && String(p.text).includes("cmd.zsh"))).toBe(true);
+  } finally {
+    Object.assign(screenCapture, saved);
+  }
+});
+
+test("a failed capture says so, with the permission hint", async () => {
+  const { gw } = setup();
+  const saved = { ...screenCapture };
+  screenCapture.platform = "darwin";
+  screenCapture.command = () => "echo 'could not create image from display' >&2; exit 1";
+  try {
+    await expect(gw.handle("screenshot", {})).rejects.toMatchObject({ code: "screenshot_failed", message: expect.stringContaining("Screen Recording") });
+  } finally {
+    Object.assign(screenCapture, saved);
+  }
+});
+
+test("only the last 20 screenshots are kept", async () => {
+  const { gw, root } = setup();
+  const saved = { ...screenCapture };
+  screenCapture.platform = "darwin";
+  screenCapture.command = (file) => `printf 'x' > '${file}'`;
+  const dir = join(root, "workdone-screenshots");
+  mkdirSync(dir);
+  for (let i = 0; i < 25; i++) writeFileSync(join(dir, `screen-2000-01-01T00-00-${String(i).padStart(2, "0")}.jpg`), "old");
+  try {
+    await gw.handle("screenshot", {});
+    const left = readdirSync(dir).sort();
+    expect(left).toHaveLength(20);
+    expect(left.at(-1)).toMatch(/^screen-20[2-9]/);
+    expect(left[0]).toBe("screen-2000-01-01T00-00-06.jpg");
+  } finally {
+    Object.assign(screenCapture, saved);
+  }
+});
+
+test("off macOS, or without execInPane, screenshot is refused", async () => {
+  const { gw } = setup();
+  const saved = { ...screenCapture };
+  screenCapture.platform = "linux";
+  try {
+    await expect(gw.handle("screenshot", {})).rejects.toMatchObject({ code: "capability_disabled" });
+  } finally {
+    Object.assign(screenCapture, saved);
+  }
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-noshot-")));
+  const plain = new Gateway(loadConfig({ allowedRoots: [root], stateDir: mkdtempSync(join(tmpdir(), "herdr-noshot-state-")), allowExec: true }), async () => ({}));
+  await expect(plain.handle("screenshot", {})).rejects.toMatchObject({ code: "capability_disabled", message: expect.stringContaining("execInPane") });
+});
+
+test("with file reads off, nothing is captured", async () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-noread-")));
+  const calls: string[] = [];
+  const gw = new Gateway(loadConfig({ allowedRoots: [root], stateDir: mkdtempSync(join(tmpdir(), "herdr-noread-state-")), allowExec: true, execInPane: true }), async (m) => { calls.push(m); return {}; });
+  const saved = { ...screenCapture };
+  screenCapture.platform = "darwin";
+  try {
+    await expect(gw.handle("screenshot", {})).rejects.toMatchObject({ code: "capability_disabled" });
+    expect(calls).toEqual([]);
+  } finally {
+    Object.assign(screenCapture, saved);
+  }
 });

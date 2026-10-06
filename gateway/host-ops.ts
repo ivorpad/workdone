@@ -140,6 +140,11 @@ export function hostOps(cfg: GatewayConfig, repoPath: (key: string) => string): 
       return { cwd, ...res };
     },
 
+    // Replaced by pane-exec.ts when execInPane is on: only a pane has the owner's screen.
+    async screenshot() {
+      throw new GatewayError("capability_disabled", "screenshots need execInPane in the gateway config, on macOS");
+    },
+
     async list_dir(params) {
       needRead(cfg);
       const dir = resolved(cfg, params, "path");
