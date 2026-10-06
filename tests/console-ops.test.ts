@@ -75,6 +75,14 @@ describe("audit_tail", () => {
     const big: any = await gw.handle("audit_tail", { n: 5 });
     expect(big.entries.map((e: any) => e.i)).toEqual([595, 596, 597, 598, 599]);
   });
+  test("ops filters before the newest n are taken, so reads cannot push history out", async () => {
+    const { gw } = setup();
+    gw.state.audit({ op: "steer_agent", ok: true, n: "old" });
+    for (let i = 0; i < 100; i++) gw.state.audit({ op: "overview", ok: true });
+    const res: any = await gw.handle("audit_tail", { n: 5, ops: ["steer_agent"] });
+    expect(res.entries.map((e: any) => e.n)).toEqual(["old"]);
+    await expect(gw.handle("audit_tail", { ops: "steer_agent" })).rejects.toMatchObject({ code: "invalid_params" });
+  });
   test("an empty or missing log is an empty list", async () => {
     const { gw } = setup();
     expect(await gw.handle("audit_tail", {})).toEqual({ entries: [] });

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { parseConfig } from "../src/config.ts";
 import { PendingCalls } from "../src/confirm.ts";
 import { ConsoleBus, ConsoleLeases, createConsole } from "../src/console.ts";
-import { createEndpoints } from "../src/server.ts";
+import { createEndpoints, createReportSink } from "../src/server.ts";
 import { auditToEvent, buildNeeds, controlOf } from "../src/console-model.ts";
 import type { CallGateway, GatewayResponse } from "../src/gateway-client.ts";
 
@@ -81,6 +81,14 @@ describe("console access", () => {
     expect(() => parseConfig({ machines: { mac: target }, console: { port: 8790, statePath: "/x" } })).toThrow(/ownerLogins/);
     expect(() => parseConfig({ machines: { mac: target }, console: { port: 8787, statePath: "/x", ownerLogins: [OWNER] } })).toThrow(/differ/);
   });
+  test("an Origin of null or garbage is refused, not a crash", async () => {
+    const t = setup();
+    for (const origin of ["null", "::not a url::"]) {
+      const res = await t.req("/api/act", { method: "POST", headers: { "x-workdone-console": "1", origin }, body: "{}" });
+      expect(res.status).toBe(403);
+    }
+    expect(t.calls.length).toBe(0);
+  });
   test("a post needs the console header and the same origin", async () => {
     const t = setup();
     const bare = await t.req("/api/act", { method: "POST", body: "{}" });
@@ -106,6 +114,27 @@ describe("console listener", () => {
   });
 });
 
+describe("console wiring", () => {
+  test("the report sink hands each fresh report to the console once, and the bus keeps the notifier polling", async () => {
+    const seen: string[] = [];
+    const sink = createReportSink(undefined, () => {}, (m, r) => seen.push(`${m}:${r.map((x) => x.event_id).join(",")}`));
+    const r: any = { event_id: "e1", pane_id: "p", type: "finished", agent: "a", excerpt: "x", message: "m" };
+    await sink("mac", [r]);
+    await sink("mac", [r, { ...r, event_id: "e2" }]);
+    expect(seen).toEqual(["mac:e1", "mac:e2"]);
+    const bus = new ConsoleBus();
+    const wanted = () => bus.hasClients();
+    expect(wanted()).toBe(false);
+    let connected = 0;
+    bus.onConnect = () => connected++;
+    const off = bus.subscribe(() => {});
+    expect(wanted()).toBe(true);
+    expect(connected).toBe(1);
+    off();
+    expect(wanted()).toBe(false);
+  });
+});
+
 describe("console state", () => {
   test("merges overview, supervisor, coordination, leases and claims, and ranks what needs the owner", async () => {
     const t = setup();
@@ -121,6 +150,10 @@ describe("console state", () => {
   test("the feed carries other controllers' touches, flags a collision, and skips reads", async () => {
     const t = setup();
     const body: any = await (await t.req("/api/state")).json();
+    // The audit read asks only for ops worth a line, so reads cannot fill its window.
+    const asked = t.calls.find((c) => c[1] === "audit_tail")![2];
+    expect(asked.ops).toContain("steer_agent");
+    expect(asked.ops).not.toContain("overview");
     const kinds = body.events.map((e: any) => e.kind);
     expect(kinds).toContain("prompt_agent");
     expect(kinds).not.toContain("overview");

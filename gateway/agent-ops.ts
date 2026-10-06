@@ -279,7 +279,9 @@ export function agentOps(g: Gateway): Record<string, Op> {
     // Internal, for the console: the newest audit lines (args already trimmed by the audit
     // writer, leases as tails), so it can show who touched what.
     async audit_tail(params) {
-      return { entries: g.state.auditTail(optInt(params, "n", 1, 200) ?? 60) };
+      const ops = params.ops;
+      if (ops !== undefined && (!Array.isArray(ops) || ops.length > 40 || !ops.every((o) => typeof o === "string" && o.length <= 64))) throw new GatewayError("invalid_params", "ops must be a list of op names");
+      return { entries: g.state.auditTail(optInt(params, "n", 1, 200) ?? 60, ops as string[] | undefined) };
     },
 
     // Internal, for the console: files that more than one agent should not edit at once

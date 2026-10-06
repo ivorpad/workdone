@@ -19,6 +19,9 @@ import { StateStore } from "./state.ts";
 // on, the log is the record of what ran.
 const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat"];
 
+// Read-only ops only the console calls, every few seconds.
+const CONSOLE_READS = new Set(["lease_list", "claims", "audit_tail"]);
+
 export function auditDetail(params: Record<string, any>) {
   const d: Record<string, unknown> = {};
   for (const k of AUDIT_FIELDS) if (typeof params[k] === "string") d[k] = params[k].slice(0, 300);
@@ -119,7 +122,9 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
     if (typeof op !== "string") throw new GatewayError("invalid_request", "op must be a string");
     const result: any = await gateway.request(op, params);
     // The notifier polls every few seconds; only polls that found something are worth a line.
-    if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ...auditOutcome(op, result), ms: Date.now() - started });
+    // The console's own reads would fill the log (and the window audit_tail reads) while a page is open.
+    if (CONSOLE_READS.has(op)) { /* not audited */ }
+    else if (op !== "watch_poll" || result?.messages?.length) audit(cfg, { id, op, ok: true, args: auditDetail(params), ...auditOutcome(op, result), ms: Date.now() - started });
     respond({ id, ok: true, result });
   } catch (err) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));

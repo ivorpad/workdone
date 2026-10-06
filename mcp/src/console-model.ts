@@ -92,7 +92,7 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
 }
 
 // Gateway ops worth a line in the feed. Reads and the notifier's own polling are left out.
-const TOUCH = new Set(["prompt_agent", "steer_agent", "answer_agent", "claim_agents", "release_agents", "send_agent_keys", "spawn_agent", "start_agent", "close", "supervisor_nudge", "set_agent_approval", "owner_note", "auto_approve", "coord_update", "send_pane_input", "run_command_in_pane"]);
+export const TOUCH = new Set(["prompt_agent", "steer_agent", "answer_agent", "claim_agents", "release_agents", "send_agent_keys", "spawn_agent", "start_agent", "close", "supervisor_nudge", "set_agent_approval", "owner_note", "auto_approve", "coord_update", "send_pane_input", "run_command_in_pane"]);
 
 // One audit line as a feed event, or null. consoleTail is "…xxxx", the tail of the lease
 // this console holds on that machine: its own calls are published when they happen, so

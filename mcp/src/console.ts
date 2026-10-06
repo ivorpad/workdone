@@ -13,7 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { ConsoleConfig, OvhConfig } from "./config.ts";
 import { holdIfGated, type PendingCalls } from "./confirm.ts";
-import { auditToEvent, buildNeeds, controlOf, reportToEvent, type ConsoleEvent, type MachineState } from "./console-model.ts";
+import { TOUCH, auditToEvent, buildNeeds, controlOf, reportToEvent, type ConsoleEvent, type MachineState } from "./console-model.ts";
 import type { CallGateway, GatewayResponse } from "./gateway-client.ts";
 import type { Report } from "../../gateway/watcher.ts";
 
@@ -136,7 +136,7 @@ export function createConsole(deps: ConsoleDeps) {
     const mine = leases.peek(machine);
     const [overview, sup, coord, leaseList, claims, audit] = await Promise.all([
       call(machine, "overview", {}), call(machine, "supervisor_status", {}), call(machine, "coord_snapshot", { view: "resume" }),
-      call(machine, "lease_list", mine ? { lease: mine } : {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60 }),
+      call(machine, "lease_list", mine ? { lease: mine } : {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60, ops: [...TOUCH] }),
     ]);
     // The overview is the one that says the machine is up. Without it nothing else is worth showing.
     if (!overview.ok) return { state: { ok: false, error: { code: overview.error.code, message: overview.error.message }, agents: [], counts: {}, objectives: [], claims: [], leases: [] }, supervisor: {} };
@@ -318,7 +318,10 @@ export function createConsole(deps: ConsoleDeps) {
       // The page sets this header; another site's form post cannot, and a cross-origin fetch with it needs a preflight we never grant.
       if (req.headers.get("x-workdone-console") !== "1") return json(fail("csrf", "missing X-WorkDone-Console header"), 403);
       const origin = req.headers.get("origin");
-      if (origin && new URL(origin).host !== req.headers.get("host")) return json(fail("csrf", "cross-origin request"), 403);
+      // "null" (a sandboxed frame) and anything unparseable count as cross-origin.
+      let sameOrigin = true;
+      if (origin) { try { sameOrigin = new URL(origin).host === req.headers.get("host"); } catch { sameOrigin = false; } }
+      if (!sameOrigin) return json(fail("csrf", "cross-origin request"), 403);
       let body: unknown;
       try {
         const raw = await req.text();

@@ -482,7 +482,8 @@ export class StateStore {
   }
 
   // The newest n audit lines, oldest first. Reads only the file's tail.
-  auditTail(n: number): Array<Record<string, unknown>> {
+  // ops, when given, keeps only those ops, before the newest n are taken.
+  auditTail(n: number, ops?: string[]): Array<Record<string, unknown>> {
     try {
       const file = resolve(this.dir, "audit.jsonl");
       const size = statSync(file).size;
@@ -493,11 +494,15 @@ export class StateStore {
       const lines = buf.toString("utf8").split("\n").filter(Boolean);
       // A tail read can start mid-line: that first fragment is dropped.
       if (size > len) lines.shift();
+      const want = ops ? new Set(ops) : null;
       const out: Array<Record<string, unknown>> = [];
-      for (const l of lines.slice(-n)) {
-        try { out.push(JSON.parse(l)); } catch { /* a torn line */ }
+      for (const l of lines) {
+        try {
+          const e = JSON.parse(l);
+          if (!want || want.has(e?.op)) out.push(e);
+        } catch { /* a torn line */ }
       }
-      return out;
+      return out.slice(-n);
     } catch {
       return [];
     }
