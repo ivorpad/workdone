@@ -42,7 +42,8 @@ An agent is steered by one lease at a time. The page enforces the order:
 2. **Steer** (agent working) or **Send prompt** (idle) calls `steer_agent` / `prompt_agent`. The text ends with a line saying the owner sent it from the console, not from a ChatGPT chat. Disabled until the console holds the agent, and while a menu is up.
 3. **Menu buttons** call `answer_agent` with the `dialog_id` of the menu shown, so a menu that moved on is `stale_dialog`, never a wrong answer. A gated menu (push, merge, deploy, `rm -rf`) comes back `needs_confirmation`: it is held and listed under Needs you with Approve and Decline, which run the held call once. The same list shows calls held for ChatGPT's approval card, so you can approve those here.
 4. **Release** frees the agent. There is no "hand back": a thread claims it again when it next acts.
-5. **Close pane** needs a second click, and the gateway's own limits (`allowCloseAny`) still apply.
+5. **Focus pane** brings the agent's pane to the front in Herdr on that machine (`focus`, which also marks the agent seen). It changes no steering and needs no lease. It only means something where a Herdr window is attached, so on a headless VPS it moves focus nobody is looking at.
+6. **Close pane** needs a second click, and the gateway's own limits (`allowCloseAny`) still apply.
 
 A lapsed console lease (a day idle) is claimed again once and the call retried. The gateway refuses a lapsed lease before running anything, so the retry can't repeat an action.
 

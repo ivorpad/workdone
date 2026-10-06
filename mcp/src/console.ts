@@ -277,6 +277,11 @@ export function createConsole(deps: ConsoleDeps) {
         log("note", `${res.ok ? "left a note for the chat about" : `note refused (${res.error.code}):`} ${target}: ${clip(text)}`, !res.ok);
         break;
       }
+      case "focus":
+        // Brings the agent's pane to the front in Herdr on that machine. It changes no steering, so it takes no lease.
+        res = await call(machine, "focus", { kind: "agent", id: target });
+        log("focus", `${res.ok ? "focused" : `focus refused (${res.error.code}):`} ${target}`, false);
+        break;
       case "refresh":
         await state(true);
         res = ok({ refreshed: true });

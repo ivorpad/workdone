@@ -200,11 +200,12 @@ function renderNeeds() {
     if (n.kind === "menu" && n.menu) {
       body += '<div class="menu">' + esc(n.menu.text) + "</div>";
       body += '<div class="acts">' + n.menu.options.map((o) => '<button type="button" class="btn' + (o.n === n.menu.go_ahead ? " primary" : "") + '" data-need="' + i + '" data-opt="' + o.n + '"' + (o.free_text ? ' data-free="1"' : "") + ">" + esc(o.n + ". " + o.label) + "</button>").join("") + "</div>";
+      body += '<div class="acts"><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button></div>';
       if (n.menu.gated) body += '<div class="hint" style="grid-column:2">Gated: ' + esc(n.menu.gated) + ". You will confirm it once more before it runs.</div>";
     } else if (n.kind === "approve") {
       body += '<div class="acts"><button type="button" class="btn primary" data-approve="' + esc(n.pending) + '">Approve</button><button type="button" class="btn" data-decline="' + esc(n.pending) + '">Decline</button></div>';
     } else if (n.pane_id) {
-      body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button></div>';
+      body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button></div>';
     }
     return "<li" + target + '><span class="pill ' + esc(n.level) + '">' + (n.level === "act" ? "act" : "check") + '</span><div><b>' + esc(n.title) + '</b><div class="detail">' + (n.kind === "menu" ? "" : esc(n.detail)) + "</div></div>" + body + "</li>";
   }).join("");
@@ -280,7 +281,7 @@ function renderDetail() {
     '<div class="field"><label for="send">Message to the agent</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + '</button>' +
     (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '"' + (mine ? "" : " disabled") + ">Send the one nudge</button>" : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
     '<div class="field"><label for="note">Note for the chat (about this agent)</label><textarea id="note" data-draft="' + esc(k) + ':note">' + esc(d.note || "") + '</textarea><div class="row-acts"><button type="button" class="btn" data-note="' + esc(k) + '">Leave note</button></div><div class="hint" id="note-result">Goes to the chat that holds this agent. It says below whether anything can deliver it.</div></div>' +
-    '<div class="row-acts"><button type="button" class="btn danger" data-close="' + esc(k) + '"' + (mine ? "" : " disabled") + ">" + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
+    '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '"' + (mine ? "" : " disabled") + ">" + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
 }
 
 function renderObjectives() {
@@ -319,6 +320,7 @@ document.addEventListener("click", async (ev) => {
   if (d.open) { sel = d.open; renderGroups(); renderDetail(); return; }
   if (t.id === "refresh") { await load(true); return; }
   if (t.id === "flagged") { flaggedOnly = !flaggedOnly; t.setAttribute("aria-pressed", String(flaggedOnly)); renderFeed(); return; }
+  if (d.focus) { const [m, p] = split(d.focus); await act({ action: "focus", machine: m, target: p }, () => toast("Focused in Herdr on " + m + ".")); return; }
   if (d.claim) { const [m, p] = split(d.claim); await act({ action: "claim", machine: m, target: p, take_over: d.take === "1" }, () => toast(d.take === "1" ? "Taken over. That thread now gets not_your_agent." : "You steer this agent now.")); return; }
   if (d.release) { const [m, p] = split(d.release); await act({ action: "release", machine: m, target: p }, () => toast("Released. Nobody steers it until a thread claims it.")); return; }
   if (d.send) {

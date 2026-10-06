@@ -246,6 +246,13 @@ describe("console actions", () => {
     const b: any = await (await events.act({ action: "note", machine: "mac", target: "w1:p2", text: "ship it" })).json();
     expect(b.result.delivery).toContain("subscribed to agent.message");
   });
+  test("focus brings the pane forward without a lease or any steering", async () => {
+    const t = setup();
+    const res: any = await (await t.act({ action: "focus", machine: "mac", target: "w1:p1" })).json();
+    expect(res.ok).toBe(true);
+    expect(t.calls).toEqual([["mac", "focus", { kind: "agent", id: "w1:p1" }]]);
+    expect(t.bus.recent().find((e) => e.kind === "focus")!.flag).toBe(false);
+  });
   test("rejects a bad target, an empty message and an unknown machine", async () => {
     const t = setup();
     expect((await t.act({ action: "steer", machine: "mac", target: "x; rm", text: "a" })).status).toBe(400);
