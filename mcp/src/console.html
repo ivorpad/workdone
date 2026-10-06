@@ -137,6 +137,8 @@ let flaggedOnly = false;
 const drafts = {};       // textarea text kept across redraws
 const armedClose = {};   // pane keys whose Close was clicked once
 const key = (m, p) => m + ":" + p;
+// An unnamed agent is told apart by its terminal title; the pane id is always shown beside it.
+const label = (a) => a.name || a.title || a.pane_id;
 const agents = () => S ? Object.entries(S.machines).flatMap(([m, ms]) => (ms.agents || []).map((a) => ({ ...a, machine: m }))) : [];
 
 function toast(msg, bad) {
@@ -246,7 +248,7 @@ function renderGroups() {
       const [w, c] = why(a);
       const k = key(a.machine, a.pane_id);
       const ctl = a.control && a.control.by === "thread" ? "thread: " + clip(a.control.label, 24) : "";
-      return '<button type="button" class="row" data-open="' + esc(k) + '" aria-selected="' + (k === sel) + '"><div class="nm"><b>' + esc(a.name || a.pane_id) + "</b><small>" + esc(a.machine) + " · " + esc(a.agent || "") + (ctl ? " · " + esc(ctl) : "") + "</small></div>" + pill(a) + '<div class="why ' + c + '">' + esc(w) + "</div></button>";
+      return '<button type="button" class="row" data-open="' + esc(k) + '" aria-selected="' + (k === sel) + '"><div class="nm"><b>' + esc(label(a)) + "</b><small>" + esc(a.pane_id) + " · " + esc(a.machine) + " · " + esc(a.agent || "") + (ctl ? " · " + esc(ctl) : "") + "</small></div>" + pill(a) + '<div class="why ' + c + '">' + esc(w) + "</div></button>";
     }).join("");
   }).join("") : '<div class="empty">No agents match this filter.</div>';
 }
@@ -266,7 +268,7 @@ function renderDetail() {
   const canNudge = sup && sup.action === "nudge_ship_slice";
   const d = drafts[k] || {};
   box.innerHTML =
-    '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><h3>' + esc(a.name || a.pane_id) + "</h3>" + pill(a) + "</div>" +
+    '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><div><h3>' + esc(label(a)) + '</h3><div class="hint">' + esc(a.pane_id + " on " + a.machine) + "</div></div>" + pill(a) + "</div>" +
     '<div class="control">' + controlHtml + "</div>" +
     "<dl><dt>Machine</dt><dd class=m>" + esc(a.machine) + " · " + esc(a.pane_id) + "</dd><dt>CLI</dt><dd class=m>" + esc(a.agent || "") + (a.watch && a.watch.launch ? " · " + esc([a.watch.launch.model, a.watch.launch.effort].filter(Boolean).join(" ")) : "") + "</dd>" +
     (a.task ? "<dt>Task</dt><dd>" + esc(a.task.objective + " " + a.task.id + " · " + a.task.status + (a.task.blocker ? " · blocked: " + a.task.blocker : "")) + "</dd>" : "") +
@@ -274,7 +276,7 @@ function renderDetail() {
     (sup ? "<dt>Supervisor</dt><dd>" + esc(a.supervisor.state + ": " + sup.action) + "</dd>" : "") +
     "<dt>Directory</dt><dd class=m>" + esc(a.cwd || "") + "</dd></dl>" +
     '<div class="quote">' + esc(clip(a.dialog || (a.last_reply && a.last_reply.text) || (a.screen_tail || ""), 1200) || "No reply yet.") + "</div>" +
-    '<div class="field"><label for="send">Message to the agent</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + '</button>' +
+    '<div class="field"><label for="send">Message to ' + esc(label(a)) + " (" + esc(a.pane_id) + ')</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + " to " + esc(a.pane_id) + '</button>' +
     (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '">Send the one nudge</button>' : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
     '<div class="field"><label for="note">Note for the chat (about this agent)</label><textarea id="note" data-draft="' + esc(k) + ':note">' + esc(d.note || "") + '</textarea><div class="row-acts"><button type="button" class="btn" data-note="' + esc(k) + '">Leave note</button></div><div class="hint" id="note-result">Goes to the chat that holds this agent. It says below whether anything can deliver it.</div></div>' +
     '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '">' + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
@@ -320,7 +322,7 @@ document.addEventListener("click", async (ev) => {
   if (d.send) {
     const [m, p] = split(d.send); const a = agents().find((x) => x.machine === m && x.pane_id === p); const text = ($("send") || {}).value || "";
     if (!text.trim()) return toast("Write the message first.", true);
-    await act({ action: a && a.status === "working" ? "steer" : "prompt", machine: m, target: p, text }, () => { (drafts[d.send] = drafts[d.send] || {}).send = ""; toast("Sent."); });
+    await act({ action: a && a.status === "working" ? "steer" : "prompt", machine: m, target: p, text }, () => { (drafts[d.send] = drafts[d.send] || {}).send = ""; toast("Sent to " + (a ? label(a) : p) + " (" + p + ")."); });
     return;
   }
   if (d.nudge) { const [m, p] = split(d.nudge); await act({ action: "nudge", machine: m, target: p }, () => toast("Nudged. That was the one this session gets.")); return; }
@@ -354,7 +356,7 @@ function connect() {
   es.onopen = () => setLive(true);
   es.onerror = () => setLive(false, "stream");
 }
-load(false).then(() => { if (!sel) { const first = agents()[0]; if (first) { sel = key(first.machine, first.pane_id); render(); } } });
+load(false);
 connect();
 setInterval(() => load(false), 20000);
 </script>

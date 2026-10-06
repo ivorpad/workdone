@@ -143,6 +143,8 @@ describe("console state", () => {
     expect(mac.claims[0].path).toBe("migrations/meta/_journal.json");
     expect(body.needs.map((n: any) => n.kind)).toEqual(["menu", "human", "stalled", "result"]);
     expect(body.needs[0].menu.options.map((o: any) => o.n)).toEqual([1, 2]);
+    // An agent is named with its pane id, so two unnamed agents in one repo cannot be mixed up.
+    expect(body.needs[0].title).toBe("alpha (w1:p1) shows a menu");
   });
   test("the feed carries other controllers' touches, flags a collision, and skips reads", async () => {
     const t = setup();

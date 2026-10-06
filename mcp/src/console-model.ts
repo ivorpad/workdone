@@ -63,7 +63,7 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
     }
     for (const a of m.agents) {
       const base = { machine, pane_id: a.pane_id as string, name: (a.name ?? null) as string | null };
-      const who = a.name ?? a.pane_id;
+      const who = `${a.name ?? a.title ?? a.pane_id} (${a.pane_id})`;
       if (a.attention === "dialog" && a.choices) {
         const c = a.choices;
         needs.push({ ...base, id: `menu:${machine}:${a.pane_id}:${c.dialog_id ?? ""}`, level: "act", kind: "menu", title: `${who} shows a menu`, detail: clip(c.text, 400), menu: { dialog_id: c.dialog_id, kind: c.kind, go_ahead: c.go_ahead ?? null, gated: c.gated, text: String(c.text ?? ""), options: Array.isArray(c.options) ? c.options.map((o: any) => ({ n: o.n, label: String(o.label), ...(o.free_text ? { free_text: true } : {}) })) : [] } });
