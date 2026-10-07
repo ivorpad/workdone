@@ -1,6 +1,6 @@
 {
   "name": "workdone-events",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Native event subscriptions for the Herdr agents behind WorkDone: ChatGPT is told when an agent finishes a turn, asks a question or sends a message, and gets the final result of turns requested with reply: true.",
   "author": {
     "name": "Ivor"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "WorkDone Events",
     "shortDescription": "Get told in chat when a Herdr agent finishes or asks something.",
-    "longDescription": "Subscribes a ChatGPT chat to the agent.finished, agent.asks and agent.message events of the Herdr agents on your Mac, OVH and Synology, so the chat is woken when an agent finishes a turn or needs an answer. A finished turn that a WorkDone call asked for with reply: true carries its structured result (RESULT: summary, commit, model and effort). It carries events only. To prompt or steer agents, use the WorkDone plugin.",
+    "longDescription": "Subscribes a ChatGPT chat to the agent.finished, agent.asks and agent.message events of the Herdr agents on your Mac, OVH and Synology, so the chat is woken when an agent finishes a turn or needs an answer. A finished turn that a WorkDone call asked for with reply: true carries its structured result (RESULT: summary, commit, model and effort). In a Work chat it can keep you posted: when an agent finishes or asks something, an automation reads what is still owed and reports what needs you. It carries events only. To prompt or steer agents, use the WorkDone plugin.",
     "developerName": "Ivor",
     "category": "Coding",
     "capabilities": [

@@ -1,6 +1,6 @@
 {
   "name": "herdr-remote",
-  "version": "0.16.1",
+  "version": "0.16.2",
   "description": "Drive Herdr coding agents, terminal panes, files and shell commands on your Mac, your OVH server and your Synology from ChatGPT or Codex, through a private MCP server reached over the OpenAI Secure MCP Tunnel.",
   "author": {
     "name": "Ivor"
@@ -17,7 +17,7 @@
   "interface": {
     "displayName": "WorkDone",
     "shortDescription": "Check on and prompt your Herdr agents, and work with files and commands on your Mac and OVH.",
-    "longDescription": "WorkDone shows what the coding agents in Herdr are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Your phone gets a notification when a watched agent finishes, asks a question or needs a manual permission. With reply: true, an agent's final result comes back to the chat once, through native events. A supervisor reads each agent's commits between turns, suggests one nudge when it stalls, then a handoff, and says when finished work can be closed. Choose whether an agent's visible permission menus wait for you or are approved within the scope you authorize. ChatGPT can apply your menu answers and delegated choices. Gated operations use your existing authorization or an Approve card when a decision is still needed. Launch settings that bypass permissions produce no approval menus. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
+    "longDescription": "WorkDone shows what the coding agents in Herdr are doing on your Mac and your OVH server, returns their replies as clean text, sends them prompts and starts new ones in fresh workspaces, tabs or git worktrees. Your phone gets a notification when a watched agent finishes, asks a question or needs a manual permission. Work it starts stays owed until you accept or drop it: owed_work lists every unfinished result, question and task across chats and machines, and settle_work closes one without closing its pane. With reply: true, an agent's final result comes back to the chat once, through native events. A supervisor reads each agent's commits between turns, suggests one nudge when it stalls, then a handoff, and says when finished work can be closed. Choose whether an agent's visible permission menus wait for you or are approved within the scope you authorize. ChatGPT can apply your menu answers and delegated choices. Gated operations use your existing authorization or an Approve card when a decision is still needed. Launch settings that bypass permissions produce no approval menus. It can also manage the Herdr layout, run shell commands, and read and write files.\n\nEach machine only exposes the folders you allowed in its gateway config. Commands, file access, raw pane input and closing things the bridge didn't create stay off until you turn them on there.",
     "developerName": "Ivor",
     "category": "Coding",
     "capabilities": [
