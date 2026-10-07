@@ -1,5 +1,6 @@
 // What wakes a ChatGPT thread. watch_here opens a watch for the thread's lease on one
-// machine; the notifier drops each gateway report into the watches whose lease holds
+// machine, and so does a regular chat's spawn_agent, prompt_agent or steer_agent by
+// itself (link below); the notifier drops each gateway report into the watches whose lease holds
 // that agent; the watch card in the thread long-polls watch_next and posts each event
 // into the chat, so ChatGPT answers the agent without the owner relaying it.
 //
@@ -16,8 +17,8 @@
 //
 // Polling is what ChatGPT sees, so a watch is only as long as the conversation: it ends
 // IDLE_MS after its last activity (opening, a wake handed out, a message the thread sent
-// to an agent), well before its hours run out. The chat opens a new one with watch_here
-// when it hands an agent work. While quiet, polls get longer, and a second card polling
+// to an agent), well before its hours run out. The chat's next spawn or prompt opens a
+// new one. While quiet, polls get longer, and a second card polling
 // the same watch is turned away, so two devices don't double the calls.
 
 import { Database } from "bun:sqlite";
@@ -67,6 +68,8 @@ interface Watch {
   // When events were last handed out, and how many agent messages the thread sent since.
   lastWakeAt: number | null;
   sentSinceWake: number;
+  // When a card last asked watch_next for this watch. Unset until one does.
+  polledAt?: number | null;
 }
 
 // What the model may see: no lease, no watch id, no cap.
@@ -104,6 +107,10 @@ const MAX_HELD_COORD = 10_000;
 // After a wake, the thread gets one message to its agents in this window. There is no
 // override: a back-and-forth goes on because each reply is a new wake.
 const REPLY_WINDOW_MS = 10 * 60_000;
+// A link no card has polled for this long has no card bringing its replies in: the card
+// never rendered, or the device it ran on closed. Longer than a card's longest pause
+// between polls (a 60 s retry while ChatGPT refuses a wake).
+const CARD_GONE_MS = 90_000;
 
 const hex = () => crypto.randomUUID().replaceAll("-", "");
 const token = (prefix: string, n: number) => (prefix + hex() + hex()).slice(0, prefix.length + n);
@@ -230,6 +237,27 @@ export class Inbox {
     return { ok: true, state: this.state(id)!, key: { watch_id: id, cap, lease } };
   }
 
+  linked(machine: string, lease: string): boolean {
+    this.sweep();
+    return [...this.watches.values()].some((w) => !w.stopped && w.machine === machine && w.lease === lease);
+  }
+
+  // A regular chat links itself when it hands an agent work (spawn_agent, prompt_agent,
+  // steer_agent). With no open link, this opens one with the defaults. With one open, the
+  // card that holds it keeps it, and this call gets no key while that card polls. If no
+  // card has polled it for CARD_GONE_MS, this call's card gets the same key and brings the
+  // replies in instead: nothing is replaced, and the rounds and ceilings carry on.
+  link(machine: string, lease: string, opts: { panes?: string[] } = {}): { ok: true; state: WatchState; key: WatchKey | null } | { ok: false; code: string; message: string } {
+    this.sweep();
+    const open = [...this.watches].find(([, w]) => !w.stopped && w.machine === machine && w.lease === lease);
+    if (!open) return this.open(machine, lease, { panes: opts.panes });
+    const [id, w] = open;
+    this.touch(w);
+    this.persist();
+    const polled = w.waiters.length > 0 || (w.polledAt != null && this.now() - w.polledAt < CARD_GONE_MS);
+    return { ok: true, state: this.state(id)!, key: polled ? null : { watch_id: id, cap: w.cap, lease } };
+  }
+
   // Reports from one machine's watch pass. Returns how many watches got an event.
   add(machine: string, reports: Report[]): number {
     const before = this.snapshot();
@@ -303,6 +331,7 @@ export class Inbox {
   async next(id: string, cap: string, timeoutMs: number): Promise<{ events: WakeEvent[]; state: WatchState | null; busy?: true }> {
     const w = this.watches.get(id);
     if (!w || w.cap !== cap) return { events: [], state: null };
+    w.polledAt = this.now();
     if (!w.stopped && w.queue.length === 0 && timeoutMs > 0 && w.waiters.length > 0) {
       await new Promise((r) => setTimeout(r, Math.min(timeoutMs, this.busyMs)));
       this.log(JSON.stringify({ event: "watch_poll_busy", ...this.tag(id, w) }));

@@ -39,7 +39,11 @@ Use this when native Events is unavailable, as in a regular Chat. The card shows
 
 ![The link card in a ChatGPT chat, linked with the agents on mac, showing a message an agent sent with workdone-tell and the agent's reply](images/link-card.png)
 
-Once completion and question subscriptions are proven, stop the old watch card for those events to avoid duplicate wakes. **Link a chat with an agent.** In ChatGPT:
+Once completion and question subscriptions are proven, stop the old watch card for those events to avoid duplicate wakes.
+
+**A regular chat links itself.** On the tunnel connection (the WorkDone plugin, which regular Chats use), `spawn_agent`, `prompt_agent` and `steer_agent` open the link as part of the call and show the card under it. Nobody has to ask for it, and ChatGPT doesn't have to remember `watch_here`. A `spawn_agent` with a prompt asks for its result (`reply: true`) unless the call says `reply: false`, so the agent's first answer comes back too. Opening the link with the call also closes a race: a reply that ends before a later `watch_here` would have found no link and been dropped. The link wakes on the same things as one from `watch_here` without options (replies, `tell` messages, menus that stop an agent), with the same ceilings. Later calls in the chat reuse the open link. The card that holds it keeps it while it polls; their cards show "replies come in through this chat's link card above". If no card has polled the link for 90 s (the card never rendered, or the device it ran on closed), the next call's card gets the same key and takes over the polling. Nothing is replaced and the rounds carry on. The Events connection (Work chats) does not do this: its notifications are native Events.
+
+**Link a chat with an agent you claimed.** In ChatGPT:
 
 ```
 @WorkDone link this chat with the agent in w5M:pA (take it over)
@@ -68,6 +72,7 @@ To test it in a new agent session in a linked pane, tell the agent: "run `script
 - The link card only runs while its chat is open somewhere that keeps running: a chatgpt.com tab (it keeps working in a background tab, 8 to 30 s late), the desktop app, or the iOS app while it is open on that chat. For a link that lasts while the Mac sleeps, keep the chat open in OVH's always-on Chromium.
 - After a deploy that changes tools, events or cards: rescan WorkDone in ChatGPT's plugin settings (the existing app calls this **Refresh tools**). Check that the plugin page lists both event names. Without a rescan ChatGPT can retain the old discovery result.
 - Only watched agents report. `spawn_agent` and `start_agent` watch theirs; ChatGPT calls `watch_agent` when linking an agent it claimed.
+- On 2026-10-07 a card on chatgpt.com stayed blank under its tool call ("Opening", no `watch_next`) until the page was reloaded; then it delivered both queued events. That was one sample, and the widget never loaded, so the cause looks to be on ChatGPT's side. The 90 s takeover above means the chat's next spawn or prompt brings a working card.
 
 ## How the link works
 

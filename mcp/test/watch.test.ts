@@ -4,7 +4,8 @@ import { parseConfig } from "../src/config.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
 import { inbox } from "../src/inbox.ts";
 import { createHandler } from "../src/server.ts";
-import { KEY_META, limitsFor } from "../src/watch.ts";
+import { buildServer } from "../src/tools.ts";
+import { KEY_META, WATCH_URI, limitsFor } from "../src/watch.ts";
 
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
 const cfg = parseConfig({ listen: { host: "127.0.0.1", port: 8787 }, machines: { mac: target, ovh: { ...target, host: "127.0.0.1" } } });
@@ -18,6 +19,7 @@ const fake: CallGateway = async (machine, op, params) => {
     if (params.lease === "L-lapsed1") return { ok: true, result: { valid: false, reason: "lapsed", panes: [] } };
     return { ok: true, result: { valid: false, reason: "unknown", panes: [] } };
   }
+  if (params.target === "gone") return { ok: false, error: { code: "agent_not_found", message: "no agent gone" } };
   return { ok: true, result: { submitted: true, status: "working" } };
 };
 const handler = createHandler(cfg, fake);
@@ -112,5 +114,75 @@ describe("one message per wake", () => {
     const tools = (await c.listTools()).tools.filter((t) => t.name === "prompt_agent" || t.name === "steer_agent");
     for (const t of tools) expect(JSON.stringify(t.inputSchema)).not.toContain("continue_conversation");
     await c.close();
+  });
+});
+
+describe("a regular chat links itself", () => {
+  const spawn = (c: Client, lease: string, extra: Record<string, unknown> = {}) =>
+    c.callTool({ name: "spawn_agent", arguments: { kind: "claude", name: "robin", cwd: "~/src", prompt: "do it", lease, ...extra } }) as Promise<any>;
+
+  test("a spawn with a prompt opens the link, asks for the result and shows the card", async () => {
+    const c = await client();
+    const r = await spawn(c, "L-live0101");
+    expect(r.isError).toBe(false);
+    const sent = calls.filter(([, op, p]) => op === "spawn_agent" && p.lease === "L-live0101");
+    expect(sent.at(-1)![2].reply).toBe(true);
+    expect(r.structuredContent.link).toMatchObject({ machine: "mac", active: true, wake: ["message", "reply", "blocked"] });
+    const key = r._meta[KEY_META];
+    expect(key).toMatchObject({ lease: "L-live0101" });
+    expect(key.cap).toMatch(/^wc_/);
+    expect(r.content.at(-1).text).toContain("come back here by themselves");
+    const visible = JSON.stringify([r.content, r.structuredContent]);
+    for (const secret of [key.watch_id, key.cap]) expect(visible).not.toContain(secret);
+    await c.close();
+  });
+
+  test("an explicit reply: false is kept", async () => {
+    const c = await client();
+    await spawn(c, "L-live0102", { reply: false });
+    const sent = calls.filter(([, op, p]) => op === "spawn_agent" && p.lease === "L-live0102");
+    expect(sent.at(-1)![2].reply).toBe(false);
+    await c.close();
+  });
+
+  test("while a card polls the link, later calls show it without a key and replace nothing", async () => {
+    const c = await client();
+    const first = await spawn(c, "L-live0103");
+    const key = first._meta[KEY_META];
+    await inbox.next(key.watch_id, key.cap, 0);
+    const prompt = (await c.callTool({ name: "prompt_agent", arguments: { target: "robin", text: "more", lease: "L-live0103" } })) as any;
+    expect(prompt.structuredContent.link).toMatchObject({ active: true });
+    expect(prompt._meta?.[KEY_META]).toBeUndefined();
+    expect((await inbox.next(key.watch_id, key.cap, 0)).state).toMatchObject({ active: true });
+    const again = (await c.callTool({ name: "watch_here", arguments: { lease: "L-live0103" } })) as any;
+    expect(err(again)).toMatchObject({ code: "already_linked" });
+    await c.close();
+  });
+
+  test("a link no card ever polled is handed to the next card, under the same key", async () => {
+    const c = await client();
+    const first = await spawn(c, "L-live0104");
+    const next = (await c.callTool({ name: "steer_agent", arguments: { target: "robin", text: "also", lease: "L-live0104" } })) as any;
+    expect(next._meta[KEY_META]).toEqual(first._meta[KEY_META]);
+    await c.close();
+  });
+
+  test("a failed call links nothing", async () => {
+    const c = await client();
+    const r = (await c.callTool({ name: "prompt_agent", arguments: { target: "gone", text: "hi", lease: "L-live0105" } })) as any;
+    expect(r.isError).toBe(true);
+    expect(r._meta?.[KEY_META]).toBeUndefined();
+    expect(inbox.linked("mac", "L-live0105")).toBe(false);
+    await c.close();
+  });
+
+  test("only the calls that hand out work carry the card, and only without native Events", async () => {
+    const c = await client();
+    const tools = Object.fromEntries((await c.listTools()).tools.map((t) => [t.name, t]));
+    for (const name of ["spawn_agent", "prompt_agent", "steer_agent"]) expect((tools[name] as any)._meta?.ui?.resourceUri).toBe(WATCH_URI);
+    for (const name of ["get_agent", "owed_work", "start_agent"]) expect((tools[name] as any)._meta?.ui?.resourceUri).toBeUndefined();
+    await c.close();
+    const work = buildServer(fake, ["mac"], "mac", undefined, { service: {} as any, principal: { id: "p" } as any }) as any;
+    for (const name of ["spawn_agent", "prompt_agent", "steer_agent"]) expect(work._registeredTools[name]._meta).toBeUndefined();
   });
 });

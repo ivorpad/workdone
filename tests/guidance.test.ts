@@ -104,3 +104,13 @@ test("packaged skills teach attempt fencing, acceptance and objective event limi
   expect(Object.keys(event.inputSchema.properties!)).toEqual(["machine", "objective"]);
   expect(Object.keys(event.payloadSchema.properties!)).not.toContain("lease");
 });
+
+test("a regular chat is told its link opens by itself, not to call watch_here for it", () => {
+  const instructions: string = (buildServer(async () => ({ ok: true, result: {} }) as any, ["mac"], "mac") as any).server._instructions ?? "";
+  for (const text of [instructions, skill]) {
+    expect(text).toContain("In a regular Chat the link opens by itself");
+    expect(text).toMatch(/don't wait or poll/i);
+  }
+  expect(instructions).not.toContain("say so and use watch_here");
+  expect((TOOLS.spawn_agent!.input.reply as any).description).toContain("asks for it by itself");
+});

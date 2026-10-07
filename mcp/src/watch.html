@@ -227,7 +227,20 @@
   let started = false;
   function start(s, k) {
     if (started) return;
-    if (!s || !k || !k.watch_id || !k.cap) { $("title").textContent = "Nothing to watch"; $("detail").textContent = "This card got no link key from WorkDone."; return; }
+    // spawn_agent, prompt_agent and steer_agent in a regular chat link it by themselves and
+    // carry the link's state in link. Without a key, an earlier card of this chat holds the
+    // link and is polling it: this one only says so.
+    const linkState = s && s.link;
+    const hasKey = !!(k && k.watch_id && k.cap);
+    if (linkState && !hasKey) {
+      started = true;
+      $("dot").className = "dot";
+      $("title").textContent = "Linked with this chat's agents on " + linkState.machine;
+      $("detail").textContent = "replies come in through this chat's link card above";
+      return;
+    }
+    s = linkState || s;
+    if (!s || !hasKey) { $("title").textContent = "Nothing to watch"; $("detail").textContent = "This card got no link key from WorkDone."; return; }
     started = true;
     watch = s;
     key = k;
