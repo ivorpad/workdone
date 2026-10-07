@@ -398,6 +398,24 @@ export const TOOLS: Record<string, ToolDef> = {
     input: { pane_id: paneId, command: z.string().min(1), confirm },
     annotations: SHELL,
   },
+  ask_openclaw: {
+    title: "Ask OpenClaw",
+    description:
+      "Ask the owner's OpenClaw assistant something it has tools for: calendar, reminders, notes, messages, its own browser. Only when the owner asks you to ask OpenClaw. The question is posted in the owner's OpenClaw Discord channel (long ones in numbered messages, from OpenClaw's bot account, not as the owner), then OpenClaw's agent answers there and the answer comes back here as reply. If it is still running after wait_ms, state is running: tell the owner and call openclaw_status with the id once later, don't re-ask. Send the same command_id when retrying and it will not run twice. Write the question so it stands alone (OpenClaw does not see this chat). OpenClaw can act on the owner's accounts, so ask it to look things up unless the owner asked for an action, and relay the reply as OpenClaw's words, not as verified fact. Needs the openclaw capability in bridge_status (machine mac).",
+    input: {
+      text: z.string().min(1).describe("The question or instruction, complete in itself. Any length: it is posted in pieces under 2000 characters."),
+      command_id: commandId,
+      visible: z.boolean().optional().describe("Default true: post the question and the answer in Discord. false: run the agent without posting either."),
+      wait_ms: z.number().int().min(0).max(110_000).optional().describe("How long to wait for the answer, default 90000."),
+    },
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+  },
+  openclaw_status: {
+    title: "OpenClaw ask status",
+    description: "With id: an ask_openclaw's state (running, done, failed), its reply or error, and how many Discord messages it posted. Without id: the last 10 asks, without their replies.",
+    input: { id: z.string().optional().describe("The id ask_openclaw returned.") },
+    annotations: READ,
+  },
   exec: {
     title: "Run shell command",
     description:
@@ -520,7 +538,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.12.1" },
+    { name: "herdr-remote", version: "0.13.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

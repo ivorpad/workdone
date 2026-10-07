@@ -15,6 +15,7 @@ import { parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
 import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
+import { openclawOps } from "./openclaw.ts";
 import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
 import { layoutOps, ownerMayClose } from "./layout-ops.ts";
@@ -71,7 +72,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...openclawOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -277,6 +278,7 @@ export class Gateway {
             worktree_remove: cfg.allowWorktreeRemove,
             documents: cfg.documentConverter !== null,
             browser: cfg.browser !== null && cfg.allowExec,
+            openclaw: cfg.openclaw !== null,
             auto_approve: cfg.autoApprove,
           },
         };

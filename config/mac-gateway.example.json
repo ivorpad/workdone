@@ -8,6 +8,14 @@
     }
   },
   "worktreeRoot": null,
+  "openclaw": {
+    "command": ["~/.local/bin/openclaw"],
+    "agent": "lead",
+    "channel": "discord",
+    "target": "channel:000000000000000000",
+    "sessionKey": "agent:lead:discord:channel:000000000000000000",
+    "timeoutSec": 600
+  },
   "agentKinds": ["claude", "codex", "cursor", "opencode", "pi"],
   "agentModels": "~/.config/herdr-chatgpt/agent-models.json",
   "allowExec": false,

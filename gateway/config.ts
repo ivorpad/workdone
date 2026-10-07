@@ -3,6 +3,7 @@
 import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
+import { parseOpenclaw, type OpenclawConfig } from "./openclaw.ts";
 import { parseModels, type ModelList } from "./models.ts";
 
 function parseTerminalApp(v: unknown): string | null {
@@ -11,7 +12,7 @@ function parseTerminalApp(v: unknown): string | null {
   return v;
 }
 
-export const GATEWAY_VERSION = "0.15.0";
+export const GATEWAY_VERSION = "0.16.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -53,6 +54,8 @@ export interface GatewayConfig {
   agentKinds: string[];
   agentModels: ModelList;
   browser: BrowserConfig | null;
+  // The owner's OpenClaw, asked through ask_openclaw (openclaw.ts). Unset: capability off.
+  openclaw: OpenclawConfig | null;
   // Run exec in a Herdr pane, in the owner's desktop session (keychain, .zshrc, ssh-agent),
   // instead of as the gateway's own ssh login.
   execInPane: boolean;
@@ -202,6 +205,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     agentKinds,
     agentModels,
     browser: parseBrowser(c.browser),
+    openclaw: parseOpenclaw(c.openclaw),
     execInPane: c.execInPane === true,
     terminalApp: parseTerminalApp(c.terminalApp),
     autoApprove: c.autoApprove !== false,
