@@ -54,6 +54,19 @@ test("work stays owed until the user settles it, not until a notification goes o
   expect(TOOLS.settle_work!.description).toContain("closes nothing");
 });
 
+test("the Events skill carries a read-only owed-work automation for both wakes", () => {
+  const recipe = eventsSkill.slice(eventsSkill.indexOf("## Supervise owed work"));
+  expect(recipe).toContain("When WorkDone Events fires agent.finished for machine M, call owed_work");
+  expect(recipe).toContain("agent.asks instead of agent.finished");
+  expect(recipe).toContain("never prompt, settle, claim or close anything");
+  expect(recipe).toContain("nothing new");
+  // Asked for as an automation, never as a call ChatGPT can't make.
+  expect(recipe).not.toMatch(/call events\/subscribe/);
+  expect(skill).toContain("Supervise owed work");
+  const events = JSON.parse(read("plugin/workdone-events/.codex-plugin/plugin.json"));
+  expect(events.interface.defaultPrompt[0]).toContain("still owed");
+});
+
 test("plugin versions moved with the new tool and payload", () => {
   const atLeast = (path: string, min: string) => {
     const version = JSON.parse(read(path)).version as string;

@@ -1,6 +1,6 @@
 {
   "name": "workdone-events",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Native event subscriptions for the Herdr agents behind WorkDone: ChatGPT is told when an agent finishes a turn, asks a question or sends a message, and gets the final result of turns requested with reply: true.",
   "author": {
     "name": "Ivor"
@@ -23,6 +23,7 @@
       "Read"
     ],
     "defaultPrompt": [
+      "Keep me posted on my Mac agents: whenever one finishes or asks something, tell me what is still owed to me.",
       "Subscribe to agent.finished and tell me here when the agent in relay finishes.",
       "Notify me in this chat when any agent asks me a question."
     ],
