@@ -7,6 +7,7 @@
 // Leases are per machine and lapse after a day without use.
 
 import { GatewayError, TARGET_RE } from "./config.ts";
+import { currentTaskBinding, paneDispatch } from "./coord.ts";
 import type { Gateway } from "./gateway.ts";
 import { optBool, optStr, type Params } from "./params.ts";
 import type { Lease } from "./state.ts";
@@ -162,11 +163,36 @@ export function leaseOps(g: Gateway) {
       }
       return { lease: id!, label: mine.label, panes: [...mine.panes], refused };
     });
+    // The pane moves, the objective its task belongs to does not: that has its own
+    // supervisor and may hold other agents' tasks. Say so now, so the chat asks the user
+    // once instead of finding out at coord_update (not_your_objective).
+    const claimed = panes.map((p: any) => p.pane_id as string).filter((p) => !result.refused.some((r) => r.pane_id === p));
+    const elsewhere = supervisedElsewhere(claimed, result.lease);
     return {
       ...result,
       ...(taken.length ? { taken_over: taken } : {}),
-      note: "keep this lease for the whole conversation and pass it on every call that acts on these agents; other threads' agents are read-only to you",
+      ...(elsewhere.length ? { supervised_elsewhere: elsewhere } : {}),
+      note: "keep this lease for the whole conversation and pass it on every call that acts on these agents; other threads' agents are read-only to you" +
+        (elsewhere.length ? ". supervised_elsewhere: those agents' tasks belong to objectives another thread supervises; settling a dispatch, binding or accepting them needs coord_update with take_over: true, which moves every task of the objective, so only on the user's word" : ""),
     };
+  }
+
+  // Objectives another lease supervises whose open task is bound, or on its way, to one of panes.
+  function supervisedElsewhere(panes: string[], lease: string) {
+    const store = g.state.coord();
+    const leases = g.state.leases();
+    const out: Array<Record<string, unknown>> = [];
+    for (const pane of panes) {
+      const hit = currentTaskBinding(store, pane) ?? paneDispatch(store, pane);
+      const sup = hit?.o.supervisor;
+      if (!hit || hit.t.status === "complete" || !sup || sup === lease) continue;
+      const by = leases[sup];
+      out.push({
+        pane_id: pane, objective: hit.o.id, task: hit.t.id, ...(hit.t.protocol ? { protocol: hit.t.protocol } : {}),
+        supervisor: `…${sup.slice(-4)}`, ...(by && live(by, now()) ? { supervisor_label: by.label } : {}), tasks: Object.keys(hit.o.tasks).length,
+      });
+    }
+    return out;
   }
 
   async function release_agents(params: Params) {

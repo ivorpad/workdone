@@ -12,6 +12,7 @@ import { checkpoint } from "./checkpoint.ts";
 import { ack, byToken, canonical, currentTaskBinding, protoKey, taskIdentity, ensureObjective, getObjective, OBJECTIVE_ID_RE, ownedBy, planTasks, prepareDispatch, reportTask, resolveOwners, settleDispatch, unmetDeps, type Change, type CoordStore, type Objective, type Task } from "./coord.ts";
 import { resumeView, snapshotView, taskSlice, type Live } from "./coord-views.ts";
 import type { Gateway } from "./gateway.ts";
+import { unsent } from "./herdr-socket.ts";
 import type { StateStore } from "./state.ts";
 import { optBool, optStr, str, type Op, type Params } from "./params.ts";
 import { closeCoordWork } from "./work.ts";
@@ -57,7 +58,7 @@ export function notifyTransitions(state: StateStore, store: CoordStore, changes:
 }
 
 function taskBrief(o: Objective, t: Task) {
-  return { objective: o.id, id: t.id, identity: taskIdentity(o, t), status: t.status, version: t.version, progress: t.progress ?? 0, blocker: t.blocker, blocker_kind: t.blocker_kind, protocol: t.protocol, unmet_deps: unmetDeps(o, t), commit: t.result?.commit ?? null };
+  return { objective: o.id, supervisor: o.supervisor ? `…${o.supervisor.slice(-4)}` : null, id: t.id, identity: taskIdentity(o, t), status: t.status, version: t.version, progress: t.progress ?? 0, blocker: t.blocker, blocker_kind: t.blocker_kind, protocol: t.protocol, unmet_deps: unmetDeps(o, t), commit: t.result?.commit ?? null };
 }
 
 // The task a pane works on, for agent views and supervision: its current binding (one
@@ -84,11 +85,11 @@ function supervisorCheck(o: Objective, lease: string | null, takeOver = false) {
 }
 
 // How a send to Herdr failed. Herdr's own refusal (agent_busy, agent_not_ready, ...)
-// means nothing went in. A transport failure after the request left (no answer, a closed
-// or broken socket) may or may not have delivered it.
+// means nothing went in, and so does a transport failure before the request left whole.
+// One after it left (no answer, a closed or broken socket) may or may not have delivered it.
 const AMBIGUOUS = new Set(["herdr_timeout", "herdr_closed", "herdr_bad_response", "herdr_unavailable"]);
 export const sendOutcome = (err: unknown): "refused" | "unknown" =>
-  err instanceof GatewayError && !AMBIGUOUS.has(err.code) ? "refused" : "unknown";
+  err instanceof GatewayError && (!AMBIGUOUS.has(err.code) || unsent(err)) ? "refused" : "unknown";
 
 export interface SliceDispatch { slice: string; command_id: string; settle(outcome: "delivered" | "refused" | "unknown"): { command_id: string; state: string } }
 // A retry of a bound prompt that was already delivered: nothing is sent again.

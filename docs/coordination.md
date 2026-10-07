@@ -6,7 +6,7 @@ WorkDone keeps the state of multi-agent work (objectives, tasks, owners, depende
 
 Each gateway keeps `coord.json` in its state directory, written under the same lock as `watch.json` and `leases.json`:
 
-- **Objective**: any bounded outcome (an issue, an epic, a research job). It has one supervisor, the lease of the ChatGPT thread that plans it. `take_over: true` moves it to another thread and keeps every task.
+- **Objective**: any bounded outcome (an issue, an epic, a research job). It has one supervisor, the lease of the ChatGPT thread that plans it. `take_over: true` moves it to another thread and keeps every task. Taking over an agent (`claim_agents` with `take_over`) moves the pane only, since the objective may plan other agents' tasks: the claim lists under `supervised_elsewhere` each claimed pane whose task belongs to an objective another lease supervises, and `get_agent` shows the task's `supervisor`. Settling that task's dispatch, binding it or accepting it needs the objective's own `take_over`, on the user's word.
 - **Task**: one executable slice. Fields: `status` (`queued`, `executing`, `waiting_dependency`, `verifying`, `blocked`, `complete`), `owner`, `deps` (task ids, no cycles), `acceptance`, `evidence`, `artifacts`, `blocker` with `blocker_kind`, `next_action`, `result`, `version` and `progress`. `version` moves on anything a supervisor merge could conflict with; `progress` only on substantive work (status, evidence, artifacts, result, blocker, waits, resources held). A heartbeat report moves neither. Each worker has one current slice, and independent workers run in parallel. There is no global lock.
   - `blocker_kind` is one of `dependency`, `resource`, `defect` (needs a `next_action`) or `human`. Only `human` means a person has to act. Approval policies stay separate.
 - **Binding** (an attempt): a task's tie to one agent run. It holds a pane, a Herdr session, a `generation` and a token hash. Reassigning the owner or binding again increments the generation, and the old token stops working.
@@ -21,6 +21,7 @@ Each gateway keeps `coord.json` in its state directory, written under the same l
   - A new binding is pending until Herdr accepts the prompt, or until a report arrives with its token (proof of delivery).
   - A definitive Herdr refusal (`agent_busy`, `agent_not_ready`, ...) drops the pending binding and touches nothing else, so a report or merge written meanwhile survives.
   - A transport failure after sending (`herdr_timeout`, `herdr_closed`, ...) makes the binding current with `protocol: dispatch_unknown` and status left as it was, not executing.
+  - A transport failure before the request left whole counts as a refusal: Herdr acts on a request only once its line ends. A long request goes out in several writes, since a macOS Unix socket takes 8 KB at a time.
   - While a dispatch is in flight or in doubt, nothing else goes to that pane through WorkDone, bound or plain. That includes a retry with a new `command_id`, and holds across a gateway restart. A report from the run, or `coord_update` with `dispatch: delivered | lost` on the task after reading the agent, settles it.
   - The same `command_id` and text again returns the recorded outcome without sending; other text under that id is `command_conflict`.
   - A settle for an attempt that was superseded meanwhile changes nothing.
@@ -78,6 +79,12 @@ Regressions from the 2026-10-06 review (`tests/coord-regressions.test.ts`, `test
 - partial result with a human or defect blocker; complete refused until resolved
 - replay after result, receipts per attempt, more than 500 reports, capacity refusal
 - heartbeats, next_action-only reports, another task's turns, publication and owed results
+
+Regressions from 2026-10-07 (`tests/herdr-socket.test.ts`, `tests/coord-regressions-gateway.test.ts`):
+
+- a request bigger than the socket buffer arrives whole, and a long bound prompt is delivered with its slice
+- a failure before the request left whole is a refusal (no binding, no `dispatch_unknown`, the same `command_id` retries); one after it is still unknown
+- taking over a bound agent moves the pane, not its objective, and the claim says so
 
 Live checks on the Mac: a bound Claude agent reports from its own shell tool, a repeated `report_id` changes nothing, and an unbound prompt reaches Herdr unchanged.
 

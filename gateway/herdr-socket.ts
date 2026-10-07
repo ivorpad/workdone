@@ -4,11 +4,19 @@
 import { GatewayError, type HerdrCall } from "./config.ts";
 import { herdrSubscribe, type Subscribe } from "./herdr-events.ts";
 
+// A failure before the request left whole: Herdr acts on a line only once it ends, so
+// nothing was delivered, whatever the error code says.
+export const unsent = (err: unknown) => err instanceof GatewayError && (err.details as { unsent?: unknown } | undefined)?.unsent === true;
+
 export function herdrSocket(socketPath: string): HerdrCall & { subscribe: Subscribe } {
   let seq = 0;
   const call: HerdrCall = (method, params, timeoutMs = 20_000) =>
     new Promise((resolvePromise, reject) => {
       const id = `gw:${process.pid}:${++seq}`;
+      // write() takes what fits in the socket buffer (8 KB on a macOS Unix socket) and
+      // returns how much: drain sends the rest. A long prompt is bigger than that.
+      const request = Buffer.from(JSON.stringify({ id, method, params }) + "\n");
+      let written = 0;
       const chunks: Buffer[] = [];
       let settled = false;
       const finish = (fn: () => void) => {
@@ -17,17 +25,33 @@ export function herdrSocket(socketPath: string): HerdrCall & { subscribe: Subscr
         clearTimeout(timer);
         fn();
       };
+      // Short of the JSON's last byte, Herdr can't have parsed it. The newline alone
+      // missing could still be read as a request at EOF, so that counts as sent.
+      const failure = (code: string, message: string) =>
+        written < request.length - 1
+          ? new GatewayError(code, `${message}; the request was not sent whole (${written} of ${request.length} bytes), so nothing was delivered`, { unsent: true })
+          : new GatewayError(code, message);
+      const flush = (s: { write(d: Uint8Array): number }) => {
+        while (written < request.length) {
+          const n = s.write(request.subarray(written));
+          if (n <= 0) return;
+          written += n;
+        }
+      };
       const timer = setTimeout(() => {
-        finish(() => reject(new GatewayError("herdr_timeout", `herdr ${method} timed out after ${timeoutMs}ms`)));
+        finish(() => reject(failure("herdr_timeout", `herdr ${method} timed out after ${timeoutMs}ms`)));
         sock?.end();
       }, timeoutMs);
-      let sock: { end(): void; write(d: string): number } | undefined;
+      let sock: { end(): void; write(d: Uint8Array): number } | undefined;
       Bun.connect({
         unix: socketPath,
         socket: {
           open(s) {
             sock = s;
-            s.write(JSON.stringify({ id, method, params }) + "\n");
+            flush(s);
+          },
+          drain(s) {
+            flush(s);
           },
           data(s, chunk) {
             // Buffer bytes, not strings: a multi-byte character can straddle two chunks.
@@ -48,13 +72,13 @@ export function herdrSocket(socketPath: string): HerdrCall & { subscribe: Subscr
             s.end();
           },
           close() {
-            finish(() => reject(new GatewayError("herdr_closed", "herdr closed the connection without a response")));
+            finish(() => reject(failure("herdr_closed", "herdr closed the connection without a response")));
           },
           error(_s, err) {
-            finish(() => reject(new GatewayError("herdr_unavailable", err.message)));
+            finish(() => reject(failure("herdr_unavailable", err.message)));
           },
         },
-      }).catch((err: Error) => finish(() => reject(new GatewayError("herdr_unavailable", err.message))));
+      }).catch((err: Error) => finish(() => reject(failure("herdr_unavailable", err.message))));
     });
   return Object.assign(call, { subscribe: herdrSubscribe(socketPath) });
 }

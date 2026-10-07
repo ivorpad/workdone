@@ -33,6 +33,7 @@ function setup() {
   const herdr: HerdrCall = async (method, params: any) => {
     if (method === "agent.list") return { agents };
     if (method === "agent.get") return { agent: agents.find((a) => a.pane_id === params.target || a.name === params.target) };
+    if (method === "pane.get") return { pane: agents.find((a) => a.pane_id === params.pane_id) };
     if (method === "session.snapshot") return { snapshot: { agents, panes: [] } };
     if (method === "agent.prompt" || method === "pane.send_input" || method === "agent.send_keys") {
       await step(method);
@@ -94,6 +95,21 @@ describe("4. dispatch of a bound prompt", () => {
     // If the prompt did land, the run reports with its token and that settles it.
     await t.g.handle("coord_report", { token: build.binding.token, status: "executing" });
     expect(t.coord().objectives.demo.tasks.build).toMatchObject({ status: "executing", protocol: null, binding: { dispatch: { state: "delivered" } } });
+  });
+
+  test("a transport failure before the prompt left whole (unsent) is a refusal: no binding, no dispatch_unknown, and the same command_id retries", async () => {
+    const t = setup();
+    const lease = await planned(t);
+    // What herdrSocket throws when Herdr hangs up on a request it never read to the end.
+    t.next["agent.prompt"]!.push(new GatewayError("herdr_closed", "herdr closed the connection without a response; the request was not sent whole", { unsent: true }));
+    const ask = { target: "worker-a", text: "go", task: { objective: "demo", id: "build" }, lease, command_id: "brief-v1" };
+    await expect(t.g.handle("prompt_agent", ask)).rejects.toMatchObject({ code: "herdr_closed" });
+    expect(t.coord().objectives.demo.tasks.build).toMatchObject({ status: "queued", binding: null, pending: null, generation: 0, protocol: null });
+    expect(t.coord().objectives.demo.transitions).toEqual([]);
+    expect(t.coord().commands["brief-v1"]).toMatchObject({ state: "refused" });
+    const res: any = await t.g.handle("prompt_agent", ask);
+    expect(res.dispatch).toMatchObject({ command_id: "brief-v1", state: "delivered" });
+    expect(t.coord().objectives.demo.tasks.build).toMatchObject({ status: "executing", generation: 1, protocol: null });
   });
 
   test("a report that lands while the prompt is in flight is kept even if the send then fails", async () => {
@@ -257,6 +273,16 @@ describe("wait: true timeouts on a bound prompt (frozen review delta)", () => {
     expect(t.prompts()).toEqual(["landed?"]);
   });
 
+  test("herdr_timeout before the prompt left whole fails the call: not working, not in doubt", async () => {
+    const t = setup();
+    const lease = await planned(t);
+    t.next["agent.prompt"]!.push(new GatewayError("herdr_timeout", "herdr agent.prompt timed out; the request was not sent whole", { unsent: true }));
+    const ask = { target: "worker-a", text: "go", wait: true, timeout_ms: 1000, task: { objective: "demo", id: "build" }, lease, command_id: "wait-3" };
+    await expect(t.g.request("prompt_agent", ask)).rejects.toMatchObject({ code: "herdr_timeout" });
+    expect(t.coord().objectives.demo.tasks.build).toMatchObject({ status: "queued", binding: null, pending: null, protocol: null });
+    expect(await t.g.request("prompt_agent", ask)).toMatchObject({ submitted: true, dispatch: { command_id: "wait-3", state: "delivered" } });
+  });
+
   test("Herdr's own timeout (it took the prompt, the wait ran out) stays delivered and working", async () => {
     const t = setup();
     const lease = await planned(t);
@@ -267,6 +293,46 @@ describe("wait: true timeouts on a bound prompt (frozen review delta)", () => {
     expect(t.coord().objectives.demo.tasks.build).toMatchObject({ status: "executing", protocol: null, binding: { dispatch: { state: "delivered" } } });
     expect(await t.g.request("prompt_agent", ask)).toMatchObject({ duplicate: true, dispatch: { state: "delivered" } });
     expect(t.prompts()).toEqual(["landed"]);
+  });
+});
+
+describe("taking over a bound agent (2026-10-07)", () => {
+  test("the pane moves, its objective stays with its supervisor, and the claim says so before coord_update finds out", async () => {
+    const t = setup();
+    const old = await planned(t);
+    const build = () => t.coord().objectives.demo.tasks.build;
+    // The old thread's bound prompt went in doubt.
+    t.next["agent.prompt"]!.push(new GatewayError("herdr_closed", "herdr closed the connection without a response"));
+    await expect(t.g.request("prompt_agent", { target: "worker-a", text: "brief", task: { objective: "demo", id: "build" }, lease: old })).rejects.toMatchObject({ code: "herdr_closed" });
+    expect(build()).toMatchObject({ status: "queued", protocol: "dispatch_unknown", binding: { generation: 1, prompted_at: null, dispatch: { state: "unknown" } } });
+    // A new conversation claims it: held by the old one.
+    const fresh: any = await t.g.request("claim_agents", { label: "new chat", targets: ["w1:p1"] });
+    expect(fresh.refused).toEqual([{ pane_id: "w1:p1", held_by: "sup" }]);
+    expect(fresh.supervised_elsewhere).toBeUndefined();
+    // Taken over on the user's word: the pane moves, and the claim names the objective that did not.
+    const moved: any = await t.g.request("claim_agents", { lease: fresh.lease, targets: ["w1:p1"], take_over: true });
+    expect(moved.taken_over).toEqual(["w1:p1"]);
+    const sup = `…${old.slice(-4)}`;
+    expect(moved.supervised_elsewhere).toEqual([{ pane_id: "w1:p1", objective: "demo", task: "build", protocol: "dispatch_unknown", supervisor: sup, supervisor_label: "sup", tasks: 2 }]);
+    expect(moved.note).toContain("take_over: true");
+    expect(await t.g.request("get_agent", { target: "w1:p1" })).toMatchObject({ held_by: "new chat", task: { objective: "demo", id: "build", protocol: "dispatch_unknown", supervisor: sup } });
+    // Half-owned: the new holder can neither prompt the pane in doubt nor settle it, and
+    // the old supervisor can settle it but no longer prompt the agent.
+    await expect(t.g.request("prompt_agent", { target: "w1:p1", text: "hello", lease: fresh.lease })).rejects.toMatchObject({ code: "dispatch_unknown" });
+    await expect(t.g.request("coord_update", { objective: "demo", lease: fresh.lease, tasks: [{ id: "build", dispatch: "lost" }] })).rejects.toMatchObject({ code: "not_your_objective" });
+    await expect(t.g.request("prompt_agent", { target: "w1:p1", text: "brief", lease: old })).rejects.toMatchObject({ code: "not_your_agent" });
+    // The objective moves only on its own take_over, and it moves every task: the old
+    // thread still holds worker-b but can no longer bind ship to it.
+    await t.g.request("coord_update", { objective: "demo", lease: fresh.lease, take_over: true });
+    await expect(t.g.request("prompt_agent", { target: "worker-b", text: "ship", task: { objective: "demo", id: "ship" }, lease: old })).rejects.toMatchObject({ code: "not_your_objective" });
+    await t.g.request("coord_update", { objective: "demo", lease: fresh.lease, tasks: [{ id: "build", dispatch: "lost" }] });
+    expect(build()).toMatchObject({ protocol: null, binding: { dispatch: { state: "lost" } } });
+    // A rebinding prompt with an idempotent command_id goes in once.
+    const ask = { target: "w1:p1", text: "brief v1", task: { objective: "demo", id: "build" }, lease: fresh.lease, command_id: "brief-v1" };
+    expect(await t.g.request("prompt_agent", ask)).toMatchObject({ dispatch: { command_id: "brief-v1", state: "delivered" } });
+    expect(build()).toMatchObject({ status: "executing", generation: 2, protocol: null, binding: { dispatch: { state: "delivered" } } });
+    expect(await t.g.request("prompt_agent", ask)).toMatchObject({ duplicate: true });
+    expect(t.prompts()).toHaveLength(1);
   });
 });
 

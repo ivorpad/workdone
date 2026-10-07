@@ -384,9 +384,9 @@ export class Gateway {
             wait ? timeout + 10_000 : undefined,
           );
         } catch (err) {
-          // A wait that times out still delivered the prompt: report on it when it
-          // finishes, and tell the caller it is working rather than failing the call.
-          if (!(wait && err instanceof GatewayError && (err.code === "timeout" || err.code === "herdr_timeout"))) {
+          // A wait that times out still delivered the prompt (unless it never left whole): report
+          // on it when it finishes, and tell the caller it is working rather than failing the call.
+          if (!(wait && err instanceof GatewayError && (err.code === "timeout" || (err.code === "herdr_timeout" && sendOutcome(err) === "unknown")))) {
             if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
             // Refused: the pending binding is dropped. Unknown: kept for reconciliation,
             // never resent from here.
