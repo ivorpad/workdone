@@ -335,11 +335,12 @@ export function byToken(store: CoordStore, token: string, now = new Date().toISO
   return fail("stale_binding", "that task token is no longer valid: the task was reassigned, rebound or removed");
 }
 
-// A bound run's turn ended, or its agent went away. Only the pane's current binding
-// speaks for it. Without a report since its last prompt the task is recoverable protocol
-// state, never complete. A gone holder's resources go stale: still held, never handed on
+// A bound run's turn ended (finished, or with a question in prose), or its agent went
+// away. Only the pane's current binding speaks for it. Without a report since its last
+// prompt the task is recoverable protocol state, never complete: a question asked only in
+// prose is not a human blocker until it is reported as one. A gone holder's resources go stale: still held, never handed on
 // by a timer.
-export function runEnded(store: CoordStore, paneId: string, how: "finished" | "gone", now: string): Change[] {
+export function runEnded(store: CoordStore, paneId: string, how: "finished" | "question" | "gone", now: string): Change[] {
   const byObjective = new Map<string, Transition[]>();
   const add = (o: string, tr: Transition | null) => { if (tr) byObjective.set(o, [...(byObjective.get(o) ?? []), tr]); };
   const cur = currentTaskBinding(store, paneId);
@@ -352,7 +353,9 @@ export function runEnded(store: CoordStore, paneId: string, how: "finished" | "g
       const before = prints(store, o, t);
       t.protocol = k;
       settle(store, o, t, before, now);
-      add(o.id, transition(o, t.id, k, how === "gone" ? "the bound agent exited or its pane closed" : "the bound agent finished its turn without workdone-task", now));
+      add(o.id, transition(o, t.id, k, how === "gone" ? "the bound agent exited or its pane closed"
+        : how === "question" ? "the bound agent ended its turn with a question in prose and no workdone-task report; a decision for a person is reported as blocker_kind human"
+        : "the bound agent finished its turn without workdone-task", now));
     }
   }
   if (how === "gone") {

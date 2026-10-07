@@ -1,7 +1,7 @@
 // Read side of the coordination state (coord.ts): the supervisor's snapshot and resume
 // views, the critical path, and the bounded slice a bound worker gets with each prompt.
 
-import type { Binding, CoordStore, Objective, ResourceLease, Task } from "./coord.ts";
+import { humanBlocked, type Binding, type CoordStore, type Objective, type ResourceLease, type Task } from "./coord.ts";
 
 // The longest chain of unfinished tasks, from the first that has to happen to the last.
 export function criticalPath(o: Objective): string[] {
@@ -80,14 +80,15 @@ export function resumeView(store: CoordStore, o: Objective, live: Live = {}) {
   const tasks = Object.values(o.tasks).map((t) => taskView(store, o, t, live));
   const brief = (t: ReturnType<typeof taskView>) => ({ id: t.id, title: t.title, status: t.status, owner: t.owner?.name ?? null, owner_status: t.owner_status, next_action: t.next_action, evidence_count: t.evidence.length, version: t.version, progress: t.progress });
   // A blocker is open until it is cleared, whatever the status: a worker's partial result
-  // (verifying) next to a human blocker still needs that person. Waits are listed apart.
+  // (verifying) next to a human blocker still needs that person, and so does a task that
+  // also waits on a resource. Other waits are listed apart.
   const open = tasks.filter((t) => t.status !== "complete" && (t.blocker !== null || t.status === "blocked") && t.status !== "waiting_dependency");
   return {
     id: o.id, version: o.version, supervisor: o.supervisor ? "…" + o.supervisor.slice(-4) : null,
     pending_transitions: o.transitions.filter((x) => x.seq > o.acked_seq),
     needs_acceptance: tasks.filter((t) => t.status === "verifying").map((t) => ({ ...brief(t), result: t.result, acceptance: t.acceptance, blocker: t.blocker, blocker_kind: t.blocker_kind })),
     protocol: tasks.filter((t) => t.protocol).map((t) => ({ ...brief(t), protocol: t.protocol })),
-    blocked_human: open.filter((t) => t.blocker_kind === "human").map((t) => ({ ...brief(t), blocker: t.blocker })),
+    blocked_human: tasks.filter((t) => humanBlocked(t)).map((t) => ({ ...brief(t), blocker: t.blocker })),
     blocked_other: open.filter((t) => t.blocker_kind !== "human").map((t) => ({ ...brief(t), kind: t.blocker_kind, blocker: t.blocker })),
     waiting: tasks.filter((t) => t.status === "waiting_dependency").map((t) => ({ ...brief(t), kind: t.blocker_kind, on: t.unmet_deps, resources: t.waiting_for })),
     ready: tasks.filter((t) => t.status === "queued" && t.unmet_deps.length === 0).map(brief),
@@ -118,6 +119,6 @@ export function taskSlice(store: CoordStore, o: Objective, t: Task, cli: string,
     ...(t.blocker ? [`Blocker (${t.blocker_kind ?? "unspecified"}): ${clip(t.blocker, 200)}`] : []),
     ...(t.next_action ? [`Next action: ${clip(t.next_action, 300)}`] : []),
     `Report this task only, from your shell: ${cli} --token ${token} '<json>'`,
-    "JSON fields: status (executing | waiting_dependency | blocked), evidence [..], artifacts [..], blocker + blocker_kind (dependency | resource | defect with next_action | human), wait_for [resource], acquire / release [resource or resource@generation], result {summary, commit}, report_id (new for new content; resend the same report with the same id). A result moves the task to verifying: not acceptance, not a push. Report before you end the turn.",
+    "JSON fields: status (executing | waiting_dependency | blocked), evidence [..], artifacts [..], blocker + blocker_kind (dependency | resource | defect with next_action | human), wait_for [resource], acquire / release [resource or resource@generation], result {summary, commit}, report_id (new for new content; resend the same report with the same id). A result moves the task to verifying: not acceptance, not a push. A decision or answer only the owner can give goes in blocker with blocker_kind human; a question asked only in your reply is not tracked. Report before you end the turn.",
   ].join("\n");
 }

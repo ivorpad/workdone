@@ -334,8 +334,8 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
         if (!note) continue;
         const text = message(w, agent, paneId, note);
         const eventId = randomUUID();
-        if (note.type === "finished" || note.type === "gone") {
-          const ran = store.updateCoord(c => ({ changes: runEnded(c, paneId, note.type as "finished" | "gone", new Date(now).toISOString()), store: c }));
+        if (note.type === "finished" || note.type === "question" || note.type === "gone") {
+          const ran = store.updateCoord(c => ({ changes: runEnded(c, paneId, note.type as "finished" | "question" | "gone", new Date(now).toISOString()), store: c }));
           if (ran.changes.length) notifyTransitions(store, ran.store, ran.changes);
         }
         if (ended && w.managed) {

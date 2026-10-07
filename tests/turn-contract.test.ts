@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { timing } from "../gateway/answer-ops.ts";
 import { loadConfig, type HerdrCall } from "../gateway/config.ts";
 import { Gateway } from "../gateway/gateway.ts";
+import { NEXT, owedDigest } from "../gateway/owed.ts";
 import { TOOLS } from "../mcp/src/tools.ts";
 
 const dirs: string[] = [];
@@ -22,7 +23,10 @@ function setup() {
     { pane_id: "w1:p3", name: "plain", agent: "claude", agent_status: "idle", cwd: "/srv/allowed/app", agent_session: { value: "sc" }, state_change_seq: 1 },
   ];
   const prompts: Array<{ target: string; text: string }> = [];
+  // What the agent's last answer reads as, for the watcher (no transcripts here).
+  let screen = "";
   const herdr: HerdrCall = async (method, params: any) => {
+    if (method === "agent.read") return { read: { text: screen } };
     if (method === "agent.list") return { agents };
     if (method === "agent.get") return { agent: agents.find((a) => a.pane_id === params.target || a.name === params.target) };
     if (method === "session.snapshot") return { snapshot: { agents, panes: [] } };
@@ -38,7 +42,7 @@ function setup() {
   const g = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, leases: true }), herdr);
   const coord = () => JSON.parse(readFileSync(join(state, "coord.json"), "utf8"));
   const tokenIn = (text: string) => /--token (wdt_[A-Za-z0-9_-]+)/.exec(text)?.[1];
-  return { g, state, agents, prompts, coord, tokenIn };
+  return { g, state, agents, prompts, coord, tokenIn, setScreen: (text: string) => void (screen = text) };
 }
 const plan = (lease: string) => ({
   objective: "demo", title: "Demo objective", lease,
@@ -127,6 +131,60 @@ describe("turn contract", () => {
     const resume: any = await g.handle("coord_snapshot", { objective: "demo", view: "resume" });
     expect(resume.objectives[0].protocol.map((t: any) => [t.id, t.protocol])).toEqual([["build", "missing_report"]]);
     expect(g.state.hasTold()).toBe(true);
+  });
+
+  test("a bound worker that asks only in prose gets missing_report: the question is not a tracked human blocker", async () => {
+    const { g, agents, coord, setScreen } = setup();
+    const { lease } = (await g.request("claim_agents", { label: "sup", targets: ["worker-a"] })) as any;
+    await g.request("coord_update", plan(lease));
+    await g.handle("prompt_agent", { target: "worker-a", text: "go", task: { objective: "demo", id: "build" }, lease });
+    g.state.manage("w1:p1", { name: "worker-a", cwd: "/srv/allowed/app" }, { ...agents[0], agent_status: "working" });
+    setScreen("Both caches work. Should I use Postgres or SQLite?");
+    agents[0].agent_status = "done";
+    agents[0].state_change_seq++;
+    await g.handle("watch_poll", {});
+    expect(g.state.inbox().at(-1)).toMatchObject({ kind: "question", pane_id: "w1:p1" });
+    const build = coord().objectives.demo.tasks.build;
+    expect(build).toMatchObject({ status: "executing", protocol: "missing_report", blocker: null });
+    expect(coord().objectives.demo.transitions.at(-1)).toMatchObject({ kind: "missing_report", detail: expect.stringContaining("blocker_kind human") });
+  });
+
+  test("a human blocker the worker reports is what owed_work and the resume view go by, until it is cleared", async () => {
+    const { g, agents, coord, prompts, tokenIn, setScreen } = setup();
+    const { lease } = (await g.request("claim_agents", { label: "sup", targets: ["worker-a"] })) as any;
+    await g.request("coord_update", plan(lease));
+    const { work_id }: any = await g.request("prompt_agent", { target: "worker-a", text: "go", task: { objective: "demo", id: "build" }, lease });
+    expect(prompts[0]!.text).toContain("blocker_kind human; a question asked only in your reply is not tracked");
+    const token = tokenIn(prompts[0]!.text)!;
+    g.state.manage("w1:p1", { name: "worker-a", cwd: "/srv/allowed/app" }, { ...agents[0], agent_status: "working" });
+    await g.handle("coord_report", { token, status: "blocked", blocker: "Postgres or SQLite for the cache?", blocker_kind: "human" });
+    // Its last words don't read as a question: the prose classifier says finished.
+    setScreen("I wrote up both options in docs/cache.md.");
+    agents[0].agent_status = "done";
+    agents[0].state_change_seq++;
+    await g.handle("watch_poll", {});
+    expect(g.state.inbox().at(-1)).toMatchObject({ kind: "finished", pane_id: "w1:p1" });
+    expect(coord().objectives.demo.tasks.build).toMatchObject({ status: "blocked", blocker_kind: "human", protocol: null });
+    const decision = { pane_id: "w1:p1", state: "needs_you", next: NEXT.decision, task: { objective: "demo", id: "build", status: "blocked", blocker: "Postgres or SQLite for the cache?", blocker_kind: "human" } };
+    let owed: any = await g.request("owed_work", { lease });
+    expect(owed.items).toEqual([expect.objectContaining(decision)]);
+    expect(owed.objectives).toEqual([expect.objectContaining({ id: "demo", blocked_human: ["build"] })]);
+    const digest = owedDigest(g.state, ["/srv/allowed"]);
+    expect(digest.needs_you).toBe(1);
+    expect(digest.top[0]).toContain("decision: Postgres or SQLite");
+    // The user's word on the work, or the messages answered, doesn't clear a decision still open.
+    await g.request("settle_work", { work_id, outcome: "accepted", lease });
+    owed = await g.request("owed_work", { lease });
+    expect(owed.items).toEqual([expect.objectContaining({ ...decision, work: null })]);
+    // Nor does waiting on a resource turn it into a resource blocker.
+    await g.handle("coord_report", { token, wait_for: ["e2e"] });
+    expect(coord().objectives.demo.tasks.build).toMatchObject({ status: "waiting_dependency", blocker_kind: "human" });
+    const resume: any = await g.handle("coord_snapshot", { objective: "demo", view: "resume" });
+    expect(resume.objectives[0].blocked_human.map((t: any) => t.id)).toEqual(["build"]);
+    expect((await g.request("owed_work", { lease }) as any).items).toEqual([expect.objectContaining({ pane_id: "w1:p1", state: "needs_you", next: NEXT.decision })]);
+    // An explicit clear does.
+    await g.request("coord_update", { objective: "demo", lease, tasks: [{ id: "build", blocker: null, status: "executing" }] });
+    expect((await g.request("owed_work", { lease }) as any).items).toEqual([]);
   });
 
   test("lost_tell_recovered_from_resume_view; ack_seq clears it", async () => {

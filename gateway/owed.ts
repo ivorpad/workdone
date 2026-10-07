@@ -6,7 +6,7 @@
 // owedDigest is the same derivation from state alone, small enough to ride on other results.
 
 import { paneInScope } from "./config.ts";
-import { currentTaskBinding, type CoordStore } from "./coord.ts";
+import { currentTaskBinding, humanBlocked, type CoordStore } from "./coord.ts";
 import { resumeView, type Live } from "./coord-views.ts";
 import type { Gateway } from "./gateway.ts";
 import { live as leaseLive } from "./leases.ts";
@@ -44,8 +44,9 @@ export type ItemState = "needs_you" | "failed" | "unread_result" | "gone" | "wor
 const ORDER: ItemState[] = ["needs_you", "failed", "unread_result", "gone", "working", "open"];
 
 // One line each, inside docs/loop-risks.md: nothing here asks for a resend or a second prompt.
-export const NEXT: Record<ItemState | "held" | "left", string> = {
+export const NEXT: Record<ItemState | "held" | "left" | "decision", string> = {
   needs_you: "It is waiting on the user: get_agent shows the menu or question. Ask the user, then answer it once.",
+  decision: "Its task is blocked on the user (task.blocker), whatever its last reply says. Ask the user, then send their answer once with prompt_agent, or the objective's supervisor records it with coord_update (blocker: null). settle_work does not clear it.",
   failed: "Its last turn failed: tell the user what failed and ask how to go on. It stays open until they accept or drop it (settle_work with settle).",
   unread_result: "Tell the user its result (last_result, or read_agent source reply). When they accept or drop it, settle_work with settle.",
   gone: "The agent exited or is out of reach (status gone): tell the user its last_result and unanswered messages. Start no new agent unless they ask; settle_work with settle when they accept or drop the work.",
@@ -109,6 +110,13 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
     else if (w.managed && (w.last_status === "blocked" || w.dialog_id) && (!live || live.agents.has(paneId))) panes.add(paneId);
   }
   for (const [paneId, list] of unanswered) if (list.some((e) => OWED_KINDS.has(e.kind))) panes.add(paneId);
+  // A bound task blocked on a person is owed until that blocker is cleared in the
+  // coordination state: the structured record decides, not the agent's prose or inbox.
+  const decisions = new Set<string>();
+  for (const paneId of Object.keys(s.coord.current ?? {})) {
+    const cur = currentTaskBinding(s.coord, paneId);
+    if (cur && humanBlocked(cur.t) && !panes.has(paneId)) { panes.add(paneId); decisions.add(paneId); }
+  }
 
   const items = [];
   for (const paneId of panes) {
@@ -130,12 +138,17 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
       : live ? "gone"
       : w ? (w.last_status ?? "unknown")
       : last?.kind === "gone" || wk?.last_turn?.type === "gone" ? "gone" : "unknown";
+    const session: string | null = a?.agent_session?.value ?? w?.session ?? last?.session ?? wk?.session ?? null;
+    const bound = currentTaskBinding(s.coord, paneId, session);
+    const human = bound && humanBlocked(bound.t) ? bound.t : null;
+    // Added only for a blocker that belongs to an earlier session of the pane: not owed here.
+    if (decisions.has(paneId) && !human) continue;
     const asks = entries.some((e) => e.kind === "question");
     const menu = status === "blocked" || (status !== "gone" && !!w?.dialog_id);
     // A failed last turn stands until the agent is at work again.
     const failed = wk?.last_turn?.type === "failed" && status !== "working" && status !== "background" && !w?.busy;
     const state: ItemState = left ? "gone"
-      : asks || menu ? "needs_you"
+      : asks || menu || human ? "needs_you"
       : failed ? "failed"
       : entries.some((e) => UNREAD.has(e.kind)) ? "unread_result"
       : status === "gone" ? "gone"
@@ -147,11 +160,9 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
       live: !!found[1] && found[1].panes.includes(paneId) && leaseLive(found[1], now),
     };
     const yours = !!mine && found?.[0] === mine;
-    const session: string | null = a?.agent_session?.value ?? w?.session ?? last?.session ?? wk?.session ?? null;
-    const bound = currentTaskBinding(s.coord, paneId, session);
     const said = [...entries].reverse().find((e) => e.task)?.task;
     const named = said ?? wk?.coord;
-    const task = bound ? { objective: bound.o.id, id: bound.t.id, status: bound.t.status }
+    const task = bound ? { objective: bound.o.id, id: bound.t.id, status: bound.t.status, ...(human ? { blocker: human.blocker, blocker_kind: "human" } : {}) }
       : named ? { objective: named.objective, id: named.id, status: s.coord.objectives[named.objective]?.tasks[named.id]?.status ?? null } : null;
     const lastResult: TurnResult | null = w?.last_result ?? [...entries].reverse().find((e) => e.result)?.result ?? null;
     items.push({
@@ -167,7 +178,7 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
       work: wk ? { id: wk.id, title: wk.title, started_at: wk.started_at, started_by: wk.started_by, last_turn: wk.last_turn ?? null } : null,
       // What settle_work takes for this item.
       settle: wk ? { work_id: wk.id } : { target: paneId },
-      next: mine && holder?.live && !yours ? NEXT.held : left ? NEXT.left : NEXT[state],
+      next: mine && holder?.live && !yours ? NEXT.held : left ? NEXT.left : human && !menu ? NEXT.decision : NEXT[state],
       // For ordering only; dropped below.
       _at: Date.parse(last?.at ?? w?.last_event?.at ?? wk?.last_turn?.at ?? w?.since ?? wk?.started_at ?? "") || 0,
     });
@@ -197,7 +208,8 @@ export type OwedItem = ReturnType<typeof deriveOwed>["items"][number];
 
 function oneLine(i: OwedItem): string {
   const who = i.agent ? `${i.agent} (${i.pane_id})` : i.pane_id;
-  const said = i.state === "needs_you" ? (i.unanswered.find((e) => e.kind === "question")?.text ?? "a menu is up")
+  const blocker = i.task && "blocker" in i.task ? i.task.blocker : null;
+  const said = i.state === "needs_you" ? (blocker ? `decision: ${blocker}` : i.unanswered.find((e) => e.kind === "question")?.text ?? "a menu is up")
     : i.state === "unread_result" || i.state === "failed" ? (i.unanswered.find((e) => UNREAD.has(e.kind))?.text ?? i.state)
     : i.result_pending ? `result ${i.result_pending} pending`
     : i.work ? `${i.status}, ${i.work.title}` : i.status;

@@ -320,6 +320,11 @@ function checkGraph(tasks: Record<string, Task>) {
 
 export const unmetDeps = (o: Objective, t: Task) => t.deps.filter((d) => o.tasks[d]?.status !== "complete");
 
+// A person has to act on this task: the structured record of it, whatever the task's
+// status and whatever the agent's last words were. Only an explicit blocker change (a
+// report or merge with blocker or blocker_kind) clears it, or the task's completion.
+export const humanBlocked = (t: Pick<Task, "status" | "blocker" | "blocker_kind">) => t.status !== "complete" && t.blocker_kind === "human" && (t.blocker !== null || t.status === "blocked");
+
 // The task's current attempt holds this lease, and it is not stale. A task with no
 // binding (an owner reporting from its pane) holds what was granted to no run.
 function holds(l: ResourceLease, o: Objective, t: Task): boolean {
@@ -561,6 +566,8 @@ export function reportTask(store: CoordStore, objectiveId: string, taskId: strin
   const out: Transition[] = [];
   const before = prints(store, o, t);
   const explicitBlocker = raw.blocker !== undefined || raw.blocker_kind !== undefined;
+  // A wait doesn't turn an open human blocker into a resource one: the person still has to act.
+  const keepHuman = humanBlocked(t) && !explicitBlocker;
   if (raw.status !== undefined) t.status = status(raw.status, WORKER_STATUSES, "worker");
   if (raw.evidence !== undefined) t.evidence = merge(t.evidence, list(raw.evidence, "evidence"));
   if (raw.artifacts !== undefined) t.artifacts = merge(t.artifacts, list(raw.artifacts, "artifacts"));
@@ -570,7 +577,7 @@ export function reportTask(store: CoordStore, objectiveId: string, taskId: strin
   if (raw.wait_for !== undefined) {
     t.waiting_for = list(raw.wait_for, "wait_for", RESOURCE_RE);
     t.status = "waiting_dependency";
-    t.blocker_kind = "resource";
+    if (!keepHuman && !humanBlocked(t)) t.blocker_kind = "resource";
   }
   if (raw.result !== undefined) {
     const r = raw.result as any;
