@@ -11,7 +11,7 @@ function parseTerminalApp(v: unknown): string | null {
   return v;
 }
 
-export const GATEWAY_VERSION = "0.13.0";
+export const GATEWAY_VERSION = "0.14.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
