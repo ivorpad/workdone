@@ -1,6 +1,6 @@
 # Coordination: the opt-in turn contract
 
-WorkDone keeps the state of multi-agent work (objectives, tasks, owners, dependencies, acceptance, evidence, resources) so agents don't restate it in prose. This is opt-in. A prompt to an agent with no task binding behaves exactly as before: no injected text, no reporting. Work started without a binding is still owed: `owed_work` lists it until the user settles it (`settle_work`), and merging a bound task `complete` settles the work bound to it.
+WorkDone keeps the state of multi-agent work (objectives, tasks, owners, dependencies, acceptance, evidence, resources) so agents don't restate it in prose. This is opt-in. A prompt to an agent with no task binding behaves exactly as before: no injected text, no reporting. Work started through WorkDone, bound or not, is owed: `owed_work` lists it until the user settles it (`settle_work`, accepted or dropped). Merging a bound task `complete` doesn't settle it: `complete` is the supervisor's check of evidence against acceptance, not the user's acceptance.
 
 ## Model
 
@@ -51,7 +51,7 @@ Each gateway keeps `coord.json` in its state directory, written under the same l
 - A result never erases an explicit blocker. A blocker stays visible in the resume view (`blocked_human`, `blocked_other`) whatever the status, and acceptance entries carry it. A human blocker is listed in `blocked_human` even while the task also waits on a resource, and a `wait_for` report doesn't change its kind. Until a report or merge clears it (`blocker: null`, or another `blocker_kind`) or the task completes, `owed_work` shows the bound agent as `needs_you` with the blocker in `task`, whatever its last reply says; `settle_work` and answering its messages don't clear it. `complete` is refused with `unresolved_blocker` unless the same merge sets `blocker: null`.
 - Ready propagation: when a task completes, every dependent that waited on dependencies and now has none outstanding goes to `queued`, with one `ready` transition. A resource release does the same for its waiters.
 - Progress for a bound worker is its task `progress`, compared only between turns of the same task and binding (`task_identity` on turn records), never the shared repo HEAD or `version`. Turn history without those fields is unknown, not a stall.
-- A bound agent is prunable only once its task is accepted `complete`, no `reply: true` result is owed, and, if the task produced a commit, the branch shows it published (an upstream with nothing ahead). A task with no commit is `accepted` and prunable without implying anything was published. An unbound agent's `landed` likewise needs its commit pushed, not just committed.
+- A bound agent is prunable only once the supervisor has merged its task `complete` (`supervisor_status` calls that `accepted`: the supervisor's acceptance, not the user's), no `reply: true` result is owed, and, if the task produced a commit, the branch shows it published (an upstream with nothing ahead). A task with no commit is `accepted` and prunable without implying anything was published. An unbound agent's `landed` likewise needs its commit pushed, not just committed.
 
 ## Acceptance
 
@@ -94,7 +94,8 @@ Live checks on the Mac: a bound Claude agent reports from its own shell tool, a 
 The contract covers prompts WorkDone sends. It does not cover:
 - prompts typed into a terminal;
 - agent-to-agent prompts sent with the herdr CLI;
-- what an agent does after its turn has started.
+- what an agent does after its turn has started;
+- GitHub. A task `complete`, work `accepted` and `supervisor_status` `landed` are WorkDone's records: `landed` reads git (a commit pushed to its upstream), and nothing reads, closes or reconciles an issue or PR. Reconciling the issue is a separate step outside WorkDone.
 
 `coord_snapshot` shows only objectives made with `coord_update`. `owed_work` lists all owed work, bound or not.
 

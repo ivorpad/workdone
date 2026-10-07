@@ -395,17 +395,26 @@ describe("work outlives the process, the scope and its coordination task", () =>
     expect(await t.g.request("settle_work", { work_id, outcome: "dropped", lease })).toMatchObject({ settled: true });
   });
 
-  test("a coord_update that merges the bound task complete accepts its work", async () => {
+  test("a coord_update that merges the bound task complete leaves its work owed until the user settles it", async () => {
     const t = setup();
     const lease = await t.claim("sup", ["worker-a"]);
     await t.g.request("coord_update", { objective: "demo", title: "Demo", lease, tasks: [{ id: "build", title: "Build it", owner: "worker-a" }] });
     const { work_id }: any = await t.g.request("prompt_agent", { target: "worker-a", text: "Build it", lease, task: { objective: "demo", id: "build" } });
     expect(t.work()[0]).toMatchObject({ id: work_id, coord: { objective: "demo", id: "build" }, status: "open" });
-    // A merge that leaves it open changes nothing.
     await t.g.request("coord_update", { objective: "demo", lease, tasks: [{ id: "build", next_action: "verify" }] });
     expect(t.work()[0]!.status).toBe("open");
+    // Complete is the supervisor's check against acceptance, not the user's word.
     await t.g.request("coord_update", { objective: "demo", lease, tasks: [{ id: "build", status: "complete" }] });
-    expect(t.work()[0]).toMatchObject({ status: "accepted", closed_by: "coord" });
+    expect(t.work()[0]).toMatchObject({ id: work_id, status: "open" });
+    expect(t.work()[0]!.closed_by).toBeUndefined();
+    t.panes["w1:p1"].agent_status = "idle";
+    const out: any = await t.g.request("owed_work", { lease });
+    expect(out.items).toEqual([expect.objectContaining({ pane_id: "w1:p1", task: { objective: "demo", id: "build", status: "complete" }, work: expect.objectContaining({ id: work_id }), settle: { work_id }, next: NEXT.complete })]);
+    expect(NEXT.complete).toContain("not the user's acceptance");
+    expect(await t.g.request("settle_work", { work_id, outcome: "accepted", lease })).toMatchObject({ settled: true, work: { status: "accepted", closed_by: `lease …${lease.slice(-4)} "sup"` } });
+    // Only the turn this chat still awaits keeps it listed now, as for any prompt.
+    const after: any = await t.g.request("owed_work", { lease });
+    expect(after.items).toEqual([expect.objectContaining({ pane_id: "w1:p1", work: null, next: NEXT.open })]);
   });
 
   test("a task bind that was refused gives the work no task, so that task's completion leaves it open", async () => {

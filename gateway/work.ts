@@ -1,9 +1,10 @@
 // Work started through WorkDone, kept in work.json until someone records how it ended.
 // A spawn, a start, or a first prompt or steer from a ChatGPT chat to an agent with no
-// open work opens one. Only an explicit outcome closes it: settle_work (accepted or
-// dropped) or its coordination task merged complete. A turn's end, an error turn, the
-// agent exiting, a lapsed lease or a dropped watch change what it shows (last_turn),
-// never whether it is open. Notifications play no part: owed_work reads this file.
+// open work opens one. Only the user's word closes it: settle_work (accepted or
+// dropped). A turn's end, an error turn, the agent exiting, a lapsed lease, a dropped
+// watch or its coordination task merged complete (the supervisor's check against the
+// task's acceptance, not the user's) change what it shows, never whether it is open.
+// Notifications play no part: owed_work reads this file.
 
 import { randomBytes } from "node:crypto";
 import { GatewayError, TARGET_RE } from "./config.ts";
@@ -100,7 +101,7 @@ export function trackWork(g: Gateway, op: string, params: Params, result: any, l
     const bound = currentTaskBinding(g.state.coord(), paneId, session);
     // The task asked for counts only when it was bound: a spawn that bound it, or a prompt
     // or steer that carried its slice. A refused bind (deps_unmet, another objective's
-    // supervisor) must not let that task's completion accept this work.
+    // supervisor) must not tie this work to that task.
     const took = op === "spawn_agent" ? !!(result.task_bound || result.prompt?.dispatch) : !!(result.dispatch || result.result?.dispatch);
     const coord = (took ? taskParam(params.task) : null) ?? (bound ? { objective: bound.o.id, id: bound.t.id } : null);
     return g.state.updateWork((all) => {
@@ -129,20 +130,6 @@ export function workTurn(state: StateStore, paneId: string, turn: NonNullable<Wo
   state.updateWork((all) => {
     const w = openWork(all, paneId);
     if (w) w.last_turn = turn;
-  });
-}
-
-// coord_update merged these tasks complete, inside its transaction: their work is accepted.
-export function closeCoordWork(state: StateStore, objective: string, tasks: string[], now = new Date().toISOString()): string[] {
-  if (!tasks.length) return [];
-  return state.updateWork((all) => {
-    const closed: string[] = [];
-    for (const w of Object.values(all)) {
-      if (w.status !== "open" || w.coord?.objective !== objective || !tasks.includes(w.coord.id)) continue;
-      Object.assign(w, { status: "accepted", closed_at: now, closed_by: "coord" });
-      closed.push(w.id);
-    }
-    return closed;
   });
 }
 

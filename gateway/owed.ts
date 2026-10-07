@@ -44,8 +44,9 @@ export type ItemState = "needs_you" | "failed" | "unread_result" | "gone" | "wor
 const ORDER: ItemState[] = ["needs_you", "failed", "unread_result", "gone", "working", "open"];
 
 // One line each, inside docs/loop-risks.md: nothing here asks for a resend or a second prompt.
-export const NEXT: Record<ItemState | "held" | "left" | "decision", string> = {
+export const NEXT: Record<ItemState | "held" | "left" | "decision" | "complete", string> = {
   needs_you: "It is waiting on the user: get_agent shows the menu or question. Ask the user, then answer it once.",
+  complete: "Its task was merged complete: the supervisor compared its evidence with its acceptance criteria. That is not the user's acceptance, and no GitHub issue or PR was checked or closed. Tell the user its result; settle_work accepted or dropped on their word.",
   decision: "Its task is blocked on the user (task.blocker), whatever its last reply says. Ask the user, then send their answer once with prompt_agent, or the objective's supervisor records it with coord_update (blocker: null). settle_work does not clear it.",
   failed: "Its last turn failed: tell the user what failed and ask how to go on. It stays open until they accept or drop it (settle_work with settle).",
   unread_result: "Tell the user its result (last_result, or read_agent source reply). When they accept or drop it, settle_work with settle.",
@@ -178,7 +179,8 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
       work: wk ? { id: wk.id, title: wk.title, started_at: wk.started_at, started_by: wk.started_by, last_turn: wk.last_turn ?? null } : null,
       // What settle_work takes for this item.
       settle: wk ? { work_id: wk.id } : { target: paneId },
-      next: mine && holder?.live && !yours ? NEXT.held : left ? NEXT.left : human && !menu ? NEXT.decision : NEXT[state],
+      next: mine && holder?.live && !yours ? NEXT.held : left ? NEXT.left : human && !menu ? NEXT.decision
+        : wk && task?.status === "complete" && (state === "open" || state === "unread_result") ? NEXT.complete : NEXT[state],
       // For ordering only; dropped below.
       _at: Date.parse(last?.at ?? w?.last_event?.at ?? wk?.last_turn?.at ?? w?.since ?? wk?.started_at ?? "") || 0,
     });
