@@ -225,7 +225,7 @@ describe("agent event authorization", () => {
     const config = { ...cfg, events: { statePath: ":memory:", callbackHosts: ["callbacks.example.com"] } };
     const service = createEventService(config, call, auth, { now: () => 1000, log: (l) => logs.push(l), sender: async (_url, _headers, body) => { const event = JSON.parse(body); if (event.type !== "verification") delivered++; return { status: 200, body: JSON.stringify({ challenge: event.challenge }) }; } })!;
     const identity = { id: "owner", issuer: "https://issuer.example.test", subject: "owner", scopes: ["workdone"], tokenExpiresAt: 1000000 };
-    const subscribe = (args: Record<string, string>) => service.subscribe(identity, { name: "agent.finished", arguments: args, delivery: { mode: "webhook", url: "https://callbacks.example.com/mock", secret: `whsec_${Buffer.alloc(32, 4).toString("base64")}` } });
+    const subscribe = (args: Record<string, string>, name = "agent.finished") => service.subscribe(identity, { name, arguments: args, delivery: { mode: "webhook", url: "https://callbacks.example.com/mock", secret: `whsec_${Buffer.alloc(32, 4).toString("base64")}` } });
     const report = (id: string, type: "finished" | "gone" = "finished") => ({ event_id: id, pane_id: "w1:p1", type, agent: "worker", kind: "claude", cwd: "/src/app", excerpt: "done", lease: null, reply_to: null, message: "worker finished",
       ...(type === "gone" ? { result: { result_id: "res_0123456789abcdef", requested_at: "2026-10-07T00:00:00.000Z", status: "gone" as const, summary: null, commit: null, tree: null, clean: null, changed: null, branch: null, kind: "claude", model: null, model_id: null, effort: null } } : {}) });
     return { service, requests, logs, subscribe, report, delivered: () => delivered };
@@ -244,6 +244,17 @@ describe("agent event authorization", () => {
     const f = setup("live");
     try {
       await expect(f.subscribe({ machine: "elsewhere", target: "worker" })).rejects.toThrow(/authorized/);
+    } finally { await f.service.close(); }
+  });
+
+  test("OpenClaw's answer has no pane: it goes out on the machine grant with no agent lookup, and a real pane cannot pose as it", async () => {
+    const f = setup("gone");
+    try {
+      await f.subscribe({ machine: "test" }, "agent.message");
+      const tell = (id: string, pane: string) => ({ event_id: id, pane_id: pane, type: "message" as const, agent: "openclaw", kind: null, cwd: null, excerpt: "Answer to ask a: Meeting at 10", lease: "L-asker01", reply_to: null, message: "openclaw says: Meeting at 10" });
+      await f.service.addReports("test", [tell("oc1", "openclaw"), tell("oc2", "w1:p9")]);
+      await f.service.flush();
+      expect(f.delivered()).toBe(1);
     } finally { await f.service.close(); }
   });
 

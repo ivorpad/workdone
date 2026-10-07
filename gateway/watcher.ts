@@ -265,7 +265,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   // may be listening without holding a watch.
   if (Object.keys(watched).length === 0 && !initial.told.length) return { messages: [], remaining: 0, reports: [] };
   // Objective-only transitions need no worker or live Herdr session.
-  const needsAgents = Object.keys(watched).length > 0 || initial.told.some(t => !t.objective);
+  const needsAgents = Object.keys(watched).length > 0 || initial.told.some(t => !t.objective && !t.from);
   const agents: any[] = needsAgents ? (await herdr("agent.list", {})).agents ?? [] : [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
@@ -385,8 +385,8 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
     for (const t of told) {
       const w = t.pane_id ? watched[t.pane_id] : undefined;
       const agent = t.pane_id ? byPane.get(t.pane_id) : undefined;
-      const name = agent?.name ?? w?.name ?? null;
-      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: t.origin === "owner" ? `Owner note from the console about ${name ?? t.pane_id}: ${clip(t.text, 400)}` : `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.origin === "owner" ? { origin: "owner" as const } : {}), ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
+      const name = t.from ?? agent?.name ?? w?.name ?? null;
+      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: t.from ? `${t.from} says: ${clip(t.text, 400)}` : t.origin === "owner" ? `Owner note from the console about ${name ?? t.pane_id}: ${clip(t.text, 400)}` : `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.origin === "owner" ? { origin: "owner" as const } : {}), ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
     }
     if (reliable) {
       store.enqueueReports(reports);

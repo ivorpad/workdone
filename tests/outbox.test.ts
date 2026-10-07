@@ -43,6 +43,15 @@ describe("acknowledged gateway outbox", () => {
     expect(f.store.outbox()).toEqual([]);
   });
 
+  test("a tell from OpenClaw has no pane behind it and goes to the lease it names", async () => {
+    const f = setup();
+    f.store.addTold({ pane_id: "openclaw", from: "openclaw", recipient_lease: "L-asker01", event_id: "openclaw:x", text: "Answer to ask x: Meeting at 10", at: new Date().toISOString() });
+    const got = await watchPoll(f.cfg, f.herdr, { delivery: "ack" });
+    const r = got.reports!.find((x) => x.event_id === "openclaw:x")!;
+    expect(r).toMatchObject({ type: "message", pane_id: "openclaw", agent: "openclaw", lease: "L-asker01", excerpt: "Answer to ask x: Meeting at 10" });
+    expect(r.message).toContain("openclaw says:");
+  });
+
   test("restart before intake preserves tells, result and occurrence identity", async () => {
     const f = setup();
     f.store.addTold({ pane_id: "w1:p1", text: "message", at: new Date().toISOString() });

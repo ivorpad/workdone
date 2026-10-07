@@ -2,6 +2,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { StateStore } from "../gateway/state.ts";
 import { loadConfig } from "../gateway/config.ts";
 import { chunkText, openclawOps, parseOpenclaw, parseReply } from "../gateway/openclaw.ts";
 import { TOOLS } from "../mcp/src/tools.ts";
@@ -125,6 +126,44 @@ describe("ask_openclaw", () => {
     const id = "20261007-010101-abcd";
     writeFileSync(join(st, "openclaw", `${id}.json`), JSON.stringify({ id, command_id: null, started: "2026-10-07T01:01:01Z", text_chars: 1, visible: true, posts: 0, state: "running", reply: null, error: null, run_id: null, duration_ms: null, pid: 99999999 }));
     expect(await ops({}, "state-dead").openclaw_status!({ id })).toMatchObject({ state: "failed" });
+  });
+  const lease = (sub: string) => {
+    mkdirSync(join(dir, sub), { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(join(dir, sub, "leases.json"), JSON.stringify({ "L-asker01": { label: "chat", panes: [], created: now, used: now } }));
+  };
+  test("an ask that outlives its call is told to the asking chat, through the tell queue, with no pane", async () => {
+    lease("state-tell");
+    writeFileSync(join(dir, "slow"), "");
+    const o = ops({}, "state-tell");
+    const a: any = await o.ask_openclaw!({ text: "calendar?", lease: "L-asker01", wait_ms: 0 });
+    expect(a.state).toBe("running");
+    await Bun.sleep(3500);
+    rmSync(join(dir, "slow"), { force: true });
+    const store = new StateStore(join(dir, "state-tell"));
+    const told = store.told();
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatchObject({ pane_id: "openclaw", from: "openclaw", recipient_lease: "L-asker01", event_id: `openclaw:${a.id}` });
+    expect(told[0]!.text).toContain("Meeting at 10");
+    expect(store.inbox().map((e) => e.id)).toContain(`openclaw:${a.id}`);
+  });
+  test("an answer the call itself returned is not told again", async () => {
+    lease("state-notell");
+    const o = ops({}, "state-notell");
+    const a: any = await o.ask_openclaw!({ text: "quick", lease: "L-asker01" });
+    expect(a.state).toBe("done");
+    expect(new StateStore(join(dir, "state-notell")).told()).toEqual([]);
+  });
+  test("openclaw_status can wait for a running ask", async () => {
+    writeFileSync(join(dir, "slow"), "");
+    const o = ops({}, "state-wait");
+    const a: any = await o.ask_openclaw!({ text: "x", wait_ms: 0 });
+    const done: any = await o.openclaw_status!({ id: a.id, wait_ms: 8000 });
+    rmSync(join(dir, "slow"), { force: true });
+    expect(done).toMatchObject({ state: "done", reply: "Meeting at 10" });
+  });
+  test("a lease this machine does not know is refused", async () => {
+    await expect(ops({}, "state-nolease").ask_openclaw!({ text: "x", lease: "L-nobody01" })).rejects.toMatchObject({ code: "unknown_lease" });
   });
   test("without the config the capability is off", async () => {
     const off = openclawOps(loadConfig({ allowedRoots: [dir], stateDir: join(dir, "x") }));

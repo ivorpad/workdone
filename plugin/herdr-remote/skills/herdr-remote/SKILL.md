@@ -184,7 +184,8 @@ Everything a tool returns lands in this conversation. Ask for the part you need:
 ## OpenClaw (on `mac`)
 
 - `ask_openclaw` with `machine: "mac"` and a `text` asks the owner's OpenClaw assistant, which has their calendar, reminders and notes. Use it only when the owner asks you to ask OpenClaw, or to check something only it can see. Write the question so it stands alone: OpenClaw does not see this chat.
-- It posts the question in the owner's Discord channel and OpenClaw answers there, so the owner sees both. The answer comes back as `reply`. If `state` is `running`, tell the owner and call `openclaw_status` with the `id` once later. Do not ask again; a retry needs the same `command_id`.
+- Pass this conversation's `lease` (from `claim_agents` or `watch_here`). It posts the question in the owner's Discord channel and OpenClaw answers there, so the owner sees both. The answer comes back as `reply`. A slow answer (a calendar or notes lookup can take two minutes) returns `state: "running"`: call `openclaw_status` with the `id` and `wait_ms: 100000`, again if still running, up to four times. Do not ask again; a retry needs the same `command_id`.
+- When you stop waiting, OpenClaw tells this chat when it finishes: an `agent.message` from agent `openclaw` (Work chat), or a message on the link card. Show it as OpenClaw's answer; there is no pane to prompt.
 - Prefer lookups. Ask for an action (sending, creating, deleting) only when the owner asked for it. Report `reply` as what OpenClaw said, not as verified.
 - `bridge_status` shows `capabilities.openclaw`; without it the tool returns `capability_disabled`.
 

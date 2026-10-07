@@ -17,6 +17,9 @@ export type CreatedKind = "panes" | "tabs" | "workspaces" | "disposable";
 // A watched agent, keyed by pane ID. prompt_agent watches one turn: the entry goes
 // once that turn is reported. A managed entry (watch_agent, or an agent started
 // through the bridge) reports every turn and stays until the agent exits.
+// The pane id of a tell from OpenClaw: no Herdr pane stands behind it, the gateway wrote it itself.
+export const OPENCLAW_PANE = "openclaw";
+
 export interface Told {
   pane_id: string | null;
   text: string;
@@ -24,6 +27,8 @@ export interface Told {
   event_id?: string;
   // "owner": typed by the owner in the WorkDone console (owner_note), not by an agent.
   origin?: "owner";
+  // Who is speaking when it is not an agent in a pane: "openclaw" (openclaw.ts).
+  from?: string;
   objective?: string;
   recipient_lease?: string;
   transition?: { task: string; seq: number; kind: string };

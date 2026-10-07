@@ -10,12 +10,13 @@
 // running at once. The Discord posts come from OpenClaw's bot account, not from the owner.
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { GatewayError, expandHome, type GatewayConfig } from "./config.ts";
 import { optBool, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { childEnv, findBinary, runProcess } from "./process.ts";
+import { OPENCLAW_PANE, StateStore } from "./state.ts";
 
 export interface OpenclawConfig {
   command: string[];
@@ -108,6 +109,8 @@ export interface Ask {
   run_id: string | null;
   duration_ms: number | null;
   pid: number | null;
+  // The ChatGPT thread that asked (its lease), told when the answer comes after the call returned.
+  lease: string | null;
 }
 
 // What the detached runner needs from the gateway's config.
@@ -123,6 +126,7 @@ const KEEP = 30;
 const MAX_RUNNING = 2;
 const dir = (stateDir: string) => resolve(stateDir, "openclaw");
 const file = (stateDir: string, id: string) => resolve(dir(stateDir), `${id}.json`);
+const detachedFile = (stateDir: string, id: string) => resolve(dir(stateDir), `${id}.detached`);
 const specFile = (stateDir: string, id: string) => resolve(dir(stateDir), `${id}.spec.json`);
 
 function newId(): string {
@@ -168,6 +172,20 @@ function ids(stateDir: string): string[] {
   }
 }
 
+// An answer that came after ask_openclaw returned running goes to the asking chat through the
+// same queue an agent's workdone-tell uses (watch cards, Events agent.message), with no pane
+// behind it, and into the owner's inbox. An answer the call itself returned is not told again.
+function tellChat(stateDir: string, ask: Ask) {
+  const text = ask.state === "done" ? (ask.reply ?? "OpenClaw finished without text.") : `The ask failed: ${ask.error ?? "unknown error"}`;
+  const at = new Date().toISOString();
+  const line = `Answer to ask ${ask.id}: ${text}`.slice(0, 2000);
+  const store = new StateStore(stateDir);
+  store.transaction(() => {
+    store.addTold({ pane_id: OPENCLAW_PANE, text: line, at, event_id: `openclaw:${ask.id}`, from: "openclaw", ...(ask.lease ? { recipient_lease: ask.lease } : {}) });
+    store.inboxAdd({ id: `openclaw:${ask.id}`, kind: "tell", at, pane_id: OPENCLAW_PANE, agent: "openclaw", agent_kind: null, cwd: null, session: null, lease: ask.lease, task: null, text: line, status: "unanswered" });
+  });
+}
+
 // The detached runner: posts the question, runs the agent once, records the outcome.
 export async function runAsk(specPath: string, id: string) {
   const spec = JSON.parse(readFileSync(specPath, "utf8")) as RunSpec;
@@ -210,6 +228,7 @@ export async function runAsk(specPath: string, id: string) {
   }
   ask.duration_ms = Date.now() - started;
   save(spec.stateDir, ask);
+  if (existsSync(detachedFile(spec.stateDir, id))) tellChat(spec.stateDir, ask);
 }
 
 export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
@@ -218,9 +237,24 @@ export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
     return cfg.openclaw;
   };
   const view = (ask: Ask, full = true) => {
-    const { reply, pid: _pid, ...rest } = ask;
+    const { reply, pid: _pid, lease: _lease, ...rest } = ask;
     const clipped = reply !== null && reply.length > cfg.maxOutputBytes ? reply.slice(0, cfg.maxOutputBytes) : reply;
     return full ? { ...rest, reply: clipped, ...(clipped !== reply ? { reply_truncated: true } : {}) } : { ...rest, reply_chars: reply?.length ?? 0 };
+  };
+
+  // Waits up to waitMs for the ask to end. One that is still running when the call returns is marked
+  // detached first, so the runner tells the chat when it ends.
+  const settle = async (id: string, waitMs: number) => {
+    const deadline = Date.now() + waitMs;
+    for (;;) {
+      const now = load(cfg.stateDir, id)!;
+      if (now.state !== "running") return view(now);
+      if (Date.now() >= deadline) {
+        writeFileSync(detachedFile(cfg.stateDir, id), "", { mode: 0o600 });
+        return view(load(cfg.stateDir, id) ?? now);
+      }
+      await new Promise((ok) => setTimeout(ok, 200));
+    }
   };
 
   return {
@@ -231,7 +265,9 @@ export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
       if (text.length > cfg.maxPromptChars) throw new GatewayError("invalid_params", `text is ${text.length} characters, over the ${cfg.maxPromptChars} limit`);
       const commandId = optStr(params, "command_id", /^[\w.:-]{1,80}$/) ?? null;
       const visible = optBool(params, "visible", true);
-      const wait = optInt(params, "wait_ms", 0, cfg.maxWaitMs) ?? Math.min(90_000, cfg.maxWaitMs);
+      const wait = optInt(params, "wait_ms", 0, cfg.maxWaitMs) ?? Math.min(100_000, cfg.maxWaitMs);
+      const lease = optStr(params, "lease", /^L-[a-z0-9]{6,12}$/) ?? null;
+      if (lease && !new StateStore(cfg.stateDir).leases()[lease]) throw new GatewayError("unknown_lease", "this conversation's lease is not known on this machine: claim_agents or watch_here first, or leave lease out");
       const all = ids(cfg.stateDir);
 
       // The same command_id again is the same ask, never a second run.
@@ -247,8 +283,8 @@ export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
       const busy = all.map((id) => load(cfg.stateDir, id)).filter((a) => a?.state === "running").length;
       if (busy >= MAX_RUNNING) throw new GatewayError("openclaw_busy", `${busy} asks are still running; wait for one to finish (openclaw_status)`);
 
-      for (const old of all.slice(0, Math.max(0, all.length - KEEP + 1))) rmSync(file(cfg.stateDir, old), { force: true });
-      const ask: Ask = { id: newId(), command_id: commandId, started: new Date().toISOString(), text_chars: text.length, visible, posts: 0, state: "running", reply: null, error: null, run_id: null, duration_ms: null, pid: null };
+      for (const old of all.slice(0, Math.max(0, all.length - KEEP + 1))) { rmSync(file(cfg.stateDir, old), { force: true }); rmSync(detachedFile(cfg.stateDir, old), { force: true }); }
+      const ask: Ask = { id: newId(), command_id: commandId, started: new Date().toISOString(), text_chars: text.length, visible, posts: 0, state: "running", reply: null, error: null, run_id: null, duration_ms: null, pid: null, lease };
       save(cfg.stateDir, ask);
       const spec: RunSpec = { oc, text, env: { shell: cfg.shell, extraPath: cfg.extraPath }, stateDir: cfg.stateDir };
       writeFileSync(specFile(cfg.stateDir, ask.id), JSON.stringify(spec), { mode: 0o600 });
@@ -262,12 +298,7 @@ export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
       });
       child.unref();
 
-      const deadline = Date.now() + wait;
-      for (;;) {
-        const now = load(cfg.stateDir, ask.id) ?? ask;
-        if (now.state !== "running" || Date.now() >= deadline) return view(now);
-        await new Promise((ok) => setTimeout(ok, 200));
-      }
+      return settle(ask.id, wait);
     },
 
     async openclaw_status(params: Params) {
@@ -276,7 +307,7 @@ export function openclawOps(cfg: GatewayConfig): Record<string, Op> {
       if (id) {
         const ask = load(cfg.stateDir, id);
         if (!ask) throw new GatewayError("not_found", `no OpenClaw ask ${id}`);
-        return view(ask);
+        return settle(id, optInt(params, "wait_ms", 0, cfg.maxWaitMs) ?? 0);
       }
       return { asks: ids(cfg.stateDir).slice(-10).reverse().map((i) => load(cfg.stateDir, i)).filter((a): a is Ask => a !== null).map((a) => view(a, false)) };
     },

@@ -1,6 +1,7 @@
 // Herdr remote MCP server. Listens on loopback only; the OpenAI tunnel client is
 // the only intended caller. Each tool call becomes one ssh round trip to a machine's gateway.
 
+import { OPENCLAW_PANE } from "../../gateway/state.ts";
 import { createMcpHandler, hostHeaderValidationResponse, isLegacyRequest, WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/server";
 import { parseConfig, type OvhConfig } from "./config.ts";
 import { AuthenticationError, AuthService } from "./auth.ts";
@@ -79,6 +80,9 @@ export function createEventService(cfg: OvhConfig, call: CallGateway, auth: Auth
           if (!checked.ok && unavailable.has(checked.error.code)) throw new Error("Objective authorization is temporarily unavailable.");
           return checked.ok && Array.isArray((checked.result as any)?.objectives) && (checked.result as any).objectives.some((o: any) => o.id === report.objective || o.objective === report.objective) && await auth.isAuthorized(principal, report.machine);
         }
+        // OpenClaw's answer to ask_openclaw has no pane: the gateway wrote it (OPENCLAW_PANE), and no
+        // real Herdr pane can carry that id, so the machine grant decides.
+        if (report.pane_id === OPENCLAW_PANE && report.agent === "openclaw") return await auth.isAuthorized(principal, report.machine);
         const checked = await call(report.machine, "get_agent", { target: report.pane_id });
         if (!checked.ok && unavailable.has(checked.error.code)) throw new Error("Agent authorization is temporarily unavailable.");
         // A result delivered because the agent exited is about an agent that is gone by
