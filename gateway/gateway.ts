@@ -5,7 +5,7 @@
 import { hostname } from "node:os";
 import {
   AGENT_NAME_RE, ALLOWED_KEYS, BRANCH_RE, GATEWAY_VERSION, GatewayError, READ_SOURCES, TARGET_RE,
-  canonical, paneInScope, withinRoots,
+  canonical, paneInScope, withinRoots, worktreePath,
   type GatewayConfig, type HerdrCall, type RepoConfig,
 } from "./config.ts";
 import { agentOps, lifecycle } from "./agent-ops.ts";
@@ -25,10 +25,14 @@ import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { raiseTerminal } from "./raise.ts";
 import { consoleOps } from "./console-ops.ts";
+import { owedDigest, owedOps } from "./owed.ts";
+import { trackWork, workOps } from "./work.ts";
 import { agentReply } from "./transcript.ts";
 import { agentView, paneView, resultView, textOf, watchInfo, withWatch } from "./views.ts";
 
 const SETTLED = new Set(["idle", "done", "blocked"]);
+// Results that carry the owed-work digest.
+const DIGESTED = new Set(["overview", "get_agent", "wait_agent", "spawn_agent", "start_agent", "prompt_agent", "steer_agent", "supervisor_status"]);
 
 // agent.explain answers with evidence for every rule (about 8 KB for Claude). Keep the verdict,
 // the rules that matched, the skip and fallback reasons, and a clipped preview of the winning region.
@@ -67,7 +71,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -148,36 +152,94 @@ export class Gateway {
     let lease = await this.leases.check(op, params);
     let created: string | null = null;
     // A thread that spawns without a lease gets one, so it can drive what it started.
+    // Minted before the spawn: the first prompt's provenance line names it.
     if (this.cfg.leases && op === "spawn_agent" && !lease) {
-      created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] })) as any).lease;
+      created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] }, "spawn")) as any).lease;
       lease = created;
     }
     const sent = stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined);
     // What the caller asked, before the stamp: a bound prompt's idempotency is about this.
     const key = STAMPED[op];
     if (key && typeof params[key] === "string") (sent as any)[INTENT] = { op, text: params[key] };
-    const result: any = await this.handle(op, sent);
-    this.leases.after(op, lease, params, result);
+    let result: any;
+    try {
+      result = await this.handle(op, sent);
+    } catch (err) {
+      // The spawn failed and its caller never saw the lease: don't leave it behind empty.
+      if (created) {
+        try { this.leases.dropIfEmpty(created); } catch { /* the spawn's own error matters more */ }
+      }
+      throw err;
+    }
+    // The op has happened: a prompt went in, an agent started. Bookkeeping that fails from
+    // here must not fail the call, or the chat would send it again (docs/loop-risks.md).
+    // Each step is audited and said in the result instead.
+    const isObject = !!result && typeof result === "object" && !Array.isArray(result);
+    const keep = (stage: string, fn: () => void) => {
+      try { fn(); } catch (err) {
+        const code = String((err as { code?: unknown })?.code ?? "state_error");
+        this.state.audit({ op: "after_op_failed", ok: false, of: op, stage, code });
+        if (!isObject) return;
+        if (stage === "work") Object.assign(result, { work_id: null, work_error: code });
+        else result.state_error ??= code;
+      }
+    };
+    // A new agent joins the caller's lease, tried twice: without it the chat's next call to
+    // the agent is refused, so a failure says how to join it by hand.
+    keep("lease", () => {
+      try {
+        this.leases.after(op, lease, params, result);
+      } catch {
+        try {
+          this.leases.after(op, lease, params, result);
+        } catch (err) {
+          const pane = op === "spawn_agent" ? result?.pane?.pane_id : op === "start_agent" ? params.pane_id : undefined;
+          if (lease && isObject && typeof pane === "string") {
+            result.lease_error = {
+              code: String((err as { code?: unknown })?.code ?? "state_error"),
+              message: `the new agent did not join this conversation's lease: call claim_agents with this lease and targets ["${pane}"] (nobody holds it, so the claim goes through), then go on`,
+            };
+          }
+          throw err;
+        }
+      }
+    });
     // A follow-up to an agent answers what it told the owner: whoever sent it, console or thread.
-    if ((op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && typeof params.target === "string" && this.state.hasOpenInbox()) {
-      const by = params.origin === "console" ? "console" : lease ? `thread "${(this.state.leases()[lease]?.label ?? "").slice(0, 60)}"` : "caller without a lease";
-      this.state.inboxResolve({ target: params.target }, "answered", by);
+    if ((op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && typeof params.target === "string") {
+      keep("inbox", () => {
+        if (!this.state.hasOpenInbox()) return;
+        const by = params.origin === "console" ? "console" : lease ? `thread "${(this.state.leases()[lease]?.label ?? "").slice(0, 60)}"` : "caller without a lease";
+        this.state.inboxResolve({ target: params.target as string }, "answered", by);
+      });
     }
     // The thread asked something and didn't wait: the agent's answer is owed to it.
     const answered = op === "prompt_agent" && (result?.reply || (result?.waited && SETTLED.has(result?.status)));
-    if (lease && (op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && result && !answered) {
-      const agent = await this.scopedAgent(String(params.target)).catch(() => null);
-      if (agent) this.state.owe(agent.pane_id, lease, watchInfo(agent), agent);
-    }
-    if (created && result && typeof result === "object") result.lease = created;
+    const owes = !!lease && (op === "prompt_agent" || op === "steer_agent" || op === "supervisor_nudge") && !!result && !answered;
+    // One read of the agent, for the reply owed and for its work.
+    const works = (op === "prompt_agent" || op === "steer_agent") && params.origin !== "console";
+    const agent = owes || works ? await this.scopedAgent(String(params.target)).catch(() => null) : null;
+    if (owes && agent) keep("owe", () => this.state.owe(agent.pane_id, lease!, watchInfo(agent), agent));
+    // Work this chat started or continued stays owed until settled (work.ts).
+    keep("work", () => trackWork(this, op, params, result, lease, agent));
+    if (created && isObject) result.lease = created;
     // Views say which thread holds each agent.
     if (this.cfg.leases && (op === "overview" || op === "get_agent" || op === "wait_agent")) {
-      const held = this.leases.labels();
-      const mark = (a: any) => {
-        if (a && typeof a.pane_id === "string" && held.has(a.pane_id)) a.held_by = held.get(a.pane_id);
-      };
-      if (op === "get_agent") mark(result);
-      else for (const a of result?.agents ?? []) mark(a);
+      keep("held_by", () => {
+        const held = this.leases.labels();
+        const mark = (a: any) => {
+          if (a && typeof a.pane_id === "string" && held.has(a.pane_id)) a.held_by = held.get(a.pane_id);
+        };
+        if (op === "get_agent") mark(result);
+        else for (const a of result?.agents ?? []) mark(a);
+      });
+    }
+    // What is still owed on this machine, read from state alone, on the calls a chat
+    // makes before it decides what to do with its agents. owed_work has the detail.
+    if (DIGESTED.has(op) && params.origin !== "console" && result && typeof result === "object" && !Array.isArray(result)) {
+      try {
+        const owed = owedDigest(this.state, this.cfg.allowedRoots);
+        if (owed.open || owed.needs_you || owed.unread) result.owed = owed;
+      } catch { /* a digest never fails the call it rides on */ }
     }
     return result;
   }
@@ -348,7 +410,7 @@ export class Gateway {
           clearNote(this.herdr, agent.pane_id);
           const out: Record<string, unknown> = {
             submitted: true, waited: true, timed_out: true, status: "working",
-            note: "the prompt went in and the agent is still working; the owner gets a phone notification when it finishes",
+            note: "the prompt went in and the agent is still working: don't resend; owed_work shows when it finishes",
           };
           if (approved.length) out.auto_approved = approved;
           if (asked) out.result_request = resultView(asked);
@@ -487,9 +549,11 @@ export class Gateway {
       }
 
       case "create_worktree": {
-        const repo = this.repo(str(params, "repo"));
+        const key = str(params, "repo");
+        const repo = this.repo(key);
         const branch = str(params, "branch", BRANCH_RE);
-        const res = await this.herdr("worktree.create", { cwd: repo.path, branch, focus: false }, 60_000);
+        const path = worktreePath(key, repo, branch, cfg);
+        const res = await this.herdr("worktree.create", { cwd: repo.path, branch, path, focus: false }, 60_000);
         if (res?.workspace?.workspace_id) this.state.remember("workspaces", res.workspace.workspace_id);
         if (res?.tab?.tab_id) this.state.remember("tabs", res.tab.tab_id);
         if (res?.root_pane?.pane_id) this.state.remember("panes", res.root_pane.pane_id);

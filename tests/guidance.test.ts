@@ -40,6 +40,20 @@ test("the instructions and skills teach results, the one-nudge supervisor and Ev
   expect(EVENTS.find((e) => e.name === "agent.finished")!.description).toContain("reply: true");
 });
 
+test("work stays owed until the user settles it, not until a notification goes out", () => {
+  const instructions: string = (buildServer(async () => ({ ok: true, result: {} }) as any, ["mac"], "mac") as any).server._instructions ?? "";
+  expect(instructions).toContain("owed_work");
+  expect(instructions).toContain("settle_work only on the user's word");
+  expect(instructions).not.toMatch(/otherwise stop, since they get phone notifications/);
+  expect(instructions).not.toContain("spawn_agent without a lease creates one");
+  expect(skill).toContain("## Owed work");
+  expect(skill).toContain("settle_work");
+  expect(skill).not.toMatch(/phone notifications cover the rest|say that and stop|join your lease on their own/);
+  expect(eventsSkill).toContain("owed_work");
+  expect(TOOLS.claim_agents!.description).not.toContain("join your lease on their own");
+  expect(TOOLS.settle_work!.description).toContain("closes nothing");
+});
+
 test("plugin versions moved with the new tool and payload", () => {
   const atLeast = (path: string, min: string) => {
     const version = JSON.parse(read(path)).version as string;

@@ -1,6 +1,6 @@
 # Coordination: the opt-in turn contract
 
-WorkDone keeps the state of multi-agent work (objectives, tasks, owners, dependencies, acceptance, evidence, resources) so agents don't restate it in prose. This is opt-in. A prompt to an agent with no task binding behaves exactly as before: no injected text, no reporting.
+WorkDone keeps the state of multi-agent work (objectives, tasks, owners, dependencies, acceptance, evidence, resources) so agents don't restate it in prose. This is opt-in. A prompt to an agent with no task binding behaves exactly as before: no injected text, no reporting. Work started without a binding is still owed: `owed_work` lists it until the user settles it (`settle_work`), and merging a bound task `complete` settles the work bound to it.
 
 ## Model
 
@@ -87,5 +87,7 @@ The contract covers prompts WorkDone sends. It does not cover:
 - prompts typed into a terminal;
 - agent-to-agent prompts sent with the herdr CLI;
 - what an agent does after its turn has started.
+
+`coord_snapshot` shows only objectives made with `coord_update`. `owed_work` lists all owed work, bound or not.
 
 Claude and Codex queue a steer message until the current tool call ends, so a steer slice can be stale by the time it is read. The token is visible in the pane and its transcript, so anyone who can read that pane can write that one task slice; that is the boundary, and it is narrower than the pane itself. `data.result.commit` on `agent.finished` is the repo's HEAD; the coordination `result.commit` is the worker's own claim.

@@ -5,14 +5,14 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { approveMenus, dialogView, menuScreen } from "./answer-ops.ts";
+import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-ops.ts";
 import { inboxContext, newInboxId } from "./console-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
-import { dispatchSlice, paneTask } from "./coord-ops.ts";
+import { dispatchSlice, paneTask, sendOutcome } from "./coord-ops.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
-import { AGENT_NAME_RE, AGENT_STATUSES, BRANCH_RE, GatewayError, TARGET_RE, paneInScope } from "./config.ts";
+import { AGENT_NAME_RE, AGENT_STATUSES, BRANCH_RE, GatewayError, TARGET_RE, paneInScope, worktreePath } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import type { Gateway } from "./gateway.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
@@ -31,6 +31,9 @@ const SHELL_STARTING = new Set(["agent_pane_busy", "agent_pane_unavailable"]);
 function clip(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) + "…" : s;
 }
+
+// An error kept in a result rather than thrown: once an agent started, the spawn stands.
+const failure = (err: unknown) => ({ code: String((err as { code?: unknown })?.code ?? "error"), message: clip(String((err as Error)?.message ?? err), 300) });
 
 // Agents and panes from one consistent read. A Herdr without session.snapshot (before
 // 0.9) answers the two lists instead. Its records are the same AgentInfo and PaneInfo.
@@ -481,8 +484,10 @@ export function agentOps(g: Gateway): Record<string, Op> {
       const place = { repo: params.repo, cwd: params.cwd, label: params.label ?? name };
       let placed: any;
       if (branch) {
-        const repo = g.repo(str(params, "repo"));
-        const res = await g.herdr("worktree.create", { cwd: repo.path, branch, label: name, focus: false }, 60_000);
+        const key = str(params, "repo");
+        const repo = g.repo(key);
+        const path = worktreePath(key, repo, branch, g.cfg);
+        const res = await g.herdr("worktree.create", { cwd: repo.path, branch, path, label: name, focus: false }, 60_000);
         for (const [k, id] of [["workspaces", res.workspace?.workspace_id], ["tabs", res.tab?.tab_id], ["panes", res.root_pane?.pane_id]] as const) {
           if (id) g.state.remember(k, id);
         }
@@ -496,6 +501,12 @@ export function agentOps(g: Gateway): Record<string, Op> {
       }
       const paneId: string | undefined = placed?.pane?.pane_id;
       if (!paneId) throw new GatewayError("spawn_failed", "Herdr did not return a pane for the new agent");
+      // Every op treats a pane outside the allowed roots as missing, so an agent started
+      // there could never be prompted or watched. Refuse rather than start it.
+      const at = placed.pane.cwd ? placed.pane : (await g.herdr("pane.get", { pane_id: paneId }).catch(() => null))?.pane;
+      if (!at || !paneInScope(at, g.cfg.allowedRoots)) {
+        throw new GatewayError("path_not_allowed", `the new pane ${paneId} is outside the allowed roots (${g.cfg.allowedRoots.join(", ")}), so no agent was started in it; close it in Herdr`);
+      }
       g.recordLaunch("spawn_agent", paneId, name, launch);
       // Recorded before anything runs in it: only an agent spawned disposable may be
       // closed later without the owner's go-ahead.
@@ -524,15 +535,21 @@ export function agentOps(g: Gateway): Record<string, Op> {
       let started = await ready(45_000);
       // A new agent can open on menus that only want a go-ahead: folder trust, an update
       // or model notice. Give it, then wait for the agent again.
-      const { approved } = await approveMenus(g.cfg, g.herdr, paneId, "spawn_agent", { waitMs: 20_000 });
+      // From here the agent runs: nothing below fails the spawn, or a retry would start a second one.
+      const { approved } = await approveMenus(g.cfg, g.herdr, paneId, "spawn_agent", { waitMs: 20_000 }).catch(() => ({ approved: [] as Approval[] }));
       if (approved.length) started = await ready(30_000);
       const status: string = started.agent_status ?? "unknown";
+      let watchError: ReturnType<typeof failure> | null = null;
       if (watch) {
-        g.state.manage(paneId, { name, cwd: placed.pane.cwd ?? null, kind, launch, role }, started, true);
-        await g.startSupervision(paneId, placed.pane.cwd, started);
-        showWatched(g.herdr, paneId, true);
+        try {
+          g.state.manage(paneId, { name, cwd: placed.pane.cwd ?? null, kind, launch, role }, started, true);
+          await g.startSupervision(paneId, placed.pane.cwd, started).catch(() => {});
+          showWatched(g.herdr, paneId, true);
+        } catch (err) {
+          watchError = failure(err);
+        }
       }
-      const out: Record<string, unknown> = { ...placed, name, kind, model, launched: launch, status, watching: watch, ...(disposable ? { disposable } : {}), ...(approved.length ? { auto_approved: approved } : {}) };
+      const out: Record<string, unknown> = { ...placed, name, kind, model, launched: launch, status, watching: watch && !watchError, ...(watchError ? { watch_error: watchError } : {}), ...(disposable ? { disposable } : {}), ...(approved.length ? { auto_approved: approved } : {}) };
       if (status === "blocked") {
         out.note = "the agent is showing a menu WorkDone did not answer: get_agent shows it as choices";
       } else if (prompt && status !== "idle" && status !== "done") {
@@ -554,22 +571,39 @@ export function agentOps(g: Gateway): Record<string, Op> {
             }
           }
         } catch (err) {
-          // Started, but at a dialog Herdr does not flag that is not a go-ahead.
-          if (!(err instanceof GatewayError && err.code === "agent_blocked")) throw err;
-          Object.assign(out, { status: "blocked", note: `${err.message}; the prompt was not sent: prompt_agent once it is answered` });
+          if (err instanceof GatewayError && err.code === "agent_blocked") {
+            // Started, but at a dialog Herdr does not flag that is not a go-ahead.
+            Object.assign(out, { status: "blocked", note: `${err.message}; the prompt was not sent: prompt_agent once it is answered` });
+          } else {
+            // The agent runs: the spawn stands (its lease, its work), so nothing is spawned
+            // twice. A send whose delivery is unknown is not to be repeated blindly.
+            out.prompt_error = failure(err);
+            out.note = sendOutcome(err) === "unknown"
+              ? "the agent started, but whether the first prompt went in is unknown: read_agent it before sending anything, and don't spawn it again"
+              : "the agent started but the first prompt was not sent: prompt_agent it once, and don't spawn it again";
+          }
         }
       }
-      // Bound with no prompt sent: the slice comes with the first prompt.
-      if (params.task && !out.prompt) {
-        dispatchSlice(g, { ...started, pane_id: paneId, name }, params, "", false);
-        out.task_bound = params.task;
+      // Bound with no prompt sent: the slice comes with the first prompt. After a failed
+      // first prompt, the next prompt_agent with task binds it.
+      if (params.task && !out.prompt && !out.prompt_error) {
+        try {
+          dispatchSlice(g, { ...started, pane_id: paneId, name }, params, "", false);
+          out.task_bound = params.task;
+        } catch (err) {
+          out.task_error = failure(err);
+        }
       }
       const sent = out.prompt as { result_request?: unknown } | undefined;
       if (sent?.result_request) out.result_request = sent.result_request;
       else if (params.reply === true) {
         // No prompt went in: the result owed is the one from the agent's first turn.
-        const asked = g.askResult(paneId, started, params);
-        if (asked) out.result_request = resultView(asked);
+        try {
+          const asked = g.askResult(paneId, started, params);
+          if (asked) out.result_request = resultView(asked);
+        } catch (err) {
+          out.result_error = failure(err);
+        }
       }
       return out;
     },

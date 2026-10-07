@@ -376,11 +376,11 @@ describe("watch_poll and notify ops", () => {
     watch({ "w1:p1": { name: "fixer", cwd: null, since: new Date().toISOString(), last_status: "working" } });
     expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer is waiting for an answer"] });
   });
-  test("an agent that left the allowed roots is gone", async () => {
+  test("an agent that left the allowed roots is dropped, and said to have left", async () => {
     const { gw, agents, watch } = setup();
     agents[0].cwd = "/srv/secret";
     watch({ "w1:p1": { name: "fixer", cwd: "/srv/allowed/app", since: new Date().toISOString(), last_status: "working", managed: true, busy: true } });
-    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer in app is gone (pane closed or agent exited)"], remaining: 0 });
+    expect(await gw.handle("watch_poll", {})).toMatchObject({ messages: ["fixer in app left the allowed roots, so WorkDone stopped watching it"], remaining: 0 });
   });
   test("a managed agent that is gone loses its sidebar token; a finished turn watch never had one", async () => {
     const { gw, agents, reports, watch } = setup();

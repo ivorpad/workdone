@@ -14,6 +14,7 @@ import { resumeView, snapshotView, taskSlice, type Live } from "./coord-views.ts
 import type { Gateway } from "./gateway.ts";
 import type { StateStore } from "./state.ts";
 import { optBool, optStr, str, type Op, type Params } from "./params.ts";
+import { closeCoordWork } from "./work.ts";
 
 function objectiveId(params: Params): string {
   const id = str(params, "objective");
@@ -182,21 +183,25 @@ export function coordOps(g: Gateway): Record<string, Op> {
       const { agents, live } = await liveAgents(g);
       const now = new Date().toISOString();
       const lease = g.leases.requireLive(params);
-      // The change and its notification commit together.
+      // The change, its notification and the work it accepts commit together.
       const { change, store } = g.state.transaction(() => {
         const r = g.state.updateCoord((store) => {
           const o = ensureObjective(store, id, typeof params.title === "string" ? params.title : undefined, now);
           if (expected !== undefined && o.version !== expected) throw new GatewayError("version_conflict", `objective ${id} is at version ${o.version}, not ${expected}: read coord_snapshot and merge again (or pass a per-task expected_version)`);
           supervisorCheck(o, lease, optBool(params, "take_over", false));
+          const was = new Map(Object.values(o.tasks).map((t) => [t.id, t.status]));
           const change = planTasks(store, id, params.tasks, params.resources, now);
+          const completed = Object.values(store.objectives[id]!.tasks).filter((t) => t.status === "complete" && was.get(t.id) !== "complete").map((t) => t.id);
           if (typeof params.title === "string" && params.title.trim()) o.title = params.title.trim().slice(0, 200);
           if (repo !== undefined) o.repo = g.cwdFrom({ cwd: repo });
           if (params.ack_seq !== undefined) ack(o, params.ack_seq);
           o.supervisor = lease ?? o.supervisor;
           resolveOwners(o, agents);
-          return { change, store: structuredClone(store) };
+          return { change, store: structuredClone(store), completed };
         });
         notifyTransitions(g.state, r.store, [r.change]);
+        // A task merged complete is the owner's acceptance of the work bound to it.
+        closeCoordWork(g.state, id, r.completed, now);
         return r;
       });
       g.state.audit({ op: "coord_update", ok: true, args: { objective: id, version: store.objectives[id]!.version, tasks: Array.isArray(params.tasks) ? params.tasks.map((t: any) => t?.id) : [] } });

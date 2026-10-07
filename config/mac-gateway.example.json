@@ -7,6 +7,7 @@
       "tasks": { "test": "bun test", "typecheck": "bun run typecheck" }
     }
   },
+  "worktreeRoot": null,
   "agentKinds": ["claude", "codex", "cursor", "opencode", "pi"],
   "agentModels": "~/.config/herdr-chatgpt/agent-models.json",
   "allowExec": false,

@@ -11,11 +11,11 @@ import type { Gateway } from "./gateway.ts";
 import { optBool, optStr, type Params } from "./params.ts";
 import type { Lease } from "./state.ts";
 
-const LEASE_RE = /^L-[a-z0-9]{6,12}$/;
+export const LEASE_RE = /^L-[a-z0-9]{6,12}$/;
 const LAPSE_MS = 24 * 3600_000;
 
 const newId = () => `L-${Math.random().toString(36).slice(2, 10)}`;
-const live = (l: Lease, now: number) => now - Date.parse(l.used) < LAPSE_MS;
+export const live = (l: Lease, now: number) => now - Date.parse(l.used) < LAPSE_MS;
 
 // The ops that act on something, and where their pane comes from. "agent" targets
 // are names or pane IDs.
@@ -126,7 +126,9 @@ export function leaseOps(g: Gateway) {
     touch(id, add);
   }
 
-  async function claim_agents(params: Params) {
+  // origin is internal: request() passes "spawn" when it mints a lease for a lease-less
+  // spawn_agent. As an op, claim_agents only ever gets params.
+  async function claim_agents(params: Params, origin: "spawn" | "claim" = "claim") {
     const label = optStr(params, "label")?.trim().slice(0, 80);
     const targets = params.targets ?? [];
     if (!Array.isArray(targets) || targets.length > 20 || !targets.every((t) => typeof t === "string" && TARGET_RE.test(t))) {
@@ -141,7 +143,7 @@ export function leaseOps(g: Gateway) {
     const result = g.state.updateLeases((l) => {
       for (const [k, v] of Object.entries(l)) if (!live(v, t)) delete l[k];
       id ??= newId();
-      const mine = (l[id!] ??= { label: label ?? "ChatGPT thread", panes: [], created: new Date(t).toISOString(), used: new Date(t).toISOString() });
+      const mine = (l[id!] ??= { label: label ?? "ChatGPT thread", panes: [], created: new Date(t).toISOString(), used: new Date(t).toISOString(), origin });
       if (label) mine.label = label;
       mine.used = new Date(t).toISOString();
       const refused: Array<{ pane_id: string; held_by: string }> = [];
@@ -225,5 +227,12 @@ export function leaseOps(g: Gateway) {
     return id;
   }
 
-  return { check, after, claim_agents, release_agents, lease_check, lease_list, labels, requireLive };
+  // A lease minted for a spawn that then failed: gone again if nothing joined it.
+  function dropIfEmpty(id: string) {
+    g.state.updateLeases((l) => {
+      if (l[id] && l[id]!.panes.length === 0) delete l[id];
+    });
+  }
+
+  return { check, after, claim_agents, release_agents, lease_check, lease_list, labels, requireLive, dropIfEmpty };
 }

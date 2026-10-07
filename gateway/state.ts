@@ -8,6 +8,7 @@ import { tryLock } from "./state-lock.ts";
 import { randomUUID } from "node:crypto";
 import type { Report, TurnResult } from "./watcher.ts";
 import { normalizeStore, type CoordStore } from "./coord.ts";
+import type { Work } from "./work.ts";
 import { resolve } from "node:path";
 
 // disposable: panes spawned with disposable: true, which close without the owner's go-ahead.
@@ -54,6 +55,8 @@ export interface InboxEntry {
 }
 
 const INBOX_MAX = 500;
+// Closed work records kept (work.json); open ones are never dropped.
+const WORK_KEEP_CLOSED = 500;
 const INBOX_KEEP_MS = 14 * 24 * 3600_000;
 
 export interface Watched {
@@ -149,6 +152,9 @@ export interface Lease {
   created: string;
   used: string;
   approvals?: Record<string, ApprovalPolicy>;
+  // How it was minted: claim_agents, or for a spawn_agent called without a lease.
+  // Absent on leases from before it was recorded.
+  origin?: "spawn" | "claim";
 }
 
 export interface ApprovalPolicy {
@@ -476,6 +482,25 @@ export class StateStore {
       const before = JSON.stringify(c);
       const out = fn(c);
       if (JSON.stringify(c) !== before) this.write("coord.json", c);
+      return out;
+    });
+  }
+
+  // Work started through WorkDone, by id (work.ts). Only open records are owed.
+  work(): Record<string, Work> {
+    const v = this.read("work.json");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Work>) : {};
+  }
+
+  // Under the same lock as the rest. Closed records beyond the newest WORK_KEEP_CLOSED go.
+  updateWork<T>(fn: (w: Record<string, Work>) => T): T {
+    return this.locked(() => {
+      const w = this.work();
+      const before = JSON.stringify(w);
+      const out = fn(w);
+      const closed = Object.values(w).filter((x) => x.status !== "open").sort((a, b) => (b.closed_at ?? "").localeCompare(a.closed_at ?? ""));
+      for (const x of closed.slice(WORK_KEEP_CLOSED)) delete w[x.id];
+      if (JSON.stringify(w) !== before) this.write("work.json", w);
       return out;
     });
   }

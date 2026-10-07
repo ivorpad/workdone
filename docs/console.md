@@ -41,7 +41,7 @@ What agents tell the owner is kept by the gateway, not by a chat card or this pa
 - an agent calls `workdone-tell` (`tell`);
 - the watcher sees a watched agent's turn end (`finished`), its exit (`gone`), or a question (`question`), or the end of a turn someone asked a `reply: true` result of (`result`, with `result_id`, commit, branch).
 
-Each entry keeps the agent's name, pane, session, working directory, its coordination task, and the thread that held it when it spoke (the console sees the thread's label and the last four characters of its lease). It is **unanswered** until the agent is sent a follow-up (`prompt_agent`, `steer_agent` or `supervisor_nudge`, by a thread or the console; the entry records who) or the owner dismisses it with `inbox_resolve`. A result still owed shows as **pending**.
+Each entry keeps the agent's name, pane, session, working directory, its coordination task, and the thread that held it when it spoke (the console sees the thread's label and the last four characters of its lease). It is **unanswered** until the agent is sent a follow-up (`prompt_agent`, `steer_agent` or `supervisor_nudge`, by a thread or the console; the entry records who), its work is settled (`settle_work`), or the owner dismisses it with `inbox_resolve`. `owed_work` shows a chat an agent's unanswered entries while it still owes something: open work, a tell, a question or a result. A result still owed shows as **pending**.
 
 An agent that Herdr marks `done` and that no watch recorded shows as a **derived** entry: read off the live agent each time, not stored, gone when Herdr marks the agent seen. Dismissing it stores a dismissed entry so it does not return. This covers agents nobody watches and turns that ended before a watch existed.
 

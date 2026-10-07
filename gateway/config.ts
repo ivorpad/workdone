@@ -47,6 +47,9 @@ export interface GatewayConfig {
   herdrSocketPath: string;
   allowedRoots: string[];
   repos: Record<string, RepoConfig>;
+  // Where new worktrees go, as <worktreeRoot>/<repo key>/<branch>, inside allowedRoots.
+  // Unset: next to the repo, <repo>.worktrees/<branch>.
+  worktreeRoot: string | null;
   agentKinds: string[];
   agentModels: ModelList;
   browser: BrowserConfig | null;
@@ -166,6 +169,11 @@ export function loadConfig(raw: unknown): GatewayConfig {
     }
     repos[key] = { path, tasks };
   }
+  let worktreeRoot: string | null = null;
+  if (c.worktreeRoot != null) {
+    worktreeRoot = canonical(absPath(c.worktreeRoot, "worktreeRoot"));
+    if (!withinRoots(worktreeRoot, allowedRoots)) throw new Error(`worktreeRoot is outside allowedRoots: ${worktreeRoot}`);
+  }
   let notifyCommand: string[] | null = null;
   if (c.notifyCommand != null) {
     if (!Array.isArray(c.notifyCommand) || c.notifyCommand.length === 0 || !c.notifyCommand.every((a: unknown) => typeof a === "string")) {
@@ -190,6 +198,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     herdrSocketPath: expandHome(c.herdrSocketPath ?? "~/.config/herdr/herdr.sock"),
     allowedRoots,
     repos,
+    worktreeRoot,
     agentKinds,
     agentModels,
     browser: parseBrowser(c.browser),
@@ -227,6 +236,20 @@ function clampInt(v: unknown, min: number, max: number, dflt: number): number {
 
 export function withinRoots(path: string, roots: string[]): boolean {
   return roots.some((r) => path === r || path.startsWith(r.endsWith("/") ? r : r + "/"));
+}
+
+// Where a new worktree of a repo goes: <worktreeRoot>/<repo key>/<branch> when that is
+// configured (the key, not the folder name, which two repos can share), else a sibling
+// folder, <repo>.worktrees/<branch>, never inside the repo.
+// Herdr's default (~/.herdr/worktrees) is outside the roots, so an agent started there
+// could not be reached. Refused before anything is created.
+export function worktreePath(key: string, repo: RepoConfig, branch: string, cfg: Pick<GatewayConfig, "allowedRoots" | "worktreeRoot">): string {
+  const roots = cfg.allowedRoots;
+  const p = canonical(cfg.worktreeRoot ? join(cfg.worktreeRoot, key, branch) : join(dirname(repo.path), `${basename(repo.path)}.worktrees`, branch));
+  if (!withinRoots(p, roots)) {
+    throw new GatewayError("path_not_allowed", `the worktree would go in ${p}, outside the allowed roots (${roots.join(", ")}): set worktreeRoot in the gateway config to a folder inside them`);
+  }
+  return p;
 }
 
 function pathInScope(p: unknown, roots: string[]): boolean {

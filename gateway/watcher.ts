@@ -26,6 +26,7 @@ import { childEnv, childProcesses, runProcess } from "./process.ts";
 import { StateStore, seenState, type Watched } from "./state.ts";
 import { agentReply } from "./transcript.ts";
 import { textOf } from "./views.ts";
+import { apiError, workTurn } from "./work.ts";
 
 const POLL_MS = 5000;
 // An agent that reads idle this soon after the prompt may not have started yet.
@@ -88,6 +89,11 @@ export interface Note {
   pid?: number;
   // The whole final answer, for the RESULT: line and the supervisor's turn record.
   text?: string | null;
+  // gone because Herdr still runs the agent, but outside the allowed roots.
+  left?: boolean;
+  // A finished turn that ended on an API or transport error, not an answer. Recorded on
+  // the pane's open work only; reports and results don't carry it.
+  failed?: boolean;
 }
 
 // The final result a caller asked for with reply: true. Metadata and a one-line
@@ -195,6 +201,8 @@ export function approvedExcerpt(approved: Approval[]): string {
   return clip(approved.map((a) => `${a.menu} → ${a.option}`).join("; "), 450);
 }
 
+const LEFT = "left the allowed roots, so WorkDone stopped watching it";
+
 // One line for the phone: who, what happened, where, and an excerpt.
 export function message(w: Watched, agent: any, paneId: string, note: Note): string {
   const name = agent?.name ?? w.name;
@@ -205,7 +213,7 @@ export function message(w: Watched, agent: any, paneId: string, note: Note): str
     finished: `${who} finished${where}`,
     question: `${who} asks${where}`,
     blocked: `${who}${where} is waiting for an answer`,
-    gone: `${who}${where} is gone (pane closed or agent exited)`,
+    gone: note.left ? `${who}${where} ${LEFT}` : `${who}${where} is gone (pane closed or agent exited)`,
     background: `${who}${where} is running in the background of its pane (pid ${note.pid}), out of Herdr's sight and unable to take input; fg in that shell brings it back`,
     stopped: `${who}${where} is stopped in the background of its pane (pid ${note.pid}); fg in that shell resumes it`,
   }[note.type];
@@ -217,18 +225,18 @@ const read = (herdr: HerdrCall, paneId: string, source: string) =>
 
 // The answer that ended the turn. A transcript can close the turn a couple of seconds
 // after Herdr shows the agent idle, so give it that long. Without a transcript, the
-// bottom of the screen.
-async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<string | null> {
+// bottom of the screen. ended: a Cursor turn that ended other than success.
+async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<{ text: string | null; ended: boolean }> {
   for (let attempt = 0; ; attempt++) {
     const reply = await agentReply(cfg, agent);
     if (!reply) break;
     const p = reply.in_progress;
-    if (!p) return reply.ended ? `[${reply.ended}] ${reply.text}` : reply.text;
-    if (p.interrupted) return `[interrupted] ${p.latest_text ?? ""}`;
-    if (attempt >= 5) return p.latest_text;
+    if (!p) return { text: reply.ended ? `[${reply.ended}] ${reply.text}` : reply.text, ended: !!reply.ended };
+    if (p.interrupted) return { text: `[interrupted] ${p.latest_text ?? ""}`, ended: false };
+    if (attempt >= 5) return { text: p.latest_text, ended: false };
     await Bun.sleep(500);
   }
-  return screenReply(await read(herdr, agent.pane_id, "recent_unwrapped")) || null;
+  return { text: screenReply(await read(herdr, agent.pane_id, "recent_unwrapped")) || null, ended: false };
 }
 
 // An excerpt is a bonus: when it cannot be read, the event is still reported.
@@ -236,10 +244,11 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
   try {
     if (event === "gone" || event === "background") return { type: "gone", excerpt: null };
     if (event === "blocked") return { type: "blocked", excerpt: dialogExcerpt(await read(herdr, agent.pane_id, "detection")) || null };
-    const text = await finalText(cfg, herdr, agent);
-    if (!text?.trim()) return { type: "finished", excerpt: null };
+    const { text, ended } = await finalText(cfg, herdr, agent);
+    const failed = ended || apiError(text) ? { failed: true } : {};
+    if (!text?.trim()) return { type: "finished", excerpt: null, ...failed };
     const asks = asksOwner(text);
-    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null, text };
+    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null, text, ...failed };
   } catch {
     return { type: event, excerpt: null };
   }
@@ -260,11 +269,15 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   const agents: any[] = needsAgents ? (await herdr("agent.list", {})).agents ?? [] : [];
   // An agent that moved outside the allowed roots is gone, as it is for every other op.
   const byPane = new Map(agents.filter((a) => paneInScope(a, cfg.allowedRoots)).map((a) => [a.pane_id, a]));
-  const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; menu: Dialog | null; approved: Approval[]; bg: { pid: number; stopped: boolean } | null }> = [];
+  // The kind of every agent Herdr lists, in scope or not, so one that moved out can be
+  // told apart from one that exited. Nothing else of an out-of-scope agent is kept.
+  const listed = new Map(agents.map((a) => [a.pane_id, a.agent]));
+  const decided: Array<{ paneId: string; w: Watched; agent: any; d: Decision; menu: Dialog | null; approved: Approval[]; bg: { pid: number; stopped: boolean } | null; left: boolean }> = [];
   for (const [paneId, w] of Object.entries(watched)) {
     let agent = byPane.get(paneId);
+    const left = !agent && listed.has(paneId) && (!w.kind || listed.get(paneId) === w.kind);
     const workingBeforeApproval = agent?.agent_status === "working";
-    const bg = !agent && w.kind ? await backgroundAgent(cfg, herdr, paneId, w.kind).catch(() => null) : null;
+    const bg = !agent && !left && w.kind ? await backgroundAgent(cfg, herdr, paneId, w.kind).catch(() => null) : null;
     // Permission UIs sometimes read idle or working. Inspect the current screen,
     // rather than relying on a status edge to notice an unanswered menu.
     let menu = agent ? parseDialog(await menuScreen(herdr, paneId).catch(() => "")) : null;
@@ -280,7 +293,7 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       const got = await approveMenus(cfg, herdr, paneId, "watch_poll", { waitMs: 0 }).catch(() => ({ approved: [] as Approval[], busy: false }));
       approved = got.approved;
       // Keep the edge pending while another process owns the answer lock.
-      if (got.busy) { decided.push({ paneId, w, agent, bg, d: {}, menu: null, approved }); continue; }
+      if (got.busy) { decided.push({ paneId, w, agent, bg, d: {}, menu: null, approved, left }); continue; }
       if (approved.length) {
         agent = (await herdr("agent.get", { target: paneId }).catch(() => null))?.agent ?? agent;
         menu = parseDialog(await menuScreen(herdr, paneId).catch(() => ""));
@@ -289,13 +302,13 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
         else d = { set: { ...seenState(agent), dialog_id: undefined, ...busy } };
       }
     }
-    decided.push({ paneId, w, agent, bg, d, menu, approved });
+    decided.push({ paneId, w, agent, bg, d, menu, approved, left });
   }
   // Read transcripts/checkpoints before the commit; no network wait holds the
   // state lock. A concurrent prompt or poll fences these decisions by revision.
   const prepared = await Promise.all(decided.map(async entry => {
-    const { w, agent, d, bg, menu } = entry;
-    const note: Note | null = !d.event ? null : bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
+    const { w, agent, d, bg, menu, left } = entry;
+    const note: Note | null = !d.event ? null : left && d.event === "gone" ? { type: "gone", excerpt: null, left: true } : bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
     const ended = note?.type === "finished" || note?.type === "question";
     const resolves = !!w.result_request && (note?.type === "finished" || note?.type === "gone");
     const cp = (ended && w.managed) || resolves ? await checkpoint(cfg, agent?.foreground_cwd ?? agent?.cwd ?? w.cwd).catch(() => null) : null;
@@ -344,9 +357,17 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
         } : undefined;
                 // Every turn end, exit or question goes in the owner's inbox from here, whichever chat is or isn't listening:
         // the watcher is the one place that sees all of them.
-        if (result || note.type === "finished" || note.type === "gone" || note.type === "question") {
+        const kept = !!result || note.type === "finished" || note.type === "gone" || note.type === "question";
+        if (kept) {
           const ctx = inboxContext2(store, paneId, agent, w, leases, now);
-          store.inboxAdd({ id: eventId, kind: result ? "result" : (note.type as "finished" | "gone" | "question"), at: new Date(now).toISOString(), ...ctx, text: (result?.summary ?? note.excerpt ?? note.type).slice(0, 1000), ...(result ? { result } : {}), status: "unanswered" });
+          store.inboxAdd({ id: eventId, kind: result ? "result" : (note.type as "finished" | "gone" | "question"), at: new Date(now).toISOString(), ...ctx, text: (result?.summary ?? note.excerpt ?? (note.left ? LEFT : note.type)).slice(0, 1000), ...(result ? { result } : {}), status: "unanswered" });
+        }
+        // The pane's open work records how its turn ended; it stays open (work.ts).
+        if (note.type === "finished" || note.type === "question" || note.type === "blocked" || note.type === "gone") {
+          workTurn(store, paneId, {
+            at: new Date(now).toISOString(), type: note.type === "finished" && note.failed ? "failed" : note.type,
+            ...(kept ? { inbox_id: eventId } : {}), ...(result ? { result_id: result.result_id } : {}),
+          });
         }
         reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
         messages.push(text);

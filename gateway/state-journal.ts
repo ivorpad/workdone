@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Binding, CommandReceipt, Dispatch, Receipt } from "./coord.ts";
 
-export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json"] as const;
+export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json", "work.json"] as const;
 const files = new Set<string>(STATE_FILES);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === "string");
@@ -21,6 +21,16 @@ function watched(v: unknown) {
     && ["managed", "busy"].every(k => optional(v, k, x => typeof x === "boolean"))
     && optional(v, "seq", integer)
     && optional(v, "result_request", r => object(r) && typeof r.id === "string" && typeof r.at === "string" && nullableString(r.lease));
+}
+// work.json (work.ts): open work stays until an outcome is recorded.
+function work(v: unknown, id: string) {
+  return object(v) && v.id === id && /^wk_[a-f0-9]{16}$/.test(id) && nonempty(v.pane_id)
+    && ["session", "agent", "kind", "lease"].every(k => nullableString(v[k])) && typeof v.title === "string" && timestamp(v.started_at)
+    && ["spawn_agent", "start_agent", "prompt_agent", "steer_agent"].includes(v.started_by) && ["open", "accepted", "dropped"].includes(v.status)
+    && optional(v, "closed_at", timestamp) && ["closed_by", "note"].every(k => optional(v, k, x => typeof x === "string"))
+    && optional(v, "coord", c => object(c) && nonempty(c.objective) && nonempty(c.id))
+    && optional(v, "last_turn", t => object(t) && timestamp(t.at) && ["finished", "failed", "question", "blocked", "gone"].includes(t.type)
+      && ["inbox_id", "result_id"].every(k => optional(t, k, x => typeof x === "string")));
 }
 const taskStatus = (v: unknown) => ["queued", "executing", "waiting_dependency", "verifying", "blocked", "complete"].includes(v as string);
 const record = (v: unknown, check: (v: unknown) => boolean) => object(v) && Object.values(v).every(check);
@@ -117,9 +127,10 @@ export function validateState(file: string, value: unknown) {
   else if (file === "inbox.json") valid = Array.isArray(value) && value.every(v => object(v) && nonempty(v.id) && ["tell", "result", "finished", "gone", "question"].includes(v.kind) && timestamp(v.at) && nullableString(v.pane_id) && nullableString(v.agent) && typeof v.text === "string" && (v.status === "unanswered" || v.status === "answered" || v.status === "dismissed") && optional(v, "resolved_at", timestamp) && optional(v, "resolved_by", x => typeof x === "string"));
   else if (file === "exec-workspace.json") valid = object(value) && typeof value.id === "string";
   else if (file === "coord.json") valid = coordination(value);
-  else if (file === "leases.json") valid = object(value) && Object.values(value).every(v => object(v) && Array.isArray(v.panes) && v.panes.every((p: unknown) => typeof p === "string") && typeof v.used === "string");
+  else if (file === "leases.json") valid = object(value) && Object.values(value).every(v => object(v) && Array.isArray(v.panes) && v.panes.every((p: unknown) => typeof p === "string") && typeof v.used === "string" && optional(v, "origin", o => o === "spawn" || o === "claim"));
   else if (file === "supervisor.json") valid = object(value) && Object.values(value).every(v => object(v) && Array.isArray(v.turns) && Array.isArray(v.nudges));
   else if (file === "watch.json") valid = object(value) && Object.values(value).every(watched);
+  else if (file === "work.json") valid = object(value) && Object.entries(value).every(([id, v]) => work(v, id));
   if (!files.has(file) || !valid) throw new Error(`Invalid gateway state: ${file}`);
 }
 export function readState(dir: string, file: string): unknown {
