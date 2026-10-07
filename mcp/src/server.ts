@@ -62,6 +62,7 @@ export function createReportSink(events?: Pick<EventsService, "addReports">, fal
 export function createEventService(cfg: OvhConfig, call: CallGateway, auth: AuthService, options: Pick<EventsOptions, "sender" | "now" | "random" | "log" | "onSubscribed"> = {}): EventsService | undefined {
   if (!cfg.events) return undefined;
   const unavailable = new Set(["machine_offline", "gateway_unreachable", "herdr_unavailable", "herdr_timeout", "herdr_closed"]);
+  const gone = new Set(["agent_not_found", "pane_not_found"]);
   return new EventsService({
     ...cfg.events,
     lastActive: (machine, lease) => leaseActivity.lastActive(machine, lease),
@@ -80,6 +81,11 @@ export function createEventService(cfg: OvhConfig, call: CallGateway, auth: Auth
         }
         const checked = await call(report.machine, "get_agent", { target: report.pane_id });
         if (!checked.ok && unavailable.has(checked.error.code)) throw new Error("Agent authorization is temporarily unavailable.");
+        // A result delivered because the agent exited is about an agent that is gone by
+        // definition, so the live lookup can't vouch for it: the machine grant decides. Any
+        // other report still needs the agent visible now, because the gateway answers
+        // agent_not_found both for an exit and for roots narrowed since the report.
+        if (!checked.ok && gone.has(checked.error.code) && report.result?.status === "gone") return await auth.isAuthorized(principal, report.machine);
         return checked.ok && (checked.result as any)?.pane_id === report.pane_id && await auth.isAuthorized(principal, report.machine);
       }
       if (args.objective) {
@@ -92,16 +98,9 @@ export function createEventService(cfg: OvhConfig, call: CallGateway, auth: Auth
         if (transient) throw new Error("Objective authorization is temporarily unavailable.");
         return false;
       }
-      if (args.target) {
-        let transient = false;
-        for (const machine of args.machine ? [args.machine] : machines) {
-          const checked = await call(machine, "get_agent", { target: args.target });
-          if (checked.ok && await auth.isAuthorized(principal, machine)) return true;
-          if (!checked.ok && unavailable.has(checked.error.code)) transient = true;
-        }
-        if (transient) throw new Error("Agent authorization is temporarily unavailable.");
-        return false;
-      }
+      // A target is a filter, not a grant: every delivery is checked above. Requiring the agent
+      // to exist when ChatGPT subscribes or renews killed the automation the hour after the
+      // agent exited or was respawned, with nothing in the chat to say so.
       return true;
     },
   });

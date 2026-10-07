@@ -91,7 +91,7 @@ const SubscribeParams = IdentityParams.extend({
 });
 export type EventArguments = z.infer<typeof Arguments>;
 export interface EventPrincipal { id: string; issuer: string; subject: string; scopes: string[]; tokenExpiresAt: number }
-export interface EventResource { machine: string; pane_id?: string | null; agent?: string | null; objective?: string }
+export interface EventResource { machine: string; pane_id?: string | null; agent?: string | null; objective?: string; result?: { status?: string } }
 type Sender = ReturnType<typeof createWebhookSender>;
 interface Subscription {
   id: string; principal: EventPrincipal; name: string; args: EventArguments; url: string; secret: string;
@@ -347,7 +347,11 @@ export class EventsService {
         }
         const data = JSON.parse(d.body).data as EventResource;
         try {
-          if (!await this.permitted(s, data)) { this.db.query("DELETE FROM deliveries WHERE subscription_id=? AND event_id=?").run(s.id, d.event_id); return; }
+          if (!await this.permitted(s, data)) {
+            this.db.query("DELETE FROM deliveries WHERE subscription_id=? AND event_id=?").run(s.id, d.event_id);
+            this.audit("events_authorization_denied", { id: s.id, eventId: d.event_id });
+            return;
+          }
         } catch {
           this.db.query("UPDATE deliveries SET next_at=? WHERE subscription_id=? AND event_id=?").run(this.now() + 15_000, s.id, d.event_id);
           this.audit("events_authorization_delayed", { id: s.id, eventId: d.event_id, reason: "gateway_unavailable" });

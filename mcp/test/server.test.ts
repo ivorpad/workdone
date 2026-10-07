@@ -208,6 +208,86 @@ describe("rpc log", () => {
   });
 });
 
+describe("agent event authorization", () => {
+  // agent: what get_agent answers for the report's pane right now.
+  function setup(agent: "live" | "gone" | "down" | "other", allowed = true) {
+    const requests: Array<[string, string, Record<string, unknown>]> = [];
+    const logs: string[] = [];
+    let delivered = 0;
+    const call: CallGateway = async (machine, op, params) => {
+      requests.push([machine, op, params]);
+      if (agent === "live") return { ok: true, result: { pane_id: params.target } };
+      if (agent === "gone") return { ok: false, error: { code: "agent_not_found", message: "agent not found" } };
+      if (agent === "down") return { ok: false, error: { code: "herdr_unavailable", message: "down" } };
+      return { ok: false, error: { code: "invalid_params", message: "bad" } };
+    };
+    const auth = { allowedMachines: async () => allowed ? ["test"] : [], isAuthorized: async () => allowed } as any;
+    const config = { ...cfg, events: { statePath: ":memory:", callbackHosts: ["callbacks.example.com"] } };
+    const service = createEventService(config, call, auth, { now: () => 1000, log: (l) => logs.push(l), sender: async (_url, _headers, body) => { const event = JSON.parse(body); if (event.type !== "verification") delivered++; return { status: 200, body: JSON.stringify({ challenge: event.challenge }) }; } })!;
+    const identity = { id: "owner", issuer: "https://issuer.example.test", subject: "owner", scopes: ["workdone"], tokenExpiresAt: 1000000 };
+    const subscribe = (args: Record<string, string>) => service.subscribe(identity, { name: "agent.finished", arguments: args, delivery: { mode: "webhook", url: "https://callbacks.example.com/mock", secret: `whsec_${Buffer.alloc(32, 4).toString("base64")}` } });
+    const report = (id: string, type: "finished" | "gone" = "finished") => ({ event_id: id, pane_id: "w1:p1", type, agent: "worker", kind: "claude", cwd: "/src/app", excerpt: "done", lease: null, reply_to: null, message: "worker finished",
+      ...(type === "gone" ? { result: { result_id: "res_0123456789abcdef", requested_at: "2026-10-07T00:00:00.000Z", status: "gone" as const, summary: null, commit: null, tree: null, clean: null, changed: null, branch: null, kind: "claude", model: null, model_id: null, effort: null } } : {}) });
+    return { service, requests, logs, subscribe, report, delivered: () => delivered };
+  }
+
+  test("a target that no longer exists still subscribes and renews: the target only filters", async () => {
+    const f = setup("gone");
+    try {
+      await f.subscribe({ machine: "test", target: "respawned-worker" });
+      await f.subscribe({ machine: "test", target: "respawned-worker" });
+      expect(f.requests.filter(([, op]) => op === "get_agent")).toEqual([]);
+    } finally { await f.service.close(); }
+  });
+
+  test("a machine the account has no grant for still refuses, target or not", async () => {
+    const f = setup("live");
+    try {
+      await expect(f.subscribe({ machine: "elsewhere", target: "worker" })).rejects.toThrow(/authorized/);
+    } finally { await f.service.close(); }
+  });
+
+  test("an exit result goes out on the machine grant; any other report about a missing agent is refused and logged", async () => {
+    const f = setup("gone");
+    try {
+      await f.subscribe({ machine: "test" });
+      await f.service.addReports("test", [f.report("fin1"), f.report("gone1", "gone")]);
+      await f.service.flush();
+      // agent_not_found can also mean the roots were narrowed: only the exit result passes.
+      expect(f.delivered()).toBe(1);
+      const denied = f.logs.map((l) => JSON.parse(l)).filter((l) => l.event === "events_authorization_denied");
+      expect(denied).toHaveLength(1);
+    } finally { await f.service.close(); }
+  });
+
+  test("a live agent is still checked, an unexpected refusal is logged, and an outage waits", async () => {
+    const live = setup("live");
+    try {
+      await live.subscribe({ machine: "test" });
+      await live.service.addReports("test", [live.report("a")]);
+      await live.service.flush();
+      expect(live.delivered()).toBe(1);
+      expect(live.requests.at(-1)).toEqual(["test", "get_agent", { target: "w1:p1" }]);
+    } finally { await live.service.close(); }
+    const other = setup("other");
+    try {
+      await other.subscribe({ machine: "test" });
+      await other.service.addReports("test", [other.report("b")]);
+      await other.service.flush();
+      expect(other.delivered()).toBe(0);
+      expect(other.logs.some((l) => JSON.parse(l).event === "events_authorization_denied")).toBe(true);
+    } finally { await other.service.close(); }
+    const down = setup("down");
+    try {
+      await down.subscribe({ machine: "test" });
+      await down.service.addReports("test", [down.report("c")]);
+      await down.service.flush();
+      expect(down.delivered()).toBe(0);
+      expect(down.logs.some((l) => JSON.parse(l).event === "events_authorization_delayed")).toBe(true);
+    } finally { await down.service.close(); }
+  });
+});
+
 describe("objective event authorization", () => {
   test("subscription and delivery recheck canonical objective read access without a pane lookup", async () => {
     const requests: Array<[string, string, Record<string, unknown>]> = [];
