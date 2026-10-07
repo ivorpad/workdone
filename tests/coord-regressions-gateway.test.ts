@@ -313,7 +313,10 @@ describe("taking over a bound agent (2026-10-07)", () => {
     const moved: any = await t.g.request("claim_agents", { lease: fresh.lease, targets: ["w1:p1"], take_over: true });
     expect(moved.taken_over).toEqual(["w1:p1"]);
     const sup = `…${old.slice(-4)}`;
-    expect(moved.supervised_elsewhere).toEqual([{ pane_id: "w1:p1", objective: "demo", task: "build", protocol: "dispatch_unknown", supervisor: sup, supervisor_label: "sup", tasks: 2 }]);
+    expect(moved.supervised_elsewhere).toEqual([{ pane_id: "w1:p1", objective: "demo", task: "build", protocol: "dispatch_unknown", supervisor: sup, supervisor_label: "sup", tasks: 2, next: expect.any(String) }]);
+    const next: string = moved.supervised_elsewhere[0].next;
+    expect(next).toContain(`Objective demo stays supervised by "sup" (${sup})`);
+    expect(next).toContain('On the user\'s word: coord_update {objective: "demo", take_over: true}, read the agent, then coord_update {objective: "demo", tasks: [{id: "build", dispatch: "delivered" or "lost"}]}');
     expect(moved.note).toContain("take_over: true");
     expect(await t.g.request("get_agent", { target: "w1:p1" })).toMatchObject({ held_by: "new chat", task: { objective: "demo", id: "build", protocol: "dispatch_unknown", supervisor: sup } });
     // Half-owned: the new holder can neither prompt the pane in doubt nor settle it, and
@@ -333,6 +336,11 @@ describe("taking over a bound agent (2026-10-07)", () => {
     expect(build()).toMatchObject({ status: "executing", generation: 2, protocol: null, binding: { dispatch: { state: "delivered" } } });
     expect(await t.g.request("prompt_agent", ask)).toMatchObject({ duplicate: true });
     expect(t.prompts()).toHaveLength(1);
+    // A third thread taking the agent now, with nothing in doubt, gets the plain move.
+    const third: any = await t.g.request("claim_agents", { label: "third", targets: ["w1:p1"], take_over: true });
+    expect(third.supervised_elsewhere).toEqual([expect.objectContaining({ objective: "demo", task: "build", supervisor_label: "new chat" })]);
+    expect(third.supervised_elsewhere[0].protocol).toBeUndefined();
+    expect(third.supervised_elsewhere[0].next).toContain('To supervise it here, on the user\'s word: coord_update {objective: "demo", take_over: true}, which moves all 2 tasks of it.');
   });
 });
 

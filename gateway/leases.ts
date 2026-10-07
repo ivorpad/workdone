@@ -187,9 +187,16 @@ export function leaseOps(g: Gateway) {
       const sup = hit?.o.supervisor;
       if (!hit || hit.t.status === "complete" || !sup || sup === lease) continue;
       const by = leases[sup];
+      const label = by && live(by, now()) ? by.label : null;
+      const n = Object.keys(hit.o.tasks).length;
+      const take = `coord_update {objective: "${hit.o.id}", take_over: true}`;
       out.push({
         pane_id: pane, objective: hit.o.id, task: hit.t.id, ...(hit.t.protocol ? { protocol: hit.t.protocol } : {}),
-        supervisor: `…${sup.slice(-4)}`, ...(by && live(by, now()) ? { supervisor_label: by.label } : {}), tasks: Object.keys(hit.o.tasks).length,
+        supervisor: `…${sup.slice(-4)}`, ...(label ? { supervisor_label: label } : {}), tasks: n,
+        next: `Objective ${hit.o.id} stays supervised by ${label ? `"${label}" (…${sup.slice(-4)})` : `lease …${sup.slice(-4)}`}: that thread binds, settles and accepts task ${hit.t.id}, and gets its transitions. ` +
+          (hit.t.protocol === "dispatch_unknown"
+            ? `Its prompt is in doubt, so nothing goes to this agent until it is settled. On the user's word: ${take}, read the agent, then coord_update {objective: "${hit.o.id}", tasks: [{id: "${hit.t.id}", dispatch: "delivered" or "lost"}]}.`
+            : `To supervise it here, on the user's word: ${take}, which moves all ${n} task${n === 1 ? "" : "s"} of it.`),
       });
     }
     return out;
