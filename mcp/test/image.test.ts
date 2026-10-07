@@ -5,6 +5,7 @@ import { runInNewContext } from "node:vm";
 import { parseConfig } from "../src/config.ts";
 import type { CallGateway } from "../src/gateway-client.ts";
 import { IMAGE_META, IMAGE_URI } from "../src/image.ts";
+import { SEE_IMAGE } from "../src/render.ts";
 import { createHandler } from "../src/server.ts";
 
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
@@ -40,7 +41,7 @@ describe("show_image", () => {
     expect(r.isError).toBe(false);
     expect(r.content[1]).toEqual({ type: "image", data: PNG, mimeType: "image/png" });
     expect(r._meta[IMAGE_META]).toEqual({ mime: "image/png", data: PNG });
-    expect(r.structuredContent).toEqual({ machine: "ovh", path: "/Users/ivor/src/tries/shot.png", size: 9, mime: "image/png" });
+    expect(r.structuredContent).toEqual({ machine: "ovh", path: "/Users/ivor/src/tries/shot.png", size: 9, mime: "image/png", see: SEE_IMAGE });
     expect(JSON.stringify(r.structuredContent)).not.toContain(PNG);
     await c.close();
   });
@@ -85,6 +86,38 @@ describe("screenshot", () => {
     const tool = tools.find((t) => t.name === "screenshot")!;
     expect(tool._meta).toEqual({ ui: { resourceUri: IMAGE_URI } });
     expect(tool.annotations?.readOnlyHint).toBe(false);
+    await c.close();
+  });
+
+  // ChatGPT calls tools from a script and the model sees only what the script passes to
+  // text() or image(). Shape seen live 2026-10-07 in a regular web chat (ChatGPT may change
+  // it): content is the text items as one string, content_items the MCP content. The
+  // model's own forwarding loop read result.content, found no image and saw no pixels.
+  function inScript(r: any) {
+    return {
+      content: r.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n"),
+      content_items: r.content,
+      ...(r.structuredContent ? { structuredContent: r.structuredContent } : {}),
+    };
+  }
+
+  test("in ChatGPT's tool script the model is told where the pixels are, and the card keeps them", async () => {
+    const c = await client();
+    const r = (await c.callTool({ name: "screenshot", arguments: { machine: "mac" } })) as any;
+    const s = inScript(r);
+    expect(s.content_items.find((i: any) => i.type === "image")).toEqual({ type: "image", data: PNG, mimeType: "image/png" });
+    for (const seen of [s.content, JSON.stringify(s.structuredContent)]) {
+      expect(seen).toContain("content_items");
+      expect(seen).toContain("image(");
+      expect(seen).not.toContain(PNG);
+    }
+    expect(r._meta[IMAGE_META]).toEqual({ mime: "image/png", data: PNG });
+    const { tools } = await c.listTools();
+    for (const name of ["screenshot", "show_image", "read_file"]) {
+      const description = tools.find((t) => t.name === name)!.description!;
+      expect(description).toContain("content_items");
+      expect(description).toContain("image(");
+    }
     await c.close();
   });
 

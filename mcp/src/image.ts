@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import { registerCard } from "./confirm.ts";
 import type { CallGateway } from "./gateway-client.ts";
-import type { render as renderResult } from "./render.ts";
+import { SEE_IMAGE, type render as renderResult } from "./render.ts";
 
 // Versioned: ChatGPT caches a card by URI, so a changed card needs a new one.
 export const IMAGE_URI = "ui://workdone/image-1.html";
@@ -28,7 +28,7 @@ export function registerImage(server: McpServer, machines: string[], defaultMach
     if (!r || typeof r.image?.data !== "string") return out;
     return {
       ...out,
-      structuredContent: { machine: m, path: r.path, size: r.size, mime: r.image.mime },
+      structuredContent: { machine: m, path: r.path, size: r.size, mime: r.image.mime, see: SEE_IMAGE },
       _meta: { [IMAGE_META]: { mime: r.image.mime, data: r.image.data } },
     };
   }
@@ -38,7 +38,7 @@ export function registerImage(server: McpServer, machines: string[], defaultMach
     {
       title: "Show an image",
       description:
-        "Show an image file (png, jpg, gif, webp, up to 3 MB) from a machine to the owner in this chat, and see it yourself. read_file gives only you the image; use show_image when the owner should see it too, such as a screenshot an agent saved. The path must be inside the machine's allowed roots. Describe what matters in it in a line or two; the owner already sees the picture.",
+        "Show an image file (png, jpg, gif, webp, up to 3 MB) from a machine to the owner in this chat, and see it yourself. read_file gives only you the image; use show_image when the owner should see it too, such as a screenshot an agent saved. The path must be inside the machine's allowed roots. Describe what matters in it in a line or two; the owner already sees the picture. " + SEE_IMAGE,
       inputSchema: z.object({
         path: z.string().describe("Image path on the machine, absolute or ~-relative."),
         machine: machine.describe(`Machine the file is on (${machines.join(", ")} when this was written; default ${defaultMachine}).`),
@@ -54,7 +54,7 @@ export function registerImage(server: McpServer, machines: string[], defaultMach
     {
       title: "Take a screenshot",
       description:
-        "Capture the main display of a Mac and show it to the owner in this chat; you see it too. Only when the owner asks for a screenshot or to see their screen: it captures whatever is on screen, including other windows and notifications. The file is saved under workdone-screenshots in the machine's first allowed root (the last 20 are kept), so show_image can show it again. Needs a Mac whose gateway runs exec in a Herdr pane; elsewhere it returns capability_disabled.",
+        "Capture the main display of a Mac and show it to the owner in this chat; you see it too. Only when the owner asks for a screenshot or to see their screen: it captures whatever is on screen, including other windows and notifications. The file is saved under workdone-screenshots in the machine's first allowed root (the last 20 are kept), so show_image can show it again. Needs a Mac whose gateway runs exec in a Herdr pane; elsewhere it returns capability_disabled. " + SEE_IMAGE,
       inputSchema: z.object({
         machine: machine.describe(`Machine to capture (${machines.join(", ")} when this was written; default ${defaultMachine}).`),
       }),

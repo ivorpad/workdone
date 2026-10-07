@@ -9,7 +9,7 @@ import { registerImage } from "./image.ts";
 import { leaseActivity } from "./activity.ts";
 import { registerEvents, type EventsService, type EventPrincipal } from "./events.ts";
 import type { CallGateway } from "./gateway-client.ts";
-import { render } from "./render.ts";
+import { SEE_IMAGE, render } from "./render.ts";
 import { registerWakeTest } from "./waketest.ts";
 import { inbox } from "./inbox.ts";
 import { LINKS, WATCH_URI, linkChat, registerWatch } from "./watch.ts";
@@ -464,7 +464,7 @@ export const TOOLS: Record<string, ToolDef> = {
   read_file: {
     title: "Read file",
     description:
-      "Read a file. Text comes back as text, paged with offset and next_offset. PDF, Word, PowerPoint, Excel, OpenDocument, RTF and EPUB are converted to Markdown. Images (png, jpg, gif, webp, up to 3 MB) come back as images. Other binaries are described; as=base64 returns raw bytes.",
+      "Read a file. Text comes back as text, paged with offset and next_offset. PDF, Word, PowerPoint, Excel, OpenDocument, RTF and EPUB are converted to Markdown. Images (png, jpg, gif, webp, up to 3 MB) come back as images. Other binaries are described; as=base64 returns raw bytes. " + SEE_IMAGE,
     input: {
       path,
       as: z.enum(["auto", "text", "document", "image", "base64"]).optional(),
@@ -539,7 +539,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.14.0" },
+    { name: "herdr-remote", version: "0.14.1" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +
