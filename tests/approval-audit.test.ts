@@ -21,3 +21,10 @@ test("approval audit records authorization scope, only the tail of a lease, and 
     .toEqual({ target: "worker", confirm: true, expected_dialog_id: before, mode: "all_permissions", ttl_seconds: 600, lease: "…koyi" });
   expect(auditDetail({ expected_dialog_id: "private text", mode: "unexpected" })).toEqual({});
 });
+
+test("a close is audited with what it took and what the caller meant", () => {
+  expect(auditOutcome("close", { closed: "workspace", id: "wKR", outcome: "closed", verified: true, panes: [{ pane_id: "wKR:p1", agent: "codex", name: "research", cwd: "/x", title: "private title" }] }))
+    .toEqual({ outcome: { result: "closed", panes: [{ pane_id: "wKR:p1", agent: "codex", name: "research" }] } });
+  expect(auditDetail({ kind: "pane", id: "wKV:p2", expect: [{ pane_id: "wKV:p2", agent: "claude", name: null, session: "s" }], even_if_working: true }))
+    .toMatchObject({ expect: [{ pane_id: "wKV:p2", agent: "claude", name: null }], even_if_working: true });
+});

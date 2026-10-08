@@ -14,6 +14,19 @@ import { resolve } from "node:path";
 // disposable: panes spawned with disposable: true, which close without the owner's go-ahead.
 export type CreatedKind = "panes" | "tabs" | "workspaces" | "disposable";
 
+// A close WorkDone sent: "closing" from just before the Herdr call until Herdr confirms the
+// target is gone ("closed"). Herdr never reuses a pane or tab ID, so a repeat close that
+// finds the target missing and a record here answers already_closed instead of not found.
+export interface ClosedPane { pane_id: string; terminal_id: string | null; agent: string | null; name: string | null; session: string | null }
+export interface ClosedRecord {
+  kind: "pane" | "tab" | "workspace";
+  id: string;
+  at: string;
+  status: "closing" | "closed";
+  by: string | null;
+  panes: ClosedPane[];
+}
+
 // A watched agent, keyed by pane ID. prompt_agent watches one turn: the entry goes
 // once that turn is reported. A managed entry (watch_agent, or an agent started
 // through the bridge) reports every turn and stays until the agent exits.
@@ -234,6 +247,33 @@ export class StateStore {
 
   forget(kind: CreatedKind, id: string) {
     this.locked(() => this.write(`created-${kind}.json`, this.created(kind).filter((x) => x !== id)));
+  }
+
+  // The newest close record for this target. A pane also matches a tab or workspace
+  // close that took it.
+  closedRecord(kind: ClosedRecord["kind"], id: string): ClosedRecord | null {
+    const v = (this.read("closed.json") as ClosedRecord[] | undefined) ?? [];
+    for (let i = v.length - 1; i >= 0; i--) {
+      const r = v[i]!;
+      if ((r.kind === kind && r.id === id) || (kind === "pane" && r.panes.some((p) => p.pane_id === id))) return r;
+    }
+    return null;
+  }
+
+  // Replaces any record for the same target; the newest 200 are kept.
+  recordClose(r: ClosedRecord) {
+    this.locked(() => {
+      const v = ((this.read("closed.json") as ClosedRecord[] | undefined) ?? []).filter((x) => !(x.kind === r.kind && x.id === r.id));
+      this.write("closed.json", [...v, r].slice(-200));
+    });
+  }
+
+  dropClose(kind: ClosedRecord["kind"], id: string) {
+    this.locked(() => {
+      const v = (this.read("closed.json") as ClosedRecord[] | undefined) ?? [];
+      const kept = v.filter((x) => !(x.kind === kind && x.id === id));
+      if (kept.length !== v.length) this.write("closed.json", kept);
+    });
   }
 
   // The workspace pane exec opens its tabs in.

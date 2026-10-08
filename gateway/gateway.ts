@@ -19,7 +19,7 @@ import { openclawOps } from "./openclaw.ts";
 import { jobOps } from "./jobs.ts";
 import { paneExecOps } from "./pane-exec.ts";
 import { layoutOps, ownerMayClose } from "./layout-ops.ts";
-import { leaseOps } from "./leases.ts";
+import { LEASE_CHECKED, leaseOps } from "./leases.ts";
 import { findModel, modelArgs } from "./models.ts";
 import { optBool, optEnum, optInt, optStr, str, type Op, type Params } from "./params.ts";
 import { StateStore, seenState, type Launch } from "./state.ts";
@@ -158,10 +158,12 @@ export class Gateway {
       created = ((await this.leases.claim_agents({ label: typeof params.name === "string" ? params.name : undefined, targets: [] }, "spawn")) as any).lease;
       lease = created;
     }
-    const sent = stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined);
+    // A copy: the marks below are for this call only, never on the caller's object.
+    const sent = { ...stamped(op, created ? { ...params, lease: created } : params, lease, lease ? this.state.leases()[lease]?.label : undefined) };
     // What the caller asked, before the stamp: a bound prompt's idempotency is about this.
     const key = STAMPED[op];
     if (key && typeof params[key] === "string") (sent as any)[INTENT] = { op, text: params[key] };
+    if (this.cfg.leases && params.origin !== "console") (sent as any)[LEASE_CHECKED] = true;
     let result: any;
     try {
       result = await this.handle(op, sent);
@@ -224,14 +226,14 @@ export class Gateway {
     keep("work", () => trackWork(this, op, params, result, lease, agent));
     if (created && isObject) result.lease = created;
     // Views say which thread holds each agent.
-    if (this.cfg.leases && (op === "overview" || op === "get_agent" || op === "wait_agent")) {
+    if (this.cfg.leases && (op === "overview" || op === "get_agent" || op === "wait_agent" || op === "list_panes")) {
       keep("held_by", () => {
         const held = this.leases.labels();
         const mark = (a: any) => {
           if (a && typeof a.pane_id === "string" && held.has(a.pane_id)) a.held_by = held.get(a.pane_id);
         };
         if (op === "get_agent") mark(result);
-        else for (const a of result?.agents ?? []) mark(a);
+        else for (const a of (op === "list_panes" ? result?.panes : result?.agents) ?? []) mark(a);
       });
     }
     // What is still owed on this machine, read from state alone, on the calls a chat
@@ -457,9 +459,18 @@ export class Gateway {
       }
 
       case "list_panes": {
-        const res = await this.herdr("pane.list", {});
+        // Every pane, shell or agent. Herdr's pane records name the agent's CLI, not the
+        // agent: its name comes from the agent list.
+        const [res, agents] = await Promise.all([this.herdr("pane.list", {}), this.herdr("agent.list", {}).catch(() => null)]);
+        const names = new Map<string, string>();
+        for (const a of agents?.agents ?? []) if (typeof a?.name === "string") names.set(a.pane_id, a.name);
         const watched = this.state.watched();
-        return { panes: (res.panes ?? []).filter((p: any) => paneInScope(p, cfg.allowedRoots)).map((p: any) => withWatch(paneView(p), watched)) };
+        return {
+          panes: (res.panes ?? []).filter((p: any) => paneInScope(p, cfg.allowedRoots)).map((p: any) => {
+            const view = withWatch(paneView(p), watched);
+            return p.agent ? { ...view, name: names.get(p.pane_id) ?? p.name ?? null } : view;
+          }),
+        };
       }
 
       case "read_pane": {

@@ -85,6 +85,14 @@ function world() {
         panes[pane.pane_id] = pane;
         return { workspace: { workspace_id: id, label: params.label }, tab: { tab_id: `${id}:t1`, label: "1" }, root_pane: pane };
       }
+      // Closing removes the panes, as Herdr does: close reads Herdr back to confirm it.
+      case "pane.close":
+        delete panes[params.pane_id];
+        return {};
+      case "tab.close":
+      case "workspace.close":
+        for (const [id, p] of Object.entries(panes)) if ((method === "tab.close" ? p.tab_id === params.tab_id : p.workspace_id === params.workspace_id)) delete panes[id];
+        return {};
       case "agent.list":
         return { agents: Object.values(panes).filter((p) => p.agent) };
       case "agent.get":
@@ -155,11 +163,11 @@ describe("layout", () => {
     const { gw, sent } = gateway();
     const made: any = await gw.handle("create_workspace", { repo: "app", label: "scratch" });
     await gw.handle("close", { kind: "workspace", id: made.workspace.workspace_id, confirm: true });
-    expect(sent.at(-1)).toEqual(["workspace.close", { workspace_id: made.workspace.workspace_id }]);
+    expect(sent).toContainEqual(["workspace.close", { workspace_id: made.workspace.workspace_id }]);
     await expect(gw.handle("close", { kind: "workspace", id: "w1" })).rejects.toMatchObject({ code: "not_bridge_workspace" });
     const any = gateway({ allowCloseAny: true });
     await any.gw.handle("close", { kind: "tab", id: "w1:t1", confirm: true });
-    expect(any.sent.at(-1)).toEqual(["tab.close", { tab_id: "w1:t1" }]);
+    expect(any.sent).toContainEqual(["tab.close", { tab_id: "w1:t1" }]);
     // w3 also holds a pane outside the roots: closing it would kill that pane.
     await expect(any.gw.handle("close", { kind: "workspace", id: "w3" })).rejects.toMatchObject({ code: "outside_scope" });
     await expect(any.gw.handle("close", { kind: "workspace", id: "w2" })).rejects.toMatchObject({ code: "workspace_not_found" });
@@ -173,11 +181,11 @@ describe("layout", () => {
     expect(sent.slice(before).map(([m]) => m)).not.toContain("pane.close");
     // The owner's click in the console.
     await gw.handle("close", { kind: "pane", id: pane, origin: "console" });
-    expect(sent.at(-1)).toEqual(["pane.close", { pane_id: pane }]);
+    expect(sent).toContainEqual(["pane.close", { pane_id: pane }]);
     // confirm: true, from a chat where the owner asked or from the approval card.
     const other: any = await gw.handle("create_workspace", { repo: "app" });
     await gw.handle("close", { kind: "pane", id: other.pane.pane_id, confirm: true });
-    expect(sent.at(-1)).toEqual(["pane.close", { pane_id: other.pane.pane_id }]);
+    expect(sent).toContainEqual(["pane.close", { pane_id: other.pane.pane_id }]);
     // close_any widens what may be closed, not who decides.
     const any = gateway({ allowCloseAny: true });
     await expect(any.gw.handle("close", { kind: "pane", id: "w1:p1" })).rejects.toThrow(/claude w1:p1/);
@@ -194,7 +202,7 @@ describe("layout", () => {
     await expect(gw.handle("close", { kind: "workspace", id: ws })).rejects.toMatchObject({ code: "needs_confirmation", details: { panes: [`${ws}:p2`] } });
     delete panes[`${ws}:p2`];
     await gw.handle("close", { kind: "workspace", id: ws });
-    expect(sent.at(-1)).toEqual(["workspace.close", { workspace_id: ws }]);
+    expect(sent).toContainEqual(["workspace.close", { workspace_id: ws }]);
     expect(disposable()).toEqual([]);
     // Spawned without disposable: prunable_agents offers a close, and close still asks.
     screen = "All tests pass.\n";

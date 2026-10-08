@@ -59,6 +59,21 @@ const closeConfirm = z
   .boolean()
   .optional()
   .describe("Only when the owner explicitly asked, in this chat or by voice, to close or clean up this pane or its agents. Never because the agent is done or prunable.");
+// What a close is meant to kill, checked by the gateway against the live panes.
+const closeExpect = z
+  .array(
+    z.object({
+      pane_id: z.string(),
+      agent: z.string().nullable().optional().describe("The agent's CLI (claude, codex, ...), or null for a plain shell pane."),
+      name: z.string().nullable().optional().describe("The agent's name, or null for an unnamed agent."),
+      terminal_id: z.string().nullable().optional(),
+      session: z.string().nullable().optional(),
+    }),
+  )
+  .min(1)
+  .max(50)
+  .optional()
+  .describe("What the owner agreed to close, copied from list_panes, overview or the targets of needs_confirmation: pane_id plus any of agent, name, terminal_id, session. If the live target is not that (another pane, another agent, a pane in the tab or workspace that is not listed), close refuses with target_mismatch and closes nothing.");
 const SHELL = { readOnlyHint: false, destructiveHint: true, openWorldHint: true };
 // Messages to an agent: in a linked chat, one per delivered wake (inbox.allowMessage).
 const TO_AGENT = new Set(["prompt_agent", "steer_agent", "supervisor_nudge"]);
@@ -310,7 +325,7 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   list_panes: {
     title: "List panes",
-    description: "List Herdr panes in allowed directories, including plain shell panes (agent is null).",
+    description: "Every Herdr pane in allowed directories. A pane is the terminal; an agent is the CLI running in it. Plain shell panes have agent null; a pane with an agent has agent (its CLI) and name. focused marks the pane on the machine's screen, held_by the conversation that holds it. Use the exact pane_id for close.",
     input: {},
     annotations: READ,
   },
@@ -372,10 +387,12 @@ export const TOOLS: Record<string, ToolDef> = {
   },
   close: {
     title: "Close",
-    description: "Close a pane, tab or workspace. Kills what runs in it, agents included. Without the close_any capability, only things this bridge created. Unless every pane it closes was spawned disposable, it needs the owner's go-ahead: an agent being finished, prunable, accepted or on prune_close is not one. Without confirm it returns needs_confirmation with a pending id for request_confirmation's approval card.",
+    description: "Close a pane, tab or workspace by its exact ID. Kills what runs in it, agents included. Pane IDs (w3T:pJR) are never reused; one changes only when its pane moves to another workspace. Before closing, tell the owner exactly what goes (agent name, CLI and directory, or a shell pane; list_panes marks the pane on their screen focused) and pass that as expect. Without the close_any capability, only things this bridge created. Unless every pane it closes was spawned disposable, it needs the owner's go-ahead: an agent being finished, prunable, accepted or on prune_close is not one. Without confirm it returns needs_confirmation with a pending id for request_confirmation's approval card and targets, what it would close. Refusals close nothing: agent_working (an agent is mid-turn), target_mismatch (the target is not what expect says), target_changed (it changed while close checked it). The outcome is read back from Herdr: closed, or already_closed when it was closed before; not_closed and close_uncertain mean it may still be open, so never tell the owner it closed. panes names what was closed. Closing settles no work: owed_work keeps it until settle_work.",
     input: {
       kind: layoutKind,
-      id: z.string(),
+      id: z.string().describe("The exact pane, tab or workspace ID, e.g. w3T:pJR, w3T:t1 or w3T."),
+      expect: closeExpect,
+      even_if_working: z.boolean().optional().describe("Only when the owner said to close it although its agent is working: that kills the turn in progress."),
       confirm: closeConfirm,
     },
     annotations: DESTRUCTIVE,
@@ -539,7 +556,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.14.1" },
+    { name: "herdr-remote", version: "0.15.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

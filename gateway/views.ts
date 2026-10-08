@@ -13,6 +13,8 @@ export function agentView(a: any) {
     label: a.label ?? null,
     workspace_id: a.workspace_id,
     tab_id: a.tab_id,
+    // The pane Herdr has focused: what the owner sees on that machine's screen.
+    ...(a.focused ? { focused: true } : {}),
   };
 }
 
@@ -26,6 +28,7 @@ export function paneView(p: any) {
     label: p.label ?? null,
     workspace_id: p.workspace_id,
     tab_id: p.tab_id,
+    ...(p.focused ? { focused: true } : {}),
   };
 }
 

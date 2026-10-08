@@ -38,12 +38,19 @@ export function auditDetail(params: Record<string, any>) {
   if (typeof params.expected_dialog_id === "string" && /^[a-f0-9]{64}$/.test(params.expected_dialog_id)) d.expected_dialog_id = params.expected_dialog_id;
   if (["ask", "permissions", "all_permissions", "default"].includes(params.mode)) d.mode = params.mode;
   if (typeof params.ttl_seconds === "number") d.ttl_seconds = params.ttl_seconds;
+  // close: what the caller said it meant, and an owner's go-ahead to stop a working agent.
+  if (Array.isArray(params.expect)) d.expect = params.expect.slice(0, 10).map((e: any) => ({ pane_id: String(e?.pane_id ?? "").slice(0, 64), ...(e?.agent !== undefined ? { agent: e.agent } : {}), ...(e?.name !== undefined ? { name: e.name } : {}) }));
+  if (params.even_if_working === true) d.even_if_working = true;
   return d;
 }
 
 // A successful request can be a no-op when the notifier already answered. Keep
 // menu identities and the observed outcome without copying reply or menu text.
 export function auditOutcome(op: string, result: any): Record<string, unknown> {
+  // What a close actually took, as Herdr confirmed it: the record a mistaken close is traced by.
+  if (op === "close" && typeof result?.outcome === "string") {
+    return { outcome: { result: result.outcome, panes: (Array.isArray(result.panes) ? result.panes : []).slice(0, 20).map((p: any) => ({ pane_id: p?.pane_id ?? null, agent: p?.agent ?? null, name: p?.name ?? null })) } };
+  }
   if (op !== "answer_agent") return {};
   const outcome: Record<string, unknown> = { answered: Boolean(result?.answered) };
   if (typeof result?.status === "string") outcome.status = result.status;

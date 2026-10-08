@@ -1,6 +1,6 @@
 {
   "name": "herdr-remote",
-  "version": "0.18.1",
+  "version": "0.19.0",
   "description": "Drive Herdr coding agents, terminal panes, files and shell commands on your Mac, your OVH server and your Synology from ChatGPT or Codex, through a private MCP server reached over the OpenAI Secure MCP Tunnel.",
   "author": {
     "name": "Ivor"

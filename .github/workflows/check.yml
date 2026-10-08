@@ -1,0 +1,27 @@
+# bun run check (typecheck and every test) on each push to main and each pull request,
+# as the pre-commit hook runs it locally. The MCP server and the issuer keep their own
+# dependencies, and the root test run includes their tests.
+name: check
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      # tests/pane-exec.test.ts runs its pane commands in zsh, as Herdr's panes do here.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q zsh
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+      - run: bun install --frozen-lockfile
+      - run: bun install --frozen-lockfile
+        working-directory: mcp
+      - run: bun install --frozen-lockfile
+        working-directory: issuer
+      - run: bun run check
