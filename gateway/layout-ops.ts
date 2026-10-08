@@ -196,8 +196,10 @@ export function layoutOps(g: Gateway): Record<string, Op> {
       const disposable = new Set(g.state.created("disposable"));
       for (const p of rec.panes) if (disposable.has(p.pane_id)) g.state.forget("disposable", p.pane_id);
     }
+    // A pane its tab's or workspace's close took: only that pane, not the others it took.
+    const panes = kind === "pane" ? rec.panes.filter((p) => p.pane_id === id) : rec.panes;
     return {
-      closed: kind, id, outcome: "already_closed", verified: true, closed_at: rec.at, closed_by: rec.by, panes: rec.panes,
+      closed: kind, id, outcome: "already_closed", verified: true, closed_at: rec.at, closed_by: rec.by, panes,
       note: note ?? `${kind} ${id} was already closed${rec.by ? ` (by ${rec.by})` : ""}; nothing else was closed`,
     };
   }

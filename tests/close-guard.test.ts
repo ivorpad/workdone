@@ -227,11 +227,16 @@ describe("close: a repeat is answered, not refused", () => {
   });
 
   test("a pane its workspace's close took, a workspace closed twice, and an ID that never existed", async () => {
-    const { gw, claim, closes } = setup();
+    const { gw, panes, claim, closes } = setup();
+    panes["wKR:p2"] = { pane_id: "wKR:p2", workspace_id: "wKR", tab_id: "wKR:t1", terminal_id: "term_r2", cwd: RELAY, agent_status: "unknown" };
     const lease = await claim(["wKR:p1"], "cleanup");
-    expect(await gw.request("close", { kind: "workspace", id: "wKR", lease, confirm: true })).toMatchObject({ outcome: "closed", panes: [{ pane_id: "wKR:p1", name: "relay-decisions-api-research" }] });
+    expect(await gw.request("close", { kind: "workspace", id: "wKR", lease, confirm: true }))
+      .toMatchObject({ outcome: "closed", panes: [{ pane_id: "wKR:p1", name: "relay-decisions-api-research" }, { pane_id: "wKR:p2", agent: null }] });
     expect(await gw.request("close", { kind: "workspace", id: "wKR", lease, confirm: true })).toMatchObject({ outcome: "already_closed" });
-    expect(await gw.request("close", { kind: "pane", id: "wKR:p1", lease, confirm: true })).toMatchObject({ outcome: "already_closed", closed_by: `lease …${lease.slice(-4)}` });
+    // A repeat for one of its panes names that pane only.
+    const again: any = await gw.request("close", { kind: "pane", id: "wKR:p1", lease, confirm: true });
+    expect(again).toMatchObject({ outcome: "already_closed", closed_by: `lease …${lease.slice(-4)}` });
+    expect(again.panes.map((p: any) => p.pane_id)).toEqual(["wKR:p1"]);
     expect(closes().length).toBe(1);
     await expect(gw.request("close", { kind: "pane", id: "wZZ:p9", lease, confirm: true })).rejects.toMatchObject({ code: "pane_not_found" });
   });
