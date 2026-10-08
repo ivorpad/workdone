@@ -20,7 +20,9 @@ const fake: CallGateway = async (machine, op, params) => {
     return { ok: true, result: { answered: 1 } };
   }
   if (op === "close" && params.confirm !== true) {
-    return { ok: false, error: { code: "needs_confirmation", message: `this closes pane ${params.id} (research ${params.id}), which is the owner's call: close only when they asked to close or clean it up; finished or prunable is not that`, details: { panes: [params.id] } } };
+    // w1:p8 answers as a gateway from 0.17 does, naming what it would close.
+    const targets = params.id === "w1:p8" ? [{ pane_id: "w1:p8", terminal_id: "term_8", agent: "claude", name: "research", session: "s-8" }] : undefined;
+    return { ok: false, error: { code: "needs_confirmation", message: `this closes pane ${params.id} (research ${params.id}), which is the owner's call: close only when they asked to close or clean it up; finished or prunable is not that`, details: { panes: [params.id], ...(targets ? { targets } : {}) } } };
   }
   if (op === "close") return { ok: true, result: { closed: params.kind, id: params.id } };
   if (op === "exec" && String(params.command).includes("git push") && params.confirm !== true) {
@@ -134,6 +136,22 @@ describe("confirm by click", () => {
     // The owner said "close it" in chat: confirm goes through with the call.
     await c.callTool({ name: "close", arguments: { ...close, confirm: true } });
     expect(calls.at(-1)).toEqual(["mac", "close", { kind: "pane", id: "w1:p9", lease: "L-abc123", confirm: true }]);
+    await c.close();
+  });
+
+  test("a held close is bound to the panes its card names, and a chat's expect reaches the gateway", async () => {
+    const c = await client();
+    const close = { machine: "mac", kind: "pane", id: "w1:p8", lease: "L-abc123" };
+    const targets = [{ pane_id: "w1:p8", terminal_id: "term_8", agent: "claude", name: "research", session: "s-8" }];
+    const r = (await c.callTool({ name: "close", arguments: close })) as any;
+    const { message, pending, targets: offered } = text(r).error;
+    expect(offered).toEqual(targets);
+    expect(message).toContain("pass these targets as expect");
+    await c.callTool({ name: "confirm_pending", arguments: { pending, approve: true } });
+    expect(calls.at(-1)).toEqual(["mac", "close", { kind: "pane", id: "w1:p8", lease: "L-abc123", expect: targets, confirm: true }]);
+    // The owner said "close the research agent" in chat.
+    await c.callTool({ name: "close", arguments: { ...close, confirm: true, expect: [{ pane_id: "w1:p8", agent: "claude", name: "research" }] } });
+    expect(calls.at(-1)).toEqual(["mac", "close", { kind: "pane", id: "w1:p8", lease: "L-abc123", confirm: true, expect: [{ pane_id: "w1:p8", agent: "claude", name: "research" }] }]);
     await c.close();
   });
 

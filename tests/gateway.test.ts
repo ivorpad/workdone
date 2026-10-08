@@ -29,7 +29,11 @@ const herdr: HerdrCall = async (method, params) => {
       if (!panes[params.target as string]?.agent) throw Object.assign(new Error("nope"), { code: "agent_not_found" });
       return { agent: panes[params.target as string] };
     case "pane.get":
+      if (!panes[params.pane_id as string]) throw Object.assign(new Error("gone"), { code: "pane_not_found" });
       return { pane: panes[params.pane_id as string] };
+    case "pane.close":
+      delete panes[params.pane_id as string];
+      return {};
     case "pane.split":
       return { pane: { pane_id: "w1:p9", cwd: params.cwd } };
     default:
@@ -93,6 +97,6 @@ describe("ops", () => {
     panes["w1:p9"] = { pane_id: "w1:p9", cwd: "/srv/allowed/app" };
     await expect(gw.handle("close", { kind: "pane", id: "w1:p9" })).rejects.toMatchObject({ code: "needs_confirmation" });
     await gw.handle("close", { kind: "pane", id: "w1:p9", confirm: true });
-    expect(sent.at(-1)).toEqual(["pane.close", { pane_id: "w1:p9" }]);
+    expect(sent).toContainEqual(["pane.close", { pane_id: "w1:p9" }]);
   });
 });

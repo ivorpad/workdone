@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Binding, CommandReceipt, Dispatch, Receipt } from "./coord.ts";
 
-export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json", "work.json"] as const;
+export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json", "work.json", "closed.json"] as const;
 const files = new Set<string>(STATE_FILES);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === "string");
@@ -31,6 +31,12 @@ function work(v: unknown, id: string) {
     && optional(v, "coord", c => object(c) && nonempty(c.objective) && nonempty(c.id))
     && optional(v, "last_turn", t => object(t) && timestamp(t.at) && ["finished", "failed", "question", "blocked", "gone"].includes(t.type)
       && ["inbox_id", "result_id"].every(k => optional(t, k, x => typeof x === "string")));
+}
+// closed.json (layout-ops.ts close): what WorkDone closed, so a repeat answers already_closed.
+function closedRecord(v: unknown) {
+  return object(v) && ["pane", "tab", "workspace"].includes(v.kind) && nonempty(v.id) && timestamp(v.at) && ["closing", "closed"].includes(v.status)
+    && nullableString(v.by) && Array.isArray(v.panes)
+    && v.panes.every((p: unknown) => object(p) && nonempty(p.pane_id) && ["terminal_id", "agent", "name", "session"].every(k => nullableString(p[k])));
 }
 const taskStatus = (v: unknown) => ["queued", "executing", "waiting_dependency", "verifying", "blocked", "complete"].includes(v as string);
 const record = (v: unknown, check: (v: unknown) => boolean) => object(v) && Object.values(v).every(check);
@@ -131,6 +137,7 @@ export function validateState(file: string, value: unknown) {
   else if (file === "supervisor.json") valid = object(value) && Object.values(value).every(v => object(v) && Array.isArray(v.turns) && Array.isArray(v.nudges));
   else if (file === "watch.json") valid = object(value) && Object.values(value).every(watched);
   else if (file === "work.json") valid = object(value) && Object.entries(value).every(([id, v]) => work(v, id));
+  else if (file === "closed.json") valid = Array.isArray(value) && value.every(closedRecord);
   if (!files.has(file) || !valid) throw new Error(`Invalid gateway state: ${file}`);
 }
 export function readState(dir: string, file: string): unknown {

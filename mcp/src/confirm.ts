@@ -106,14 +106,20 @@ export function holdIfGated(pending: PendingCalls, machine: string, op: string, 
   // Older gateways cannot bind a held answer to a menu. Do not create a card that
   // could approve a different command after the agent advances.
   if (op === "answer_agent" && !rest.expected_dialog_id) return res;
+  // A held close is bound to the panes the card names, as a held answer is to its menu:
+  // if they change before the click, the gateway refuses instead of closing something else.
+  // Older gateways send no targets; their card holds the bare call.
+  const targets = Array.isArray(res.error.details?.targets) ? res.error.details!.targets : null;
+  if (op === "close" && targets) rest.expect = targets;
   const id = pending.hold(machine, op, rest, reason, res.error.details?.menu);
   if (op === "close" || op === "remove_worktree") {
     return {
       ok: false,
       error: {
         code: "needs_confirmation",
-        message: `This call ${reason} and needs the owner's go-ahead. Call ${op} again with confirm: true only if they explicitly asked to close or clean this up; finished, prunable or prune_close is not that. Otherwise leave it open, or call request_confirmation with pending "${id}" to show an Approve button.`,
+        message: `This call ${reason} and needs the owner's go-ahead. Call ${op} again with confirm: true only if they explicitly asked to close or clean this up; finished, prunable or prune_close is not that${targets ? ", and pass these targets as expect so it closes only them" : ""}. Otherwise leave it open, or call request_confirmation with pending "${id}" to show an Approve button.`,
         pending: id,
+        ...(targets ? { targets } : {}),
       },
     };
   }

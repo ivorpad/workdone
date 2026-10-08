@@ -16,6 +16,9 @@ export const LEASE_RE = /^L-[a-z0-9]{6,12}$/;
 const LAPSE_MS = 24 * 3600_000;
 
 const newId = () => `L-${Math.random().toString(36).slice(2, 10)}`;
+// Set by Gateway.request on calls whose lease check ran, so an op can repeat it on its
+// last read (close). Calls between ops never pass a check and carry no mark.
+export const LEASE_CHECKED = Symbol("lease checked");
 export const live = (l: Lease, now: number) => now - Date.parse(l.used) < LAPSE_MS;
 
 // The ops that act on something, and where their pane comes from. "agent" targets
@@ -101,7 +104,12 @@ export function leaseOps(g: Gateway) {
     }
     const target = params[where.param];
     if (typeof target !== "string" || !TARGET_RE.test(target)) return null; // the op reports the bad param
-    const pane = await paneOf(target, where.as);
+    const pane = await paneOf(target, where.as).catch((err) => {
+      // A pane WorkDone already closed: close answers already_closed and touches nothing.
+      if (op === "close" && (err as GatewayError)?.code === "pane_not_found" && g.state.closedRecord("pane", target)) return null;
+      throw err;
+    });
+    if (!pane) return null;
     const leases = g.state.leases();
     const h = holder(leases, pane.pane_id);
     // A shell pane nobody holds is free to use; one with an agent must be in your lease.
@@ -110,6 +118,16 @@ export function leaseOps(g: Gateway) {
     if (!leases[id] || !live(leases[id]!, now())) throw new GatewayError("lease_unknown", `lease ${id} is not known on this machine or lapsed: call claim_agents again with this thread's agents`);
     if (h?.[0] !== id) throw notYours(pane.pane_id, h);
     return id;
+  }
+
+  // close, on its last read before the Herdr call: the pane may have changed hands or
+  // started an agent since check ran. An agent must be the caller's; a shell pane must
+  // not be another thread's.
+  function closeGuard(lease: unknown, pane: any) {
+    if (!g.cfg.leases) return;
+    const h = holder(g.state.leases(), pane.pane_id);
+    if (!h && !pane.agent) return;
+    if (!h || h[0] !== lease) throw notYours(pane.pane_id, h);
   }
 
   function notYours(paneId: string, h: [string, Lease] | null) {
@@ -267,5 +285,5 @@ export function leaseOps(g: Gateway) {
     });
   }
 
-  return { check, after, claim_agents, release_agents, lease_check, lease_list, labels, requireLive, dropIfEmpty };
+  return { check, after, closeGuard, claim_agents, release_agents, lease_check, lease_list, labels, requireLive, dropIfEmpty };
 }
