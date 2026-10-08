@@ -23,6 +23,14 @@ describe("owner's calls", () => {
     expect(gatedBy("rm -rf node_modules")).toBe("rm -rf");
     expect(gatedBy("wrangler deploy")).toBe("deploy");
   });
+  test("Alchemy deploys and destroys, deploy scripts and workflow dispatches are gated", () => {
+    for (const c of ["pnpm alchemy:deploy", "alchemy deploy --env-file ../../apps/web/.env.local", "bunx alchemy destroy", "pnpm --filter @relay/infra run deploy"]) {
+      expect(gatedBy(c)).toBe("deploy");
+    }
+    expect(gatedBy("gh workflow run eve-cf-staging.yml -f deploy=true")).toBe("gh workflow run");
+    for (const c of ["pnpm alchemy:plan", "alchemy dev", "gh workflow view ci.yml", "cat docs/deploy.md"]) expect(gatedBy(c)).toBeNull();
+    expect(goAhead(parseDialog(menu("pnpm alchemy:deploy"))!)).toBeNull();
+  });
   test("reads, tests and builds are not gated", () => {
     for (const c of ["git status --short", "git log --oneline -5", "git merge-base --is-ancestor a b", "git diff HEAD~1", "gh issue view 651", "gh pr list", "pnpm test", "bun run typecheck", "rm file.txt", "git fetch origin"]) {
       expect(gatedBy(c)).toBeNull();

@@ -14,8 +14,9 @@ const GATED: Array<[string, RegExp]> = [
   ["git clean", /\bgit\b[^\n;|&]*\bclean\b[^\n;|&]*\s-[a-z]*f/],
   ["gh write", /\bgh\s+(?:pr|issue|release)\s+(?:merge|create|close|reopen|comment|edit|delete|review)\b/],
   ["gh api write", /\bgh\s+api\b[^\n;|&]*(?:-X|--method)\s*(?:POST|PATCH|PUT|DELETE)\b/i],
+  ["gh workflow run", /\bgh\s+workflow\s+run\b/],
   ["rm -rf", /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/],
-  ["deploy", /\b(?:wrangler|vercel|flyctl|fly|netlify)\b[^\n;|&]*\b(?:deploy|--prod)\b|\bterraform\s+apply\b|\bkubectl\s+(?:apply|delete)\b/],
+  ["deploy", /\b(?:wrangler|vercel|flyctl|fly|netlify)\b[^\n;|&]*\b(?:deploy|--prod)\b|\bterraform\s+apply\b|\bkubectl\s+(?:apply|delete)\b|\balchemy\b[^\n;|&]*\b(?:deploy|destroy)\b|\b(?:pnpm|npm|bun|yarn)\b[^\n;|&]*\brun\s+(?:deploy|destroy)\b/],
 ];
 
 // What makes this text gated, or null. For a menu, its text (the command it asks
