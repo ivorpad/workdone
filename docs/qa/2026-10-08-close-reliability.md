@@ -83,7 +83,18 @@ Against `main` (same test file in a scratch worktree at `origin/main`): 0 pass, 
 
 CI: the repo had no workflow. `.github/workflows/check.yml` runs `bun run check` on ubuntu-latest with Bun 1.4.0 after installing zsh and the root, `mcp/` and `issuer/` dependencies. First run (37756982184): 844 pass, 7 fail, all in `tests/pane-exec.test.ts`, whose fake Herdr runs commands with zsh, missing on the runner. With zsh installed (run 37757216194): 851 pass, 0 fail.
 
-No real Herdr pane was opened or closed for this work. Herdr 0.9.3's not-found codes (`pane_not_found`, `tab_not_found`, `workspace_not_found`) were checked read-only with `herdr pane get` on an ID that does not exist.
+Herdr's not-found codes (`pane_not_found`, `tab_not_found`, `workspace_not_found`) were checked read-only with `herdr pane get` on an ID that does not exist.
+
+Live check before deploying (Mac, Herdr server 0.9.1): the new gateway code ran through its real stdin entry point with a scratch config whose only allowed root was an empty scratch directory, so no existing pane was visible to it. It made a throwaway shell workspace and then:
+
+| Call | Answer |
+| --- | --- |
+| `close` without confirm | `needs_confirmation`, "shell wMH:p1, in live-root" |
+| `confirm`, `expect` agent claude | `target_mismatch`; Herdr still shows the pane |
+| `confirm`, `expect` agent null | `outcome: closed`, `verified: true`; `herdr pane get` then says `pane_not_found` |
+| the same close again | `outcome: already_closed` |
+
+It found one bug the in-process tests could not: `herdr-gateway.ts` sent an error's details over the wire only for a menu, so `targets` never reached the MCP server and the approval card would have held the bare call. Fixed in 781b727 (`wireDetails`); rerun live, `targets` came back and closed a second scratch pane when replayed as `expect`. Both scratch workspaces are gone.
 
 ## Files
 
@@ -102,7 +113,7 @@ No real Herdr pane was opened or closed for this work. Herdr 0.9.3's not-found c
 | tests | `tests/close-guard.test.ts` (new), fakes in `tests/layout-agents.test.ts` and `tests/gateway.test.ts` now close for real, `mcp/test/confirm.test.ts`, `tests/approval-audit.test.ts` |
 | `.github/workflows/check.yml` | CI |
 
-Commits: a9809d6 (close), ba430e1 and b2a066c (CI), and the commit that adds this file.
+Commits: a9809d6 (close), ba430e1 and b2a066c (CI), 4b09fa2 (this file), 92661c5 (a repeat close names only the asked pane), 781b727 (close details over the wire).
 
 None of the files with another writer's uncommitted edits in the main checkout (console, inbox, MCP config and server, watch card) were touched. The work was done in a separate worktree on branch `close-reliability`.
 
