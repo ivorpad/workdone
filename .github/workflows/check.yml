@@ -14,6 +14,8 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      # tests/pane-exec.test.ts runs its pane commands in zsh, as Herdr's panes do here.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q zsh
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.0
