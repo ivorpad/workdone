@@ -303,6 +303,7 @@ export const TOOLS: Record<string, ToolDef> = {
       reply,
       role,
       task,
+      coordinator: z.boolean().optional().describe("The gateway puts a short coordinator note ahead of the first prompt: delegate large, separable work to the agent's own subagents (one level, separate files), and do small work itself. Pass false for one spawn that should work alone. Never added for a reviewer, or to prompt_agent or steer_agent."),
       disposable: z.boolean().optional().describe("Only when the owner said this agent is throwaway: its pane may then be closed without asking them. Default false: the pane stays open after the task until the owner asks to close it."),
     },
     annotations: WRITE,
@@ -556,7 +557,7 @@ const WATCHES = new Set(["prompt_agent", "supervisor_nudge", "spawn_agent", "sta
 // onWatch tells the notifier which machine to poll after an agent may have been put on its watch list.
 export function buildServer(call: CallGateway, machines: string[], defaultMachine: string, onWatch?: (machine: string) => void, events?: { service: EventsService; principal: EventPrincipal }, principal?: EventPrincipal): McpServer {
   const server = new McpServer(
-    { name: "herdr-remote", version: "0.15.0" },
+    { name: "herdr-remote", version: "0.16.0" },
     {
       instructions:
         `Controls Herdr terminal panes, coding agents, files and shell commands on the owner's machines (${machines.join(", ")}). ` +

@@ -25,7 +25,7 @@ Each gateway keeps `coord.json` in its state directory, written under the same l
   - While a dispatch is in flight or in doubt, nothing else goes to that pane through WorkDone, bound or plain. That includes a retry with a new `command_id`, and holds across a gateway restart. A report from the run, or `coord_update` with `dispatch: delivered | lost` on the task after reading the agent, settles it.
   - The same `command_id` and text again returns the recorded outcome without sending; other text under that id is `command_conflict`.
   - A settle for an attempt that was superseded meanwhile changes nothing.
-- **Readiness**: a prompt to a bound run executes its task, so it is refused with `deps_unmet` while any dependency is incomplete. That holds whether the prompt names the task or just goes to the pane bound to it. Binding with no prompt (`spawn_agent` without one) is still allowed. Prompts to agents with no binding are unchanged.
+- **Readiness**: a prompt to a bound run executes its task, so it is refused with `deps_unmet` while any dependency is incomplete. That holds whether the prompt names the task or just goes to the pane bound to it. Binding with no prompt (`spawn_agent` without one) is still allowed. Prompts to agents with no binding are unchanged, with one exception: the coordinator note on a spawn's first prompt (below).
 - **Slice at delivery**: every prompt WorkDone sends to a bound pane with an open task gets a bounded slice appended, read when the prompt goes in. The slice contains:
   - objective, task, run and generation, plus versions;
   - acceptance;
@@ -41,6 +41,15 @@ Each gateway keeps `coord.json` in its state directory, written under the same l
 - **State before acknowledgement**: a report is written under the lock before the command returns, and before any notification is sent. A `result` moves the task to `verifying`. That is not acceptance and not a push: the supervisor checks evidence against acceptance and merges `complete`.
 - **Missing report**: a bound worker whose turn ends (a final answer that asks a question in prose is a turn end too), or whose agent goes away, with no report since its last prompt gets `protocol: missing_report` or `worker_gone`. That is never complete. WorkDone doesn't re-prompt it, so it can't loop.
 - **Coordinator resume view**: `coord_snapshot` with `view: "resume"` returns ready, blocked by kind, needs acceptance, protocol problems, next actions and unacknowledged transitions. Evidence is given by count.
+
+## Coordinator note on spawn
+
+`spawn_agent` puts a short note ahead of its first prompt, bound or not: the agent is the coordinator for the task and delegates large work that splits into parts to its own subagents. This is the one place WorkDone changes an unbound prompt, so it is a setting and not a given. It is on by default; `"coordinatorNote": false` in `gateway.json` turns it off for the machine, and `coordinator: false` on a `spawn_agent` call for that spawn (the param wins over the config either way).
+
+- Only the first prompt of `spawn_agent`. `prompt_agent`, `steer_agent`, `start_agent`, a spawn with no prompt and a `role: "reviewer"` are never touched. The result says `coordinator: true | false`.
+- The note is chosen by `kind` (`gateway/coordinator.ts`): Claude Code's Agent (Task) tool and `.claude/agents`, Codex's and Cursor's subagents "if your build has them", OpenCode's Task tool. Any other kind, pi included, is told to use a subagent or task tool only if it has one. No kind is told to use a feature it may lack, and none is told to start other agent processes from a shell.
+- Limits in the note: delegate only large work, one level (subagents start no agents), a separate set of files per subagent, no rerun of a failed step, and small work done directly. The coordinator alone reports to the task and answers the owner, so the subagents hold no token. These are model instructions, as in docs/loop-risks.md: WorkDone does not see inside the agent's own subagents and cannot count them.
+- If the note would push the prompt over `maxPromptChars`, the prompt goes unchanged.
 
 ## Writes and retries
 

@@ -12,7 +12,7 @@ function parseTerminalApp(v: unknown): string | null {
   return v;
 }
 
-export const GATEWAY_VERSION = "0.17.0";
+export const GATEWAY_VERSION = "0.18.0";
 
 export const TARGET_RE = /^[A-Za-z0-9][A-Za-z0-9_:.-]{0,63}$/;
 export const AGENT_NAME_RE = /^[a-z][a-z0-9_-]{0,31}$/;
@@ -80,6 +80,7 @@ export interface GatewayConfig {
   notifyCommand: string[] | null;
   maxReadLines: number;
   maxPromptChars: number;
+  coordinatorNote: boolean;
   maxWaitMs: number;
   maxFileBytes: number;
   maxOutputBytes: number;
@@ -225,6 +226,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     notifyCommand,
     maxReadLines: clampInt(c.maxReadLines, 1, 2000, 400),
     maxPromptChars: clampInt(c.maxPromptChars, 1, 200_000, 20_000),
+    coordinatorNote: c.coordinatorNote !== false,
     maxWaitMs: clampInt(c.maxWaitMs, 1000, 600_000, 110_000),
     maxFileBytes: clampInt(c.maxFileBytes, 1024, 50_000_000, 2_000_000),
     maxOutputBytes: clampInt(c.maxOutputBytes, 1024, 1_000_000, 60_000),

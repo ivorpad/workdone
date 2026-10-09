@@ -9,6 +9,7 @@ import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-op
 import { inboxContext, newInboxId } from "./console-ops.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { dispatchSlice, paneTask, sendOutcome } from "./coord-ops.ts";
+import { withCoordinator } from "./coordinator.ts";
 import { approvalPolicy } from "./approval-policy.ts";
 import { attentionOf, screenReply } from "./attention.ts";
 import { parseDialog } from "./dialog.ts";
@@ -558,12 +559,14 @@ export function agentOps(g: Gateway): Record<string, Op> {
         out.note = "no time left to send the prompt: call prompt_agent";
       } else if (prompt) {
         const wait = optBool(params, "wait", false);
+        const framed = withCoordinator(kind, prompt, { enabled: optBool(params, "coordinator", g.cfg.coordinatorNote), role, max: g.cfg.maxPromptChars });
+        out.coordinator = framed !== null;
         try {
           // Herdr can report the pane idle a moment before the agent is registered under
           // its name (pi, behind its update notices): retry that for a few seconds.
           for (let attempt = 0; ; attempt++) {
             try {
-              out.prompt = await g.handle("prompt_agent", { target: paneId, text: prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease, task: params.task });
+              out.prompt = await g.handle("prompt_agent", { target: paneId, text: framed ?? prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease, task: params.task });
               break;
             } catch (err) {
               if (!(err instanceof GatewayError && err.code === "agent_not_ready") || attempt >= 30 || left() < 5000) throw err;

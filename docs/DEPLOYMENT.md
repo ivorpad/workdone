@@ -190,6 +190,7 @@ Backup first. Minimal changes to the example:
 - `worktreeRoot`: `null` in the example, or a folder inside the roots (checked whenever the config loads: outside them it fails to load). New worktrees go in `<worktreeRoot>/<repo key>/<branch>` (the repo's key in `repos`, so two repos with the same folder name don't collide) instead of next to their repo (`<repo>.worktrees/<branch>`). Set it when a repo is itself an allowed root: the folder next to it is then outside the roots, and its worktrees are refused with `path_not_allowed`.
 - `herdrSocketPath`: `<HERDR_SOCKET>` if it is not the default one.
 - `agentModels`: the example points at `~/.config/herdr-chatgpt/agent-models.json`. **If that file does not exist, the gateway does not start.** Either delete the key for now, or generate the file (§16.2).
+- `coordinatorNote`: optional, default `true`. `false` stops `spawn_agent` adding its coordinator note to first prompts on this machine (docs/coordination.md).
 - `agentKinds`: optional. Without it the gateway offers every agent CLI installed on the machine (`claude`, `codex`, `cursor`, `opencode`, `pi` and the other kinds Herdr knows). List them to offer fewer.
 - On Linux: `shell` (for example `/usr/bin/zsh` or `/bin/bash`) and `extraPath` (remove `/opt/homebrew/bin`).
 - All `allow*` capabilities stay `false` in the initial install.
