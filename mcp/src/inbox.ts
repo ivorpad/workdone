@@ -83,6 +83,8 @@ export interface WatchState {
   idle_until: string;
   active: boolean;
   ended?: string;
+  // How long the card keeps retrying after its polls start failing, from the server's config.
+  retry_window_s: number;
 }
 
 // What only the card holds, from the tool result's _meta.
@@ -163,6 +165,7 @@ export class Inbox {
       throw err;
     }
   }
+  retryWindowS = 1800;
   constructor(private now: () => number = Date.now, private busyMs = 30_000, private log: (line: string) => void = () => {}) {}
 
   // Which link a log line is about, without the credentials: the end of the watch id and of the lease.
@@ -416,6 +419,7 @@ export class Inbox {
       expires: new Date(w.expires).toISOString(),
       idle_until: new Date(w.idleUntil).toISOString(),
       active: !w.stopped,
+      retry_window_s: this.retryWindowS,
       ...(w.stopped ? { ended: w.stopped } : {}),
     };
   }

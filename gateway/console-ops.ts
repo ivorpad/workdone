@@ -68,22 +68,25 @@ export function consoleOps(g: Gateway): Record<string, Op> {
     async console_snapshot(params) {
       const attempt = async <T>(f: () => Promise<T>) => f().then((v) => ({ v, err: null as null | { code: string; message: string } }), (e) => ({ v: null as T | null, err: { code: String(e?.code ?? "error"), message: String(e?.message ?? e).slice(0, 300) } }));
       const ops = Array.isArray(params.audit_ops) && params.audit_ops.every((o) => typeof o === "string") ? (params.audit_ops as string[]).slice(0, 40) : undefined;
-      const [overview, supervisor, coord, leases, claims, audit] = await Promise.all([
+      const [overview, supervisor, coord, leases, claims, audit, owed] = await Promise.all([
         g.handle("overview", {}) as Promise<any>,
         attempt(() => g.handle("supervisor_status", {}) as Promise<any>),
         attempt(() => g.handle("coord_snapshot", { view: "resume" }) as Promise<any>),
         attempt(() => g.handle("lease_list", {}) as Promise<any>),
         attempt(() => g.handle("claims", {}) as Promise<any>),
         attempt(() => g.handle("audit_tail", { n: optInt(params, "audit_n", 1, 200) ?? 60, ...(ops ? { ops } : {}) }) as Promise<any>),
+        attempt(() => g.handle("owed_work", {}) as Promise<any>),
       ]);
       const errors: Record<string, { code: string; message: string }> = {};
-      for (const [name, r] of Object.entries({ supervisor, coord, leases, claims, audit })) if (r.err) errors[name] = r.err;
+      for (const [name, r] of Object.entries({ supervisor, coord, leases, claims, audit, owed })) if (r.err) errors[name] = r.err;
+      if (owed.v?.herdr_error) errors.owed = { code: owed.v.herdr_error, message: "Work records are available, but their agent status could not be refreshed." };
       const inbox = inboxView(g);
       const derived = derivedFinished(overview.agents ?? [], g.state.inbox(), g.leases.labels());
       return {
         agents: overview.agents ?? [], counts: overview.counts ?? {},
         supervisor: supervisor.v?.agents ?? [], objectives: coord.v?.objectives ?? [], leases: leases.v?.leases ?? [], claims: claims.v?.claims ?? [], audit: audit.v?.entries ?? [],
         inbox: { entries: [...derived, ...inbox.entries], pending: inbox.pending, unanswered: inbox.unanswered + derived.length },
+        owed: owed.v,
         errors,
       };
     },

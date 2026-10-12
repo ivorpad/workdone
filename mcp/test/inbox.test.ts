@@ -421,3 +421,13 @@ test("database lock during card replacement preserves the original credential an
     expect((await box.next(first.key.watch_id, first.key.cap, 0)).events).toHaveLength(1);
   } finally { other.close(); box.close(); }
 });
+
+describe("card retry window", () => {
+  test("a link's state carries the window the server is configured with", () => {
+    const box = new Inbox();
+    const before = opened(box, "mac", "L-abc123");
+    expect(box.state(before.key.watch_id)!.retry_window_s).toBe(1800);
+    box.retryWindowS = 600;
+    expect(box.state(before.key.watch_id)!.retry_window_s).toBe(600);
+  });
+});

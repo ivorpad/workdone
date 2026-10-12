@@ -41,11 +41,21 @@ describe("console_snapshot", () => {
     await g.request("claim_agents", { label: "Run watcher", targets: ["w1:p1"] });
     g.state.audit({ op: "prompt_agent", ok: true, args: { target: "w1:p1" } });
     const snap: any = await g.handle("console_snapshot", { audit_ops: ["prompt_agent"] });
-    expect(Object.keys(snap).sort()).toEqual(["agents", "audit", "claims", "counts", "errors", "inbox", "leases", "objectives", "supervisor"]);
+    expect(Object.keys(snap).sort()).toEqual(["agents", "audit", "claims", "counts", "errors", "inbox", "leases", "objectives", "owed", "supervisor"]);
     expect(snap.agents.map((a: any) => a.name)).toEqual(["worker-a", "worker-b"]);
     expect(snap.leases).toEqual([expect.objectContaining({ label: "Run watcher", panes: ["w1:p1"] })]);
     expect(snap.audit.map((e: any) => e.op)).toEqual(["prompt_agent"]);
     expect(snap.errors).toEqual({});
+  });
+  test("open work survives an agent's exit in the console snapshot", async () => {
+    const { g, agents } = setup();
+    g.state.updateWork((all) => {
+      all.wk_0123456789abcdef = { id: "wk_0123456789abcdef", pane_id: "w1:p1", session: "sa", agent: "worker-a", kind: "claude", lease: null, title: "Research the console", started_at: new Date().toISOString(), started_by: "spawn_agent", status: "open" };
+    });
+    agents.shift();
+    const snap: any = await g.handle("console_snapshot", {});
+    expect(snap.owed.items).toEqual([expect.objectContaining({ pane_id: "w1:p1", state: "gone", work: expect.objectContaining({ title: "Research the console" }) })]);
+    expect(g.state.work().wk_0123456789abcdef?.status).toBe("open");
   });
   test("a section that fails is reported and the rest still comes back", async () => {
     const { g } = setup();

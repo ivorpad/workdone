@@ -157,8 +157,10 @@ describe("console inbox", () => {
     expect(entries.find((e: any) => e.id === "f1").delivery).toMatchObject({ route: "none" });
     expect(entries.find((e: any) => e.id === "f1").delivery.text).toContain("undelivered");
     expect(entries.find((e: any) => e.id === "old").delivery.text).toBe("answered");
-    const needs = body.needs.filter((n: any) => n.kind === "inbox");
-    expect(needs.map((n: any) => n.title).sort()).toEqual(["alpha (w1:p1) finished", "beta (w1:p2) wrote to you"]);
+    const needs = body.needs.filter((n: any) => n.pane_id);
+    expect(needs).toHaveLength(2);
+    expect(needs.find((n: any) => n.pane_id === "w1:p1").related).toContain("alpha (w1:p1) finished: all done");
+    expect(needs.find((n: any) => n.pane_id === "w1:p2").related).toContain("beta (w1:p2) wrote to you: need a decision");
   });
   test("a chat subscribed to agent events makes an unheld agent's entry deliverable, in words, not as delivered", async () => {
     const t = setup({ inbox, wants: true });
@@ -244,7 +246,7 @@ describe("console state", () => {
     expect(mac.agents.find((a: any) => a.name === "beta").control).toEqual({ by: "thread", label: "Run watcher" });
     expect(mac.agents.find((a: any) => a.name === "alpha").control.by).toBe("none");
     expect(mac.claims[0].path).toBe("migrations/meta/_journal.json");
-    expect(body.needs.map((n: any) => n.kind)).toEqual(["menu", "human", "stalled", "result"]);
+    expect(body.needs.map((n: any) => n.kind)).toEqual(["menu", "human", "stalled"]);
     expect(body.needs[0].menu.options.map((o: any) => o.n)).toEqual([1, 2]);
     // An agent is named with its pane id, so two unnamed agents in one repo cannot be mixed up.
     expect(body.needs[0].title).toBe("alpha (w1:p1) shows a menu");
@@ -273,9 +275,65 @@ describe("console state", () => {
     expect(body.machines.mac.ok).toBe(false);
     expect(body.needs[0]).toMatchObject({ kind: "machine", machine: "mac" });
   });
+  test("an outage keeps the last observed agents and timestamp", async () => {
+    let offline = false;
+    const t = setup({ calls: (op) => offline && op === "console_snapshot" ? { ok: false, error: { code: "machine_offline", message: "not answering" } } : undefined });
+    const before: any = await (await t.req("/api/state")).json();
+    offline = true;
+    const after: any = await (await t.req("/api/state?fresh=1")).json();
+    expect(after.machines.mac.ok).toBe(false);
+    expect(after.machines.mac.agents).toEqual(before.machines.mac.agents);
+    expect(after.machines.mac.observed_at).toBe(before.machines.mac.observed_at);
+    expect(after.needs.map((n: any) => n.kind)).toEqual(["machine"]);
+  });
+  test("keeps partial errors and owed work for agents no longer in Herdr", async () => {
+    const owed = { items: [{ pane_id: "w2:p1", agent: "research", kind: "claude", status: "gone", state: "gone", work: { id: "wk_0123456789abcdef", title: "Compare designs" }, last_result: { summary: "Comparison ready" } }] };
+    const t = setup({ calls: (op) => op === "console_snapshot" ? { ok: true, result: { agents: [], owed, errors: { coord: { code: "read_failed", message: "Could not read objectives" } } } } : undefined });
+    const body: any = await (await t.req("/api/state")).json();
+    expect(body.machines.mac.errors.coord.code).toBe("read_failed");
+    expect(body.machines.mac.agents[0]).toMatchObject({ name: "research", record_only: true, owed: owed.items[0] });
+    expect(body.needs[0]).toMatchObject({ kind: "work", pane_id: "w2:p1", detail: "Comparison ready" });
+  });
+  test("a running agent owing a result does not need an owner action", () => {
+    const m: any = { ok: true, agents: [{ pane_id: "p", status: "working", watch: { result_pending: "r" } }], objectives: [], owed: { items: [{ pane_id: "p", state: "working", work: { id: "w" } }] } };
+    expect(buildNeeds({ mac: m }, {}, [])).toEqual([]);
+    m.owed.items[0].state = "open";
+    expect(buildNeeds({ mac: m }, {}, [])).toMatchObject([{ kind: "work", pane_id: "p" }]);
+  });
+  test("human blocker, question and work are one item with every reason retained", () => {
+    const m: any = { ok: true, agents: [{ pane_id: "p", name: "a", attention: "question", last_reply: { text: "Which target?" }, task: { objective: "o", id: "t" } }], objectives: [{ id: "o", blocked_human: [{ id: "t", blocker: "Choose target" }], needs_acceptance: [{ id: "t" }] }], owed: { items: [{ pane_id: "p", agent: "a", state: "needs_you", work: { id: "w", title: "Deploy" } }] } };
+    const needs = buildNeeds({ mac: m }, {}, []);
+    expect(needs).toHaveLength(1);
+    expect(needs[0]).toMatchObject({ kind: "human", detail: "Choose target", pane_id: "p" });
+    expect(needs[0]!.related).toHaveLength(2);
+  });
+});
+
+describe("console reply read", () => {
+  test("uses the transcript and falls back to the screen only when unavailable", async () => {
+    const t = setup({ calls: (op, p) => op === "read_agent" ? p.source === "reply" ? { ok: false, error: { code: "reply_unavailable", message: "no transcript" } } : { ok: true, result: { text: "screen answer" } } : undefined });
+    expect((await t.req("/api/agent?machine=mac&target=w1:p1", { login: null })).status).toBe(401);
+    expect((await t.req("/api/agent?machine=unknown&target=w1:p1")).status).toBe(400);
+    const result: any = await (await t.req("/api/agent?machine=mac&target=w1:p1")).json();
+    expect(result.result.text).toBe("screen answer");
+    expect(t.calls.map((c) => [c[1], c[2].source])).toEqual([["read_agent", "reply"], ["read_agent", "recent_unwrapped"]]);
+  });
+  test("does not retry a missing agent or an offline machine", async () => {
+    const t = setup({ calls: () => ({ ok: false, error: { code: "machine_offline", message: "offline" } }) });
+    const result: any = await (await t.req("/api/agent?machine=mac&target=w1:p1")).json();
+    expect(result.error.code).toBe("machine_offline");
+    expect(t.calls).toHaveLength(1);
+  });
 });
 
 describe("console actions", () => {
+  test("settles the specific work record as the owner without closing a pane", async () => {
+    const t = setup();
+    expect((await t.act({ action: "settle", machine: "mac", target: "w1:p1", outcome: "accepted" })).status).toBe(400);
+    const result: any = await (await t.act({ action: "settle", machine: "mac", target: "w1:p1", work_id: "wk_0123456789abcdef", outcome: "accepted" })).json();
+    expect(result.ok).toBe(true);
+    expect(t.calls).toEqual([["mac", "settle_work", { work_id: "wk_0123456789abcdef", outcome: "accepted", origin: "console" }]]);
+  });
   test("steering goes in as the console with no lease, so a thread that holds the agent keeps it", async () => {
     const t = setup();
     const steer: any = await (await t.act({ action: "steer", machine: "mac", target: "w1:p2", text: "use the cache" })).json();

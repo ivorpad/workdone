@@ -129,6 +129,12 @@ describe("OAuth resource authentication", () => {
 
 describe("OAuth and Events configuration", () => {
   const ssh = { user: "u", host: "host.example", identityFile: "/k", knownHostsFile: "/kh" };
+  test("link.retryWindowSeconds defaults to 30 minutes and is range-checked", () => {
+    expect(parseConfig({ ssh }).link.retryWindowSeconds).toBe(1800);
+    expect(parseConfig({ ssh, link: { retryWindowSeconds: 600 } }).link.retryWindowSeconds).toBe(600);
+    expect(() => parseConfig({ ssh, link: { retryWindowSeconds: 10 } })).toThrow(/retryWindowSeconds/);
+    expect(() => parseConfig({ ssh, link: { retryWindowSeconds: 1.5 } })).toThrow(/retryWindowSeconds/);
+  });
   test("no-auth tools fallback stays the default", () => {
     const fallback = parseConfig({ ssh });
     expect(fallback.auth).toBeNull();

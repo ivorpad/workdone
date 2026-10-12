@@ -7,6 +7,9 @@ import type { Report } from "../../gateway/watcher.ts";
 export interface MachineState {
   ok: boolean;
   error?: { code: string; message: string };
+  errors?: Record<string, { code: string; message: string }>;
+  observed_at?: string;
+  owed?: { items: any[] } | null;
   agents: any[];
   counts: Record<string, number>;
   objectives: any[];
@@ -40,7 +43,7 @@ export function deliveryOf(entry: { status: string; thread?: string | null; deri
 export interface Need {
   id: string;
   level: "act" | "check";
-  kind: "menu" | "approve" | "question" | "stalled" | "human" | "acceptance" | "machine" | "result" | "inbox";
+  kind: "menu" | "approve" | "question" | "stalled" | "human" | "acceptance" | "machine" | "work" | "inbox";
   machine: string;
   pane_id?: string;
   name?: string | null;
@@ -48,6 +51,7 @@ export interface Need {
   detail: string;
   menu?: { dialog_id?: string; kind?: string; go_ahead?: number | null; gated?: string; text: string; options: Array<{ n: number; label: string; free_text?: boolean }> };
   pending?: string;
+  related?: string[];
 }
 
 export interface ConsoleEvent {
@@ -98,9 +102,13 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
         const rec = s.recommendations?.[0];
         needs.push({ ...base, id: `stalled:${machine}:${a.pane_id}`, level: "check", kind: "stalled", title: `${who} is ${s.state === "stalled" ? "stalled" : "looping"}`, detail: clip(rec ? `${rec.action}: ${(rec.reasons ?? []).join(" ")}` : "", 300) });
       }
-      if (a.watch?.result_pending) {
-        needs.push({ ...base, id: `result:${machine}:${a.pane_id}`, level: "check", kind: "result", title: `${who} owes a result`, detail: "A reply: true result has not been delivered yet. read_agent has what it said so far." });
-      }
+    }
+    // A result still being produced is not an owner decision. Open work remains
+    // visible after a finish, a follow-up or the agent's exit.
+    for (const w of m.owed?.items ?? []) {
+      if (w.state === "working" || (!w.work && w.state !== "failed" && w.state !== "gone")) continue;
+      const verb = w.state === "failed" ? "failed" : w.state === "gone" ? "left work open" : w.state === "needs_you" ? "needs your answer" : "has work to review";
+      needs.push({ id: `work:${machine}:${w.work?.id ?? w.pane_id}`, level: w.state === "needs_you" ? "act" : "check", kind: "work", machine, pane_id: w.pane_id, name: w.agent, title: `${w.agent ?? w.pane_id} ${verb}`, detail: clip(w.task?.blocker ?? w.last_result?.summary ?? w.unanswered?.[0]?.text ?? w.work?.title, 400) });
     }
     // One need per agent for what it said and nobody answered, newest first: the owner should not have to tell ChatGPT an agent is done.
     const byPane = new Map<string, any[]>();
@@ -112,15 +120,28 @@ export function buildNeeds(machines: Record<string, MachineState>, supervisor: R
       needs.push({ id: `inbox:${machine}:${pane}`, level: "check", kind: "inbox", machine, pane_id: pane, name: e.agent ?? null, title: `${who} ${verb}${list.length > 1 ? ` (${list.length} unanswered)` : ""}`, detail: clip(e.text, 400) });
     }
     for (const o of m.objectives) {
-      for (const t of o.blocked_human ?? []) needs.push({ id: `human:${machine}:${o.id}:${t.id}`, level: "act", kind: "human", machine, title: `${o.id} ${t.id} needs a person`, detail: clip(t.blocker, 300) });
-      for (const t of o.needs_acceptance ?? []) needs.push({ id: `accept:${machine}:${o.id}:${t.id}`, level: "check", kind: "acceptance", machine, title: `${o.id} ${t.id} awaits acceptance`, detail: clip(t.result?.summary ?? t.title, 300) });
+      const paneFor = (id: string) => m.agents.find((a) => a.task?.objective === o.id && a.task?.id === id)?.pane_id;
+      for (const t of o.blocked_human ?? []) needs.push({ id: `human:${machine}:${o.id}:${t.id}`, level: "act", kind: "human", machine, pane_id: paneFor(t.id), title: `${o.id} ${t.id} needs a person`, detail: clip(t.blocker, 300) });
+      for (const t of o.needs_acceptance ?? []) {
+        if ((o.blocked_human ?? []).some((b: any) => b.id === t.id)) continue;
+        needs.push({ id: `accept:${machine}:${o.id}:${t.id}`, level: "check", kind: "acceptance", machine, pane_id: paneFor(t.id), title: `${o.id} ${t.id} awaits supervisor review`, detail: clip(t.result?.summary ?? t.title, 300) });
+      }
     }
   }
   for (const p of pending) {
     needs.push({ id: `approve:${p.pending}`, level: "act", kind: "approve", machine: p.machine, title: `Held ${p.op} on ${p.machine}: ${p.reason}`, detail: clip(p.detail, 600), pending: p.pending });
   }
-  const rank: Record<Need["kind"], number> = { menu: 0, approve: 1, human: 2, question: 3, inbox: 4, stalled: 5, result: 6, acceptance: 7, machine: 8 };
-  return needs.sort((x, y) => rank[x.kind] - rank[y.kind]);
+  const rank: Record<Need["kind"], number> = { menu: 0, approve: 1, human: 2, question: 3, stalled: 4, work: 5, inbox: 6, acceptance: 7, machine: 8 };
+  const grouped = new Map<string, Need>();
+  for (const n of needs.sort((x, y) => rank[x.kind] - rank[y.kind])) {
+    // Held approvals keep their own buttons. Other signals from one pane share a
+    // card, while retaining the separate reasons for opening it.
+    const key = n.pane_id && n.kind !== "approve" ? `${n.machine}:${n.pane_id}` : n.id;
+    const first = grouped.get(key);
+    if (!first) grouped.set(key, n);
+    else (first.related ??= []).push(`${n.title}${n.detail ? ": " + n.detail : ""}`);
+  }
+  return [...grouped.values()];
 }
 
 // Gateway ops worth a line in the feed. Reads and the notifier's own polling are left out.

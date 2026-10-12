@@ -136,9 +136,19 @@
   const HELD = "another card in this chat reopened the link after a WorkDone restart; that card brings the replies in";
   async function loop() {
     let fails = 0;
-    // Give up after this many errors in a row (about 15 minutes with the backoff): the
-    // link is not worth hammering a host that keeps failing.
-    const MAX_FAILS = 8;
+    // A closed laptop, a flaky tunnel or a host that suspended this frame all look like
+    // errors. The card keeps retrying, backing off to 60 s, for the window the server's
+    // config sets (link.retryWindowSeconds, sent in the link's state) or until the link
+    // itself expires, then stops and says to link again. A tab coming back or the network
+    // returning cuts the wait short. Only a server too old to send the window falls back
+    // to 30 minutes.
+    let failingSince = null;
+    let nap = null;
+    const sleep = (ms) => new Promise((r) => { nap = r; setTimeout(r, ms); });
+    const wakeNap = () => { if (nap) nap(); };
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) wakeNap(); });
+    window.addEventListener("online", wakeNap);
+    window.addEventListener("focus", wakeNap);
     // Events taken from the server but not yet in the chat. ChatGPT refuses ui/message
     // while it is still answering ("The composer is unavailable"), and the server hands
     // each event out once, so a refused wake is kept and sent again, never dropped. Events
@@ -179,11 +189,19 @@
       try {
         res = await request("tools/call", { name: "watch_next", arguments: { watch_id: key.watch_id, cap: key.cap } });
         fails = 0;
+        failingSince = null;
       } catch (e) {
         fails += 1;
-        if (fails >= MAX_FAILS) { stopped = true; show(watch, "stopped polling after " + fails + " errors (" + e.message + "). Ask ChatGPT to link again"); return; }
-        show(watch, "reconnecting (" + e.message + ")");
-        await new Promise((r) => setTimeout(r, Math.min(300000, 5000 * 2 ** (fails - 1))));
+        failingSince ??= Date.now();
+        const retryMs = (typeof watch.retry_window_s === "number" ? watch.retry_window_s : 1800) * 1000;
+        const linkEnds = Math.min(new Date(watch.expires).getTime(), new Date(watch.idle_until).getTime());
+        if (Date.now() - failingSince > retryMs || Date.now() > linkEnds) {
+          stopped = true;
+          show(watch, "stopped polling after " + Math.round((Date.now() - failingSince) / 60000) + " min of errors (" + e.message + "). Ask ChatGPT to link again");
+          return;
+        }
+        show(watch, "reconnecting (" + e.message + "), try " + fails);
+        await sleep(Math.min(60000, 5000 * 2 ** Math.min(fails - 1, 4)));
         continue;
       }
       const s = (res && res.structuredContent) || {};

@@ -235,6 +235,7 @@ export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (ma
 if (import.meta.main) {
   const path = process.env.HERDR_MCP_CONFIG ?? "/etc/herdr-mcp/ovh.json";
   const cfg = parseConfig(await Bun.file(path).json());
+  inbox.retryWindowS = cfg.link.retryWindowSeconds;
   inbox.persistTo(cfg.events ? `${cfg.events.statePath}.inbox.sqlite` : resolve(process.env.XDG_STATE_HOME ?? resolve(homedir(), ".local/state"), "workdone", "mcp-inbox.sqlite"));
   const call = sshGateway(cfg);
   const auth = cfg.auth ? new AuthService(cfg.auth, Object.keys(cfg.machines)) : undefined;

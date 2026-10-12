@@ -13,11 +13,11 @@ describe("finding the terminal app that hosts Herdr", () => {
     const out = ps([
       "    1     0 /sbin/launchd",
       " 8750     1 /Applications/Ghostty.app/Contents/MacOS/ghostty",
-      " 8754  8750 login -flp ivor /bin/zsh",
+      " 8754  8750 login -flp me /bin/zsh",
       " 8755  8754 -/bin/zsh",
       " 8836  8755 herdr",
       " 8837  8836 /opt/homebrew/bin/herdr server",
-      " 9702     1 /Users/ivor/.config/herdr/plugins/github/mirror/herdr-mirror daemon",
+      " 9702     1 /Users/me/.config/herdr/plugins/github/mirror/herdr-mirror daemon",
     ]);
     expect(findTerminalApp(out)).toBe("/Applications/Ghostty.app");
   });

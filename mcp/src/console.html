@@ -6,8 +6,8 @@
 <title>WorkDone Console</title>
 <style>
 :root{
-  --bg:#f4f5f7; --panel:#fff; --panel-2:#eceef2; --line:#d9dce3; --fg:#171a21; --muted:#5d6472;
-  --accent:#2f5bd8; --accent-soft:#e3eafc; --on-accent:#fff;
+  --bg:#f5f5f0; --panel:#fff; --panel-2:#f0f2ee; --line:#d9ddd6; --fg:#202922; --muted:#626b64;
+  --accent:#17644d; --accent-soft:#e6f2eb; --on-accent:#fff;
   --ok:#1f7a45; --ok-soft:#dff3e6; --warn:#9a5b00; --warn-soft:#fbecd0; --bad:#b3261e; --bad-soft:#fbe0dd; --idle:#6b7280; --idle-soft:#e6e8ec;
   --sans:system-ui,-apple-system,"Segoe UI",sans-serif; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
   color-scheme:light;
@@ -22,17 +22,17 @@ html,body{margin:0}
 body{background:var(--bg);color:var(--fg);font:14px/1.45 var(--sans)}
 button,textarea,input{font:inherit;color:inherit}
 button{cursor:pointer}
-.wrap{max-width:1320px;margin:0 auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.wrap{max-width:1440px;margin:0 auto;padding:28px 24px;display:flex;flex-direction:column;gap:20px}
 header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;justify-content:space-between}
-h1{font-size:18px;font-weight:650;margin:0}
+h1{font-size:24px;letter-spacing:-.7px;font-weight:700;margin:0}.subtitle{color:var(--muted);margin:3px 0 0;font-size:13px}
 .machines{display:flex;gap:6px;flex-wrap:wrap;font:12px var(--mono);color:var(--muted)}
 .machines span,.live{display:inline-flex;gap:6px;align-items:center;padding:2px 8px;border:1px solid var(--line);border-radius:999px;background:var(--panel)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--idle);display:inline-block}
 .dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
-.btn{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:4px 10px;font-size:13px}
+.btn{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:7px 12px;min-height:36px;font-size:13px}
 .btn:hover:not(:disabled){border-color:var(--accent)}
 .btn:disabled{opacity:.5;cursor:not-allowed}
-.btn:focus-visible,.row:focus-visible,.chip:focus-visible,textarea:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.btn:focus-visible,.row:focus-visible,.chip:focus-visible,textarea:focus-visible,input:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
 .btn.danger{color:var(--bad)}
 .pill{font:11px var(--mono);padding:1px 7px;border-radius:4px;white-space:nowrap;display:inline-block}
@@ -49,25 +49,28 @@ h1{font-size:18px;font-weight:650;margin:0}
 .needs li{padding:8px;border-radius:6px;display:grid;grid-template-columns:auto minmax(0,1fr);gap:4px 10px}
 .needs li+li{border-top:1px solid var(--line)}
 .needs b{font-weight:600}
-.needs .detail{color:var(--muted);overflow-wrap:anywhere;white-space:pre-wrap;font-size:13px}
+.needs .detail{color:var(--muted);overflow-wrap:anywhere;white-space:pre-wrap;font-size:13px;padding:2px 0}
 .needs .acts{grid-column:2;display:flex;gap:6px;flex-wrap:wrap}
 .menu{grid-column:2;font:12px var(--mono);background:var(--panel-2);border-radius:6px;padding:8px 10px;white-space:pre-wrap;overflow-wrap:anywhere;max-height:200px;overflow:auto}
-.main{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:12px;align-items:start}
-@media (max-width:900px){.main{grid-template-columns:minmax(0,1fr)}}
-.side{display:flex;flex-direction:column;gap:12px;min-width:0}
+.main{display:block}.side{display:grid;grid-template-columns:1fr 1fr;gap:12px;padding-top:12px;min-width:0}
 .chips{display:flex;gap:6px;flex-wrap:wrap;padding:0 14px 10px}
-.chip{border:1px solid var(--line);background:transparent;border-radius:999px;padding:2px 10px;font-size:12px}
+.chip{border:1px solid var(--line);background:transparent;border-radius:6px;padding:5px 10px;min-height:32px;font-size:12px}
 .chip[aria-pressed="true"]{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
 .group-h{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;padding:8px 14px;background:var(--panel-2);border-top:1px solid var(--line)}
 .group-h b{font-weight:600}.group-h span{font:11px var(--mono);color:var(--muted)}
-.row{display:grid;grid-template-columns:minmax(0,1.3fr) auto minmax(0,1fr);gap:4px 10px;align-items:center;padding:8px 14px;border:0;border-top:1px solid var(--line);border-left:3px solid transparent;width:100%;text-align:left;background:transparent}
+.row,.table-head{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1.5fr) minmax(0,1.3fr) minmax(110px,.7fr);gap:20px;padding:16px 20px;text-align:left}
+.row{align-items:start;border:0;border-top:1px solid var(--line);border-left:3px solid transparent;width:100%;background:transparent}
+.table-head{font-size:11px;font-weight:650;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);background:var(--panel-2);padding-top:10px;padding-bottom:10px;border-left:3px solid transparent}
 .row:hover{background:var(--panel-2)}
 .row[aria-selected="true"]{background:var(--accent-soft);border-left-color:var(--accent)}
 .row .nm{min-width:0}.row .nm b{font-weight:600;overflow-wrap:anywhere}
-.row .nm small{display:block;font:11px var(--mono);color:var(--muted);overflow-wrap:anywhere}
+.row small{display:block;font-size:12px;color:var(--muted);margin-top:5px;overflow-wrap:anywhere}.row .nm b{font-size:15px}.row .cell{min-width:0;overflow-wrap:anywhere}.row .cell-label{display:none}.row .summary{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.row .status-line{display:block;margin-bottom:6px}.row .muted{color:var(--muted)}
 .row .why{font-size:12.5px;color:var(--muted);min-width:0;overflow-wrap:anywhere}
 .row .why.bad{color:var(--bad)}.row .why.warn{color:var(--warn)}
-@media (max-width:560px){.row{grid-template-columns:minmax(0,1fr) auto}.row .why{grid-column:1/-1}}
+.toolbar{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:0 20px 14px}.toolbar .chips{padding:0}.search{border:1px solid var(--line);background:var(--panel);border-radius:6px;padding:6px 10px;width:240px;max-width:100%;font-size:13px;min-height:36px}
+.more{color:var(--muted);font-size:13px}.more>summary{cursor:pointer;padding:6px 0}.need-toggle{margin:0 14px 12px}.health{padding:10px 14px;background:var(--warn-soft);border-radius:6px;color:var(--warn);font-size:13px}.related{grid-column:2;color:var(--muted);font-size:12px}.related summary{cursor:pointer}.related p{margin:6px 0}
+dialog{width:min(720px,calc(100vw - 32px));max-height:calc(100dvh - 40px);padding:0;border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--fg);box-shadow:0 20px 100px #0003}dialog::backdrop{background:#15231c66}.dialog-head{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1}.dialog-head h2{margin:0;font-size:14px}dialog .detail{padding:20px;gap:16px}dialog .quote{max-height:360px;font:14px/1.6 var(--sans)}
+@media (max-width:760px){.wrap{padding:18px 12px;gap:14px}.table-head{display:none}.row{grid-template-columns:1fr;gap:12px;padding:16px}.row .cell-label{display:block;text-transform:uppercase;letter-spacing:.06em;font-size:10px;color:var(--muted);margin-bottom:4px}.row .nm small{display:inline-block;margin-right:8px}.row .cell:last-child:has(.no-need){display:none}.toolbar{padding:0 14px 14px}.search{width:100%}.side{grid-template-columns:1fr}.btn,.chip{min-height:44px}.row .summary{-webkit-line-clamp:3}dialog{width:100%;max-width:100%;height:100dvh;max-height:100dvh;border:0;border-radius:0;margin:0}dialog .detail{padding:16px}}
 .detail{padding:0 14px 14px;display:flex;flex-direction:column;gap:10px}
 .detail h3{margin:0;font-size:16px;font-weight:600;overflow-wrap:anywhere}
 dl{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:4px 14px;margin:0;font-size:13px}
@@ -98,32 +101,35 @@ textarea{width:100%;min-height:64px;resize:vertical;background:var(--bg);border:
 <body>
 <div class="wrap">
   <header>
-    <h1>WorkDone Console</h1>
+    <div><h1>WorkDone</h1><p class="subtitle" id="summary">Your agents, at a glance.</p></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
       <div class="machines" id="machines" aria-label="Machines"></div>
       <span class="live" id="live"><i class="dot"></i><span id="live-t">connecting</span></span>
       <button class="btn" id="refresh" type="button">Refresh</button>
     </div>
   </header>
+  <div class="health" id="health" role="status" hidden></div>
   <section class="panel needs" aria-labelledby="needs-h">
     <h2 id="needs-h"><span>Needs you</span><span id="needs-n" class="pill idle"></span></h2>
     <ul id="needs"></ul>
+    <button class="btn need-toggle" id="needs-more" type="button" aria-expanded="false" hidden>Show all</button>
   </section>
   <div class="main">
     <section class="panel" aria-labelledby="ag-h">
-      <h2 id="ag-h"><span>Agents by objective</span><span id="ag-n" class="pill idle"></span></h2>
-      <div class="chips" id="chips"></div>
+      <h2 id="ag-h"><span>All agents</span><span id="ag-n" class="pill idle"></span></h2>
+      <div class="toolbar"><div class="chips" id="chips"></div><input class="search" id="search" type="search" aria-label="Find an agent, repo or task" placeholder="Find agent, repo or task"></div>
+      <div class="table-head" aria-hidden="true"><span>Agent / repo</span><span>Doing now</span><span>Last result</span><span>Needs you</span></div>
       <div id="groups"></div>
     </section>
-    <div class="side">
+  </div>
+  <details class="more"><summary>Messages, objectives &amp; recent activity</summary><div class="side">
       <section class="panel" aria-labelledby="ib-h"><h2 id="ib-h"><span>Inbox <span id="ib-n" class="pill idle"></span></span><span><button class="chip" id="ib-all" type="button" aria-pressed="false">Show answered</button></span></h2><div id="inbox-note" class="hint" style="padding:0 14px 6px" hidden></div><div class="feed" id="inbox"></div></section>
-      <section class="panel" aria-labelledby="dt-h"><h2 id="dt-h">Selected agent</h2><div class="detail" id="detail"></div></section>
       <section class="panel" aria-labelledby="ob-h"><h2 id="ob-h">Objectives</h2><div id="objectives"></div></section>
       <section class="panel" aria-labelledby="cl-h"><h2 id="cl-h">Singleton files held</h2><div id="claims"></div></section>
       <section class="panel" aria-labelledby="fd-h"><h2 id="fd-h"><span>Who touched what</span><button class="chip" id="flagged" type="button" aria-pressed="false">Flagged only</button></h2><div class="feed" id="feed"></div></section>
-    </div>
-  </div>
+    </div></details>
 </div>
+<dialog id="agent-dialog" aria-labelledby="dt-h"><div class="dialog-head"><h2 id="dt-h">Agent details</h2><button class="btn" id="detail-close" type="button">Close</button></div><div class="detail" id="detail"></div></dialog>
 <div class="toast" id="toast" hidden role="status"></div>
 <script>
 "use strict";
@@ -135,22 +141,31 @@ let feed = [];           // events, oldest first
 let sel = null;          // "machine:pane_id"
 let filter = "all";
 let flaggedOnly = false;
+let needsExpanded = false;
+let connectionOk = false;
+let detailRead = null;
 const drafts = {};       // textarea text kept across redraws
 const armedClose = {};   // pane keys whose Close was clicked once
 const key = (m, p) => m + ":" + p;
 // An unnamed agent is told apart by its terminal title; the pane id is always shown beside it.
 const label = (a) => a.name || a.title || a.pane_id;
-const agents = () => S ? Object.entries(S.machines).flatMap(([m, ms]) => (ms.agents || []).map((a) => ({ ...a, machine: m }))) : [];
+const agents = () => S ? Object.entries(S.machines).flatMap(([m, ms]) => (ms.agents || []).map((a) => ({ ...a, machine: m, stale: !ms.ok, observed_at: ms.observed_at }))) : [];
 
 function toast(msg, bad) {
-  const t = $("toast"); t.textContent = msg; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false;
+  const t = $("toast"); ($("agent-dialog").open ? $("agent-dialog") : document.body).append(t);
+  t.textContent = msg; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false;
   clearTimeout(toast.t); toast.t = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 3500);
 }
 
 async function post(body) {
-  const res = await fetch("/api/act", { method: "POST", headers: { "content-type": "application/json", "x-workdone-console": "1" }, body: JSON.stringify(body) });
-  const out = await res.json().catch(() => ({ ok: false, error: { code: "bad_response", message: "the console answered with something that is not JSON" } }));
-  return out;
+  if (S?.machines[body.machine]?.ok === false) return { ok: false, error: { code: "unavailable", message: "Refresh the connection before acting on this machine." } };
+  try {
+    const res = await fetch("/api/act", { method: "POST", headers: { "content-type": "application/json", "x-workdone-console": "1" }, body: JSON.stringify(body) });
+    return await res.json().catch(() => ({ ok: false, error: { code: "bad_response", message: "the console answered with something that is not JSON" } }));
+  } catch {
+    setLive(false);
+    return { ok: false, error: { code: "connection_lost", message: "Could not confirm this action. Refresh to check its outcome." } };
+  }
 }
 async function act(body, done) {
   const out = await post(body);
@@ -175,8 +190,10 @@ async function load(fresh) {
   } catch (e) { setLive(false, String(e.message || e)); }
 }
 function setLive(on, why) {
+  connectionOk = on;
   $("live").querySelector(".dot").className = "dot " + (on ? "ok" : "bad");
-  $("live-t").textContent = on ? "live" : "reconnecting" + (why ? " (" + clip(why, 40) + ")" : "");
+  $("live-t").textContent = on ? "connected" : "reconnecting" + (why ? " (" + clip(why, 40) + ")" : "");
+  if (S) renderMachines();
 }
 
 function render() {
@@ -188,16 +205,27 @@ function render() {
 
 function renderMachines() {
   $("machines").innerHTML = Object.entries(S.machines).map(([m, s]) => {
-    const n = s.ok ? (s.agents || []).length + " agents" : "offline";
-    return '<span><i class="dot ' + (s.ok ? "ok" : "bad") + '"></i>' + esc(m) + " · " + esc(n) + "</span>";
+    const partial = Object.keys(s.errors || {}).length > 0;
+    const n = !s.ok ? "unavailable" : partial ? "partial" : "updated " + (ago(s.observed_at) || "now");
+    return '<span><i class="dot ' + (!s.ok ? "bad" : partial ? "warn" : "ok") + '"></i>' + esc(m) + " · " + esc(n) + "</span>";
   }).join("");
+  const issues = Object.entries(S.machines).flatMap(([m, s]) => !s.ok ? [m + ": " + (s.error?.message || "not answering") + (s.observed_at ? ". Showing data from " + ago(s.observed_at) : "")] : Object.entries(s.errors || {}).map(([part, e]) => m + " · " + part + ": " + e.message));
+  if (!connectionOk) issues.unshift("Connection interrupted. Displayed information may be stale.");
+  $("health").hidden = !issues.length;
+  $("health").textContent = issues.join(" · ");
+  const all = agents();
+  $("summary").textContent = all.filter((a) => !a.record_only).length + " agents · " + all.filter(FILTERS.working).length + " working · " + all.filter((a) => a.owed?.work).length + " work open";
 }
 
 function renderNeeds() {
   const list = S.needs || [];
+  $("needs-more").hidden = list.length <= 3;
+  $("needs-more").textContent = needsExpanded ? "Show fewer" : "Show all " + list.length;
+  $("needs-more").setAttribute("aria-expanded", String(needsExpanded));
   $("needs-n").textContent = list.length ? list.length + (list.length === 1 ? " item" : " items") : "none";
   if (!list.length) { $("needs").innerHTML = '<li><div class="empty" style="grid-column:1/-1;padding:4px 8px">Nothing is waiting on you.</div></li>'; return; }
-  $("needs").innerHTML = list.map((n, i) => {
+  $("needs").innerHTML = (needsExpanded ? list : list.slice(0, 3)).map((n, i) => {
+    const a = agents().find((a) => a.machine === n.machine && a.pane_id === n.pane_id);
     const target = n.pane_id ? ' data-m="' + esc(n.machine) + '" data-p="' + esc(n.pane_id) + '"' : "";
     let body = "";
     if (n.kind === "menu" && n.menu) {
@@ -209,50 +237,89 @@ function renderNeeds() {
       body += '<div class="acts"><button type="button" class="btn primary" data-approve="' + esc(n.pending) + '">Approve</button><button type="button" class="btn" data-decline="' + esc(n.pending) + '">Decline</button></div>';
     } else if (n.pane_id) {
       if (n.kind === "inbox") body += '<div class="acts"><button type="button" class="btn" data-reply="' + esc(key(n.machine, n.pane_id)) + '">Reply</button><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button><button type="button" class="btn" data-dismiss="' + esc(JSON.stringify({ m: n.machine, p: n.pane_id })) + '">Dismiss all</button></div>';
-      else body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button><button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button></div>';
+      else body += '<div class="acts"><button type="button" class="btn" data-open="' + esc(key(n.machine, n.pane_id)) + '">Open</button>' + (a && !a.record_only ? '<button type="button" class="btn" data-focus="' + esc(key(n.machine, n.pane_id)) + '">Focus pane</button>' : '') + '</div>';
     }
+    if (n.related?.length) body += '<details class="related"><summary>' + n.related.length + ' related update' + (n.related.length === 1 ? "" : "s") + '</summary>' + n.related.map((r) => '<p>' + esc(r) + '</p>').join("") + '</details>';
     return "<li" + target + '><span class="pill ' + esc(n.level) + '">' + (n.level === "act" ? "act" : "check") + '</span><div><b>' + esc(n.title) + '</b><div class="detail">' + (n.kind === "menu" ? "" : esc(n.detail)) + "</div></div>" + body + "</li>";
   }).join("");
 }
 
 const FILTERS = {
   all: () => true,
+  working: (a) => a.status === "working" && !a.stale && a.task?.status !== "waiting_dependency" && !a.task?.blocker && !["dialog", "question"].includes(a.attention),
+  owed: (a) => !!a.owed?.work,
   needs: (a) => (S.needs || []).some((n) => n.machine === a.machine && n.pane_id === a.pane_id),
   blocked: (a) => a.status === "blocked" || a.attention === "dialog",
   stalled: (a) => a.supervisor && (a.supervisor.state === "stalled" || a.supervisor.state === "repetitive_loop"),
 };
 function renderChips() {
-  const defs = [["all", "All"], ["needs", "Needs you"], ["blocked", "Blocked"], ["stalled", "Stalled"]];
+  const defs = [["all", "All"], ["working", "Working"], ["needs", "Needs you"], ["owed", "Work open"]];
   const all = agents();
   $("chips").innerHTML = defs.map(([k, l]) => '<button type="button" class="chip" data-f="' + k + '" aria-pressed="' + (filter === k) + '">' + l + " " + all.filter(FILTERS[k]).length + "</button>").join("");
 }
 function why(a) {
-  const sup = a.supervisor && a.supervisor.recommendations && a.supervisor.recommendations[0];
+  if (a.stale) return ["Last known state. Machine unavailable.", "warn"];
+  if (a.owed?.state === "failed") return ["Last turn failed", "bad"];
+  if (a.record_only) return [a.status === "left" ? "Outside allowed roots. Work remains open." : "Agent unavailable. Work remains open.", "warn"];
+  if (a.task?.blocker) return [a.task.blocker, a.task.blocker_kind === "human" ? "bad" : "warn"];
+  if (a.task?.status === "waiting_dependency") return ["Waiting for " + (a.task.unmet_deps?.join(", ") || "a dependency or resource"), ""];
   if (a.attention === "dialog") return ["Waiting on a menu", "bad"];
   if (a.attention === "question") return ["Asked you something", "warn"];
-  if (a.supervisor && (a.supervisor.state === "stalled" || a.supervisor.state === "repetitive_loop")) return [a.supervisor.state + (sup ? ": " + sup.action : ""), "warn"];
-  if (a.task) return [a.task.objective + " " + a.task.id + " · " + a.task.status, ""];
-  return [clip(a.last_reply && a.last_reply.text, 90) || "", ""];
+  const running = a.last_reply?.in_progress;
+  if (running) return [running.interrupted ? "Turn interrupted" : running.latest_text || running.prompt || "Working", running.interrupted ? "warn" : ""];
+  if (a.status === "working") return [a.screen_tail || "Working. No activity text available.", ""];
+  if (a.task?.status === "verifying") return ["Awaiting supervisor review", ""];
+  return [a.status === "done" ? "Turn finished" : a.task?.status === "queued" ? "Queued" : "Idle", ""];
 }
 function pill(a) {
+  if (a.stale) return '<span class="pill warn">stale</span>';
+  if (a.owed?.state === "failed") return '<span class="pill bad">failed</span>';
+  if (a.task?.status === "waiting_dependency") return '<span class="pill idle">waiting</span>';
   if (a.attention === "dialog") return '<span class="pill blocked">menu</span>';
   if (a.attention === "question") return '<span class="pill warn">question</span>';
-  if (a.supervisor && a.supervisor.state === "stalled") return '<span class="pill stalled">stalled</span>';
+  if (a.supervisor && ["stalled", "repetitive_loop"].includes(a.supervisor.state)) return '<span class="pill stalled">' + (a.supervisor.state === "stalled" ? "stalled" : "looping") + '</span>';
   return '<span class="pill ' + esc(a.status || "unknown") + '">' + esc(a.status || "unknown") + "</span>";
 }
 function renderGroups() {
-  const list = agents().filter(FILTERS[filter]);
+  const query = $("search").value.toLowerCase().trim();
+  const list = agents().filter(FILTERS[filter]).filter((a) => !query || [label(a), a.machine, a.cwd, a.git?.branch, a.task?.objective, a.task?.id, a.owed?.work?.title].join(" ").toLowerCase().includes(query));
   $("ag-n").textContent = list.length + " of " + agents().length;
-  const names = [...new Set(list.map((a) => (a.task && a.task.objective) || "No objective"))];
-  $("groups").innerHTML = list.length ? names.map((o) => {
-    const g = list.filter((a) => ((a.task && a.task.objective) || "No objective") === o);
-    return '<div class="group-h"><b>' + esc(o) + "</b><span>" + g.length + " agent" + (g.length === 1 ? "" : "s") + "</span></div>" + g.map((a) => {
+  $("groups").innerHTML = list.length ? list.map((a) => {
       const [w, c] = why(a);
       const k = key(a.machine, a.pane_id);
-      const ctl = a.control && a.control.by === "thread" ? "thread: " + clip(a.control.label, 24) : "";
-      return '<button type="button" class="row" data-open="' + esc(k) + '" aria-selected="' + (k === sel) + '"><div class="nm"><b>' + esc(label(a)) + "</b><small>" + esc(a.pane_id) + " · " + esc(a.machine) + " · " + esc(a.agent || "") + (ctl ? " · " + esc(ctl) : "") + "</small></div>" + pill(a) + '<div class="why ' + c + '">' + esc(w) + "</div></button>";
-    }).join("");
+      const result = a.last_reply?.text || a.owed?.last_result?.summary || a.watch?.last_result?.summary || "";
+      const at = a.last_reply?.at || a.owed?.work?.last_turn?.at || a.watch?.last_event?.at;
+      const need = (S.needs || []).find((n) => n.machine === a.machine && n.pane_id === a.pane_id);
+      const needText = need ? ({ menu: "Answer menu", question: "Answer question", human: "Decision needed", stalled: "Check progress", work: a.owed?.state === "failed" ? "Review failure" : "Review work", inbox: "Read update", acceptance: "Supervisor review" }[need.kind] || "Review") : "";
+      const repo = [a.cwd?.split("/").filter(Boolean).at(-1), a.git?.branch, typeof a.git?.changed === "number" ? a.git.changed ? a.git.changed + " changed" : "clean" : ""].filter(Boolean).join(" · ");
+      return '<button type="button" class="row" data-open="' + esc(k) + '" aria-haspopup="dialog"><span class="nm cell"><b>' + esc(label(a)) + '</b><small>' + esc(a.machine + " · " + (a.agent || "agent")) + '</small><small>' + esc(repo || a.pane_id) + '</small></span>' +
+        '<span class="cell"><span class="cell-label">Doing now</span><span class="status-line">' + pill(a) + '</span><span class="summary why ' + c + '">' + esc(clip(w, 180)) + '</span>' + (a.task ? '<small>' + esc(a.task.objective + " / " + a.task.id) + '</small>' : '') + '</span>' +
+        '<span class="cell"><span class="cell-label">Last result</span><span class="summary ' + (result ? '' : 'muted') + '">' + esc(clip(result, 160) || "No result yet") + '</span><small>' + esc(ago(at)) + '</small></span>' +
+        '<span class="cell"><span class="cell-label">Needs you</span>' + (needText ? '<span class="pill warn">' + esc(needText) + '</span>' : '<span class="no-need muted">—</span>') + (a.owed?.work ? '<small>Work open</small>' : '') + '</span></button>';
   }).join("") : '<div class="empty">No agents match this filter.</div>';
+}
+
+async function openAgent(k, reply = false) {
+  sel = k; detailRead = null; renderDetail();
+  if (!$("agent-dialog").open) $("agent-dialog").showModal();
+  if (reply) $("send")?.focus();
+  const a = agents().find((x) => key(x.machine, x.pane_id) === k);
+  if (!a || a.stale || a.record_only) return;
+  try {
+    const res = await fetch("/api/agent?" + new URLSearchParams({ machine: a.machine, target: a.pane_id }));
+    const out = await res.json();
+    if (sel !== k) return;
+    detailRead = out.ok ? { key: k, result: out.result } : { key: k, error: out.error?.message || "Reply unavailable" };
+    renderReply(a);
+  } catch { if (sel === k) { detailRead = { key: k, error: "Could not read the full reply." }; renderReply(a); } }
+}
+
+function renderReply(a) {
+  const box = $("reply-text"); if (!box) return;
+  const r = detailRead?.key === key(a.machine, a.pane_id) ? detailRead : null;
+  const data = r?.result;
+  box.textContent = data?.reply?.text || data?.text || a.dialog || a.last_reply?.text || a.owed?.last_result?.summary || a.owed?.unanswered?.[0]?.text || a.screen_tail || "No reply yet.";
+  $("reply-note").textContent = r?.error || (a.stale ? "Saved preview. Machine unavailable." : data?.reply?.truncated ? "Reply truncated by the gateway." : data?.text ? "Read from the terminal screen." : a.record_only ? "Saved result. The agent is no longer available." : r ? "Reply read when opened." : "Loading full reply…");
 }
 
 function renderDetail() {
@@ -263,25 +330,29 @@ function renderDetail() {
   const ctl = a.control || { by: "none" };
   const controlHtml = ctl.by === "thread" ? '<div><b>ChatGPT thread</b> “' + esc(ctl.label) + '” holds this agent</div><div class="hint">Your messages go in as the owner and do not take it from that thread.</div>' : '<div><b>No ChatGPT thread</b> holds this agent</div>';
   const working = a.status === "working", menu = a.attention === "dialog";
-  const canSend = !menu;
+  const reachable = !a.stale && !a.record_only;
+  const canSend = !menu && reachable;
   const sendLabel = working ? "Steer" : "Send prompt";
   const hint = menu ? "The agent shows a menu. Answer it under Needs you first." : ctl.by === "thread" ? "Sent as the owner, over the thread that holds it. The message says it came from the console." : working ? "Queued until the agent's current tool call ends." : "Starts a new turn.";
   const sup = a.supervisor && a.supervisor.recommendations && a.supervisor.recommendations[0];
-  const canNudge = sup && sup.action === "nudge_ship_slice";
+  const canNudge = reachable && sup && sup.action === "nudge_ship_slice";
   const d = drafts[k] || {};
   box.innerHTML =
     '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;align-items:center"><div><h3>' + esc(label(a)) + '</h3><div class="hint">' + esc(a.pane_id + " on " + a.machine) + "</div></div>" + pill(a) + "</div>" +
     '<div class="control">' + controlHtml + "</div>" +
     "<dl><dt>Machine</dt><dd class=m>" + esc(a.machine) + " · " + esc(a.pane_id) + "</dd><dt>CLI</dt><dd class=m>" + esc(a.agent || "") + (a.watch && a.watch.launch ? " · " + esc([a.watch.launch.model, a.watch.launch.effort].filter(Boolean).join(" ")) : "") + "</dd>" +
     (a.task ? "<dt>Task</dt><dd>" + esc(a.task.objective + " " + a.task.id + " · " + a.task.status + (a.task.blocker ? " · blocked: " + a.task.blocker : "")) + "</dd>" : "") +
-    (a.git ? "<dt>Git</dt><dd class=m>" + esc([a.git.branch, a.git.clean === false ? (a.git.changed || "?") + " changed" : a.git.clean ? "clean" : ""].filter(Boolean).join(" · ")) + "</dd>" : "") +
+    (a.git ? "<dt>Git</dt><dd class=m>" + esc([a.git.branch, typeof a.git.changed === "number" ? a.git.changed ? a.git.changed + " changed" : "clean" : ""].filter(Boolean).join(" · ")) + "</dd>" : "") +
     (sup ? "<dt>Supervisor</dt><dd>" + esc(a.supervisor.state + ": " + sup.action) + "</dd>" : "") +
     "<dt>Directory</dt><dd class=m>" + esc(a.cwd || "") + "</dd></dl>" +
-    '<div class="quote">' + esc(clip(a.dialog || (a.last_reply && a.last_reply.text) || (a.screen_tail || ""), 1200) || "No reply yet.") + "</div>" +
+    '<div><b>Doing now</b><p class="hint">' + esc(why(a)[0]) + '</p></div><div><b>Last reply</b><div class="quote" id="reply-text"></div><div class="hint" id="reply-note"></div></div>' +
+    (a.owed?.work ? '<div class="control"><div><b>Work still open</b><div class="hint">' + esc(a.owed.work.title) + '</div><div class="hint">Acceptance records your decision. It does not close the pane or clear a task blocker.</div></div><div class="row-acts"><button class="btn" data-settle="accepted" data-work="' + esc(a.owed.work.id) + '"' + (a.stale ? ' disabled' : '') + '>Accept work</button><button class="btn" data-settle="dropped" data-work="' + esc(a.owed.work.id) + '"' + (a.stale ? ' disabled' : '') + '>Drop work</button></div></div>' : '') +
     '<div class="field"><label for="send">Message to ' + esc(label(a)) + " (" + esc(a.pane_id) + ')</label><textarea id="send" data-draft="' + esc(k) + ':send"' + (canSend ? "" : " disabled") + ">" + esc(d.send || "") + '</textarea><div class="row-acts"><button type="button" class="btn primary" id="send-btn" data-send="' + esc(k) + '"' + (canSend ? "" : " disabled") + ">" + sendLabel + " to " + esc(a.pane_id) + '</button>' +
     (canNudge ? '<button type="button" class="btn" data-nudge="' + esc(k) + '">Send the one nudge</button>' : "") + '</div><div class="hint">' + esc(hint) + "</div></div>" +
     '<div class="field"><label for="note">Note for the chat (about this agent)</label><textarea id="note" data-draft="' + esc(k) + ':note">' + esc(d.note || "") + '</textarea><div class="row-acts"><button type="button" class="btn" data-note="' + esc(k) + '">Leave note</button></div><div class="hint" id="note-result">Goes to the chat that holds this agent. It says below whether anything can deliver it.</div></div>' +
-    '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '">Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '">' + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
+    '<div class="row-acts"><button type="button" class="btn" data-focus="' + esc(k) + '"' + (reachable ? '' : ' disabled') + '>Focus pane in Herdr</button><button type="button" class="btn danger" data-close="' + esc(k) + '"' + (reachable ? '' : ' disabled') + '>' + (armedClose[k] ? "Click again to close" : "Close pane") + "</button></div>";
+  if (!reachable) { $("note").disabled = true; box.querySelector("[data-note]").disabled = true; }
+  renderReply(a);
 }
 
 let showAnswered = false;
@@ -341,6 +412,7 @@ function renderFeed() {
 
 document.addEventListener("input", (ev) => {
   const t = ev.target;
+  if (t.id === "search") { renderGroups(); return; }
   if (t && t.dataset && t.dataset.draft) { const [k, f] = [t.dataset.draft.replace(/:(send|note)$/, ""), t.dataset.draft.split(":").pop()]; (drafts[k] = drafts[k] || {})[f] = t.value; }
 });
 const split = (k) => { const i = k.indexOf(":"); return [k.slice(0, i), k.slice(i + 1)]; };
@@ -348,11 +420,18 @@ document.addEventListener("click", async (ev) => {
   const t = ev.target.closest("button"); if (!t) return;
   const d = t.dataset;
   if (d.f) { filter = d.f; renderChips(); renderGroups(); return; }
-  if (d.open) { sel = d.open; renderGroups(); renderDetail(); return; }
+  if (d.open) { await openAgent(d.open); return; }
+  if (t.id === "detail-close") { $("agent-dialog").close(); return; }
+  if (t.id === "needs-more") { needsExpanded = !needsExpanded; renderNeeds(); return; }
   if (t.id === "refresh") { await load(true); return; }
   if (t.id === "flagged") { flaggedOnly = !flaggedOnly; t.setAttribute("aria-pressed", String(flaggedOnly)); renderFeed(); return; }
   if (t.id === "ib-all") { showAnswered = !showAnswered; t.setAttribute("aria-pressed", String(showAnswered)); t.textContent = showAnswered ? "Hide answered" : "Show answered"; renderInbox(); return; }
-  if (d.reply) { sel = d.reply; render(); const box = $("send"); if (box) box.focus(); return; }
+  if (d.reply) { await openAgent(d.reply, true); return; }
+  if (d.settle) {
+    const [m, p] = split(sel);
+    await act({ action: "settle", machine: m, target: p, work_id: d.work, outcome: d.settle }, () => { $("agent-dialog").close(); toast(d.settle === "accepted" ? "Work accepted. Pane left open." : "Work dropped. Pane left open."); });
+    return;
+  }
   if (d.dismiss) { const x = JSON.parse(d.dismiss); await act({ action: "dismiss", machine: x.m, target: x.p, ...(x.i ? { id: x.i } : {}) }, () => toast("Dismissed.")); return; }
   if (d.focus) { const [m, p] = split(d.focus); await act({ action: "focus", machine: m, target: p }, () => toast("Focused in Herdr on " + m + ".")); return; }
   if (d.send) {
@@ -373,7 +452,7 @@ document.addEventListener("click", async (ev) => {
   if (d.close) {
     if (!armedClose[d.close]) { armedClose[d.close] = true; renderDetail(); setTimeout(() => { delete armedClose[d.close]; renderDetail(); }, 5000); return; }
     delete armedClose[d.close]; const [m, p] = split(d.close);
-    await act({ action: "close", machine: m, target: p }, () => { toast("Closed."); sel = null; });
+    await act({ action: "close", machine: m, target: p }, () => { toast("Closed."); sel = null; $("agent-dialog").close(); });
     return;
   }
   if (d.approve || d.decline) { const id = d.approve || d.decline; await act({ action: "confirm", machine: S.pending.find((x) => x.pending === id)?.machine || Object.keys(S.machines)[0], pending: id, approve: !!d.approve }, () => toast(d.approve ? "Approved and run." : "Declined.")); return; }

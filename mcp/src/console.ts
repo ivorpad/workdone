@@ -94,8 +94,10 @@ export function createConsole(deps: ConsoleDeps) {
   const ceiling = deps.pollMaxMs ?? 60_000;
   // Gateways from before console_snapshot, and when to ask them again.
   const legacy = new Map<string, number>();
+  const lastGood = new Map<string, MachineState>();
   const RECHECK_MS = 5 * 60_000;
   const emptyState = (error?: { code: string; message: string }): MachineState => ({ ok: !error, ...(error ? { error } : {}), agents: [], counts: {}, objectives: [], claims: [], leases: [], inbox: { entries: [], pending: [], unanswered: 0 } });
+  const unavailable = (machine: string, error: { code: string; message: string }) => ({ state: { ...(lastGood.get(machine) ?? emptyState()), ok: false, error }, supervisor: {} });
 
   // One gateway call per machine. A gateway without the op (deployed before it) is read the old way, six calls, and says so.
   async function readMachine(machine: string): Promise<{ state: MachineState; supervisor: Record<string, any> }> {
@@ -103,7 +105,7 @@ export function createConsole(deps: ConsoleDeps) {
     if (since === undefined || now() - since > RECHECK_MS) {
       const snap = await call(machine, "console_snapshot", { audit_n: 60, audit_ops: [...TOUCH] });
       if (snap.ok) { legacy.delete(machine); return fromSnapshot(machine, snap.result as any); }
-      if (snap.error.code !== "unknown_operation") return { state: emptyState({ code: snap.error.code, message: snap.error.message }), supervisor: {} };
+      if (snap.error.code !== "unknown_operation") return unavailable(machine, snap.error);
       legacy.set(machine, now());
     }
     return await readLegacy(machine);
@@ -123,8 +125,14 @@ export function createConsole(deps: ConsoleDeps) {
     ingestAudit(machine, r.audit);
     const events = deps.wantsMessages?.(machine) ?? false;
     const entries = (r.inbox?.entries ?? []).map((e: any) => ({ ...e, delivery: deliveryOf(e, events) }));
-    const agents = (r.agents ?? []).map((a: any) => ({ ...a, control: controlOf(a.pane_id, leaseRows), supervisor: supervisor[a.pane_id] ?? null }));
-    return { supervisor, state: { ok: true, agents, counts: r.counts ?? {}, objectives: r.objectives ?? [], claims: r.claims ?? [], leases: leaseRows, inbox: { entries, pending: r.inbox?.pending ?? [], unanswered: r.inbox?.unanswered ?? 0 } } };
+    const owed = r.owed ?? null;
+    const live = r.agents ?? [];
+    const missing = (owed?.items ?? []).filter((w: any) => !live.some((a: any) => a.pane_id === w.pane_id))
+      .map((w: any) => ({ pane_id: w.pane_id, name: w.agent, agent: w.kind, cwd: w.cwd, status: w.status, task: w.task, record_only: true }));
+    const agents = [...live, ...missing].map((a: any) => ({ ...a, owed: owed?.items?.find((w: any) => w.pane_id === a.pane_id) ?? null, control: controlOf(a.pane_id, leaseRows), supervisor: supervisor[a.pane_id] ?? null }));
+    const state: MachineState = { ok: true, observed_at: new Date(now()).toISOString(), errors: r.errors ?? {}, owed, agents, counts: r.counts ?? {}, objectives: r.objectives ?? [], claims: r.claims ?? [], leases: leaseRows, inbox: { entries, pending: r.inbox?.pending ?? [], unanswered: r.inbox?.unanswered ?? 0 } };
+    lastGood.set(machine, state);
+    return { supervisor, state };
   }
 
   async function readLegacy(machine: string): Promise<{ state: MachineState; supervisor: Record<string, any> }> {
@@ -132,7 +140,7 @@ export function createConsole(deps: ConsoleDeps) {
       call(machine, "overview", {}), call(machine, "supervisor_status", {}), call(machine, "coord_snapshot", { view: "resume" }),
       call(machine, "lease_list", {}), call(machine, "claims", {}), call(machine, "audit_tail", { n: 60, ops: [...TOUCH] }),
     ]);
-    if (!overview.ok) return { state: emptyState({ code: overview.error.code, message: overview.error.message }), supervisor: {} };
+    if (!overview.ok) return unavailable(machine, overview.error);
     const r = {
       agents: (overview.result as any)?.agents ?? [], counts: (overview.result as any)?.counts ?? {}, supervisor: sup.ok ? (sup.result as any)?.agents : [],
       objectives: coord.ok ? (coord.result as any)?.objectives : [], leases: leaseList.ok ? (leaseList.result as any)?.leases : [], claims: claims.ok ? (claims.result as any)?.claims : [],
@@ -165,7 +173,7 @@ export function createConsole(deps: ConsoleDeps) {
   // What changed, as a string: the state without the clock, the feed, or a lease's last-used time.
   function fingerprint(body: any): string {
     const { at: _at, events: _events, ...rest } = body;
-    return JSON.stringify(rest, (k, v) => (k === "used" ? undefined : v));
+    return JSON.stringify(rest, (k, v) => (k === "used" || k === "observed_at" ? undefined : v));
   }
 
   // Looks only while a page is open. Fast while things change, slower each quiet look, fast again on any report or click.
@@ -276,6 +284,12 @@ export function createConsole(deps: ConsoleDeps) {
         log("dismiss", `${res.ok ? "dismissed" : `dismiss refused (${res.error.code}):`} ${id ? "a message from" : "messages from"} ${target}`, false);
         break;
       }
+      case "settle": {
+        if (typeof body.work_id !== "string" || !/^wk_[a-f0-9]{16}$/.test(body.work_id) || !["accepted", "dropped"].includes(body.outcome)) return { status: 400, body: fail("invalid_params", "work_id and outcome accepted or dropped are required") };
+        res = await call(machine, "settle_work", { work_id: body.work_id, outcome: body.outcome, origin: CONSOLE });
+        log("settle", `${res.ok ? body.outcome : "settle refused:"} work ${body.work_id}`, !res.ok);
+        break;
+      }
       case "focus":
         // Brings the agent's pane to the front in Herdr on that machine. It changes no steering, so it takes no lease.
         res = await call(machine, "focus", { kind: "agent", id: target });
@@ -303,6 +317,14 @@ export function createConsole(deps: ConsoleDeps) {
       return new Response(HTML, { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" } });
     }
     if (url.pathname === "/api/state" && req.method === "GET") return json(await state(url.searchParams.get("fresh") === "1"));
+    if (url.pathname === "/api/agent" && req.method === "GET") {
+      const machine = url.searchParams.get("machine") ?? "";
+      const target = url.searchParams.get("target") ?? "";
+      if (!machines.includes(machine) || !TARGET.test(target)) return json(fail("invalid_params", "valid machine and target required"), 400);
+      let result = await call(machine, "read_agent", { target, source: "reply" });
+      if (!result.ok && result.error.code === "reply_unavailable") result = await call(machine, "read_agent", { target, source: "recent_unwrapped", lines: 120 });
+      return json(result);
+    }
     if (url.pathname === "/api/events" && req.method === "GET") {
       let off = () => {};
       let beat: ReturnType<typeof setInterval> | undefined;

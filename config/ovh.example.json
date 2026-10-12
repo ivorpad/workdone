@@ -22,5 +22,6 @@
   },
   "defaultMachine": "mac",
   "console": { "port": 8790, "ownerLogins": ["you@example.com"] },
+  "link": { "retryWindowSeconds": 1800 },
   "requestTimeoutMs": 130000
 }

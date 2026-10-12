@@ -17,7 +17,7 @@ const fake: CallGateway = async (machine, op, params) => {
   calls.push([machine, op, params]);
   if (op === "screenshot" && machine === "ovh") return { ok: false, error: { code: "capability_disabled", message: "screenshots need macOS" } };
   if (String(params.path).endsWith("big.png")) return { ok: false, error: { code: "too_large", message: "image is 4000000 bytes; the limit is 3000000" } };
-  return { ok: true, result: { path: "/Users/ivor/src/tries/shot.png", size: 9, modified: "2026-10-06T07:00:00.000Z", kind: "image", image: { mime: "image/png", data: PNG } } };
+  return { ok: true, result: { path: "/Users/me/src/tries/shot.png", size: 9, modified: "2026-10-06T07:00:00.000Z", kind: "image", image: { mime: "image/png", data: PNG } } };
 };
 const handler = createHandler(cfg, fake);
 
@@ -41,7 +41,7 @@ describe("show_image", () => {
     expect(r.isError).toBe(false);
     expect(r.content[1]).toEqual({ type: "image", data: PNG, mimeType: "image/png" });
     expect(r._meta[IMAGE_META]).toEqual({ mime: "image/png", data: PNG });
-    expect(r.structuredContent).toEqual({ machine: "ovh", path: "/Users/ivor/src/tries/shot.png", size: 9, mime: "image/png", see: SEE_IMAGE });
+    expect(r.structuredContent).toEqual({ machine: "ovh", path: "/Users/me/src/tries/shot.png", size: 9, mime: "image/png", see: SEE_IMAGE });
     expect(JSON.stringify(r.structuredContent)).not.toContain(PNG);
     await c.close();
   });
