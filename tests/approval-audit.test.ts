@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { auditDetail, auditOutcome } from "../gateway/herdr-gateway.ts";
+import { auditDetail, auditOutcome, wireDetails } from "../gateway/herdr-gateway.ts";
 
 const before = "a".repeat(64);
 const next = "b".repeat(64);
@@ -27,4 +27,15 @@ test("a close is audited with what it took and what the caller meant", () => {
     .toEqual({ outcome: { result: "closed", panes: [{ pane_id: "wKR:p1", agent: "codex", name: "research" }] } });
   expect(auditDetail({ kind: "pane", id: "wKV:p2", expect: [{ pane_id: "wKV:p2", agent: "claude", name: null, session: "s" }], even_if_working: true }))
     .toMatchObject({ expect: [{ pane_id: "wKV:p2", agent: "claude", name: null }], even_if_working: true });
+});
+
+test("an error's details cross the wire only as checked menu and close fields", () => {
+  const dialog = "a".repeat(64);
+  expect(wireDetails({ dialog_id: dialog, menu: "1. Yes" })).toEqual({ dialog_id: dialog, menu: "1. Yes" });
+  expect(wireDetails({ dialog_id: "not a hash", menu: "1. Yes" })).toBeUndefined();
+  // close: what it would take, for the approval card to bind to; what stayed open.
+  const target = { pane_id: "wKV:p2", terminal_id: "term_v2", agent: "claude", name: null, session: "s-v2", status: "idle", cwd: "/private" };
+  expect(wireDetails({ panes: ["wKV:p2"], targets: [target] })).toEqual({ panes: ["wKV:p2"], targets: [{ pane_id: "wKV:p2", terminal_id: "term_v2", agent: "claude", name: null, session: "s-v2" }] });
+  expect(wireDetails({ still_open: ["wKV:p2"], secret: "x" })).toEqual({ still_open: ["wKV:p2"] });
+  expect(wireDetails({ targets: [{ terminal_id: "no pane id" }] })).toBeUndefined();
 });

@@ -60,6 +60,26 @@ export function auditOutcome(op: string, result: any): Record<string, unknown> {
   return { outcome };
 }
 
+// The details an error carries over the wire, each checked: a menu's identity and text for a
+// held answer, and for close the panes it would take or took (pane IDs and identity strings,
+// so the approval card can bind its click to them) and those still open. Nothing else leaves.
+export function wireDetails(details: unknown): Record<string, unknown> | undefined {
+  const d = details as Record<string, unknown> | undefined;
+  if (!d || typeof d !== "object") return undefined;
+  const out: Record<string, unknown> = {};
+  if (typeof d.dialog_id === "string" && /^[a-f0-9]{64}$/.test(d.dialog_id)) {
+    out.dialog_id = d.dialog_id;
+    if (typeof d.menu === "string") out.menu = d.menu;
+  }
+  const ids = (v: unknown) => Array.isArray(v) && v.length <= 50 && v.every((x) => typeof x === "string" && x.length <= 64);
+  for (const k of ["panes", "still_open"]) if (ids(d[k])) out[k] = d[k];
+  const keys = ["pane_id", "terminal_id", "agent", "name", "session"];
+  if (Array.isArray(d.targets) && d.targets.length <= 50 && d.targets.every((t) => !!t && typeof t === "object" && typeof t.pane_id === "string")) {
+    out.targets = d.targets.map((t: any) => Object.fromEntries(keys.map((k) => [k, typeof t[k] === "string" ? t[k].slice(0, 200) : null])));
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function audit(cfg: GatewayConfig | undefined, entry: Record<string, unknown>) {
   if (cfg) new StateStore(cfg.stateDir).audit(entry);
 }
@@ -137,7 +157,8 @@ async function handleLine(gateway: Gateway, cfg: GatewayConfig, line: string) {
     const e = err instanceof GatewayError ? err : new GatewayError("internal_error", (err as Error).message ?? String(err));
     const details = e.details as { dialog_id?: unknown; menu?: unknown } | undefined;
     audit(cfg, { id, op: typeof op === "string" ? op.slice(0, 64) : null, ok: false, code: e.code, args: auditDetail(params), ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { dialog_id: details.dialog_id } : {}), ms: Date.now() - started });
-    respond({ id, ok: false, error: { code: e.code, message: e.message, ...(typeof details?.dialog_id === "string" && /^[a-f0-9]{64}$/.test(details.dialog_id) ? { details: { dialog_id: details.dialog_id, ...(typeof details.menu === "string" ? { menu: details.menu } : {}) } } : {}) } });
+    const wired = wireDetails(e.details);
+    respond({ id, ok: false, error: { code: e.code, message: e.message, ...(wired ? { details: wired } : {}) } });
   }
 }
 
