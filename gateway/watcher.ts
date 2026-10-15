@@ -228,7 +228,7 @@ const read = (herdr: HerdrCall, paneId: string, source: string) =>
 // bottom of the screen. ended: a Cursor turn that ended other than success.
 async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<{ text: string | null; ended: boolean }> {
   for (let attempt = 0; ; attempt++) {
-    const reply = await agentReply(cfg, agent);
+    const reply = await agentReply(cfg, agent, { herdr });
     if (!reply) break;
     const p = reply.in_progress;
     if (!p) return { text: reply.ended ? `[${reply.ended}] ${reply.text}` : reply.text, ended: !!reply.ended };

@@ -28,28 +28,33 @@ describe("Codex rollouts on disk", () => {
   const old = place("2026/10/14", "rollout-2026-10-14T11-00-00-01a14000-0000-7000-8000-000000000000.jsonl", "codex-rollout-old.jsonl", 1000);
   place("2026/10/15", "rollout-2026-10-15T18-00-00-01a14200-0000-7000-8000-000000000002.jsonl", "codex-exec.jsonl", 4000);
 
+  // The agent started on the 14th: both day folders are candidates (local time, as Codex names them).
+  const since = new Date(2026, 9, 14, 9).toISOString();
+  const now = new Date(2026, 9, 15, 19).getTime();
   test("the pane's rollouts are the TUI threads for its cwd, newest first; codex exec is not one", () => {
-    expect(codexRollouts([root], CWD)).toEqual([
+    expect(codexRollouts([root], CWD, { since: Date.parse(since), now })).toEqual([
       { path: current, id: "01a14100-0000-7000-8000-000000000001" },
       { path: old, id: "01a14000-0000-7000-8000-000000000000" },
     ]);
   });
   test("the answered question turn, the turn in progress, and what Codex injected left out", async () => {
-    const reply = await agentReply({ ...none, codexSessionRoots: [root] }, { agent: "codex", cwd: CWD, foreground_cwd: CWD });
+    const reply = await agentReply({ ...none, codexSessionRoots: [root] }, { agent: "codex", cwd: CWD, foreground_cwd: CWD }, { since });
     expect(reply).toMatchObject({
       text: "ANIMAL=dog",
       at: "2026-10-15T15:10:27.500Z",
       in_reply_to: "Use request_user_input to ask which animal I prefer, cat, dog or bird. Then reply ANIMAL=<answer>.",
       in_progress: { prompt: "Run the tests and tell me how many pass.", latest_text: "I'll run bun test now.", interrupted: false },
-      ref: { kind: "codex_rollout", path: current, session: "01a14100-0000-7000-8000-000000000001" },
+      ref: { kind: "codex_rollout", path: current, session: "01a14100-0000-7000-8000-000000000001", match: "cwd" },
     });
+    // The running turn asked nothing; the answered one's question shows with its answer.
+    expect(reply!.questions).toEqual([{ title: "Which animal do you prefer?", options: ["cat", "dog", "bird"], answers: ["dog"] }]);
     // Neither the AGENTS.md block nor the answer Codex echoes as a user item is a prompt.
     expect(reply!.in_reply_to).not.toContain("AGENTS.md");
     expect(reply!.text).not.toContain("question_reply");
   });
   test("the prompt just sent picks the older thread it belongs to", async () => {
-    const reply = await agentReply({ ...none, codexSessionRoots: [root] }, { agent: "codex", cwd: CWD }, { freshFor: "Say OLD." });
-    expect(reply).toMatchObject({ text: "OLD", matches_prompt: true, ref: { path: old } });
+    const reply = await agentReply({ ...none, codexSessionRoots: [root] }, { agent: "codex", cwd: CWD }, { freshFor: "Say OLD.", since });
+    expect(reply).toMatchObject({ text: "OLD", matches_prompt: true, ref: { path: old, match: "cwd" } });
   });
 });
 
@@ -84,6 +89,7 @@ describe("opencode database on disk", () => {
     t.close();
     const reply = await agentReply({ ...none, opencodeDb: trimmed }, { agent: "opencode", cwd: CWD });
     expect(reply).toMatchObject({ text: "FRUIT=Pear", in_reply_to: expect.stringContaining("which fruit"), at: "2026-10-15T15:41:10.000Z", in_progress: null });
+    expect(reply!.questions).toEqual([{ title: "Which fruit?", header: "Fruit choice", options: ["Apple", "Pear", "Plum"], answers: ["Pear"] }]);
   });
 });
 

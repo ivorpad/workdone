@@ -1,11 +1,13 @@
 // Codex, opencode and pi transcripts. Fixtures are synthesized in the shape each CLI writes.
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, utimesSync, writeFileSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, readFileSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { HerdrCall } from "../gateway/config.ts";
 import {
-  agentReply, codexRollouts, findCodexReply, findOpencodeReply, findPiReply, findPiSession, piSlug, readOpencode, type OpencodeMessage,
+  CODEX_OPEN_MAX, agentReply, codexCandidates, codexRollouts, codexStats, findCodexReply, findOpencodeReply, findPiReply, findPiSession, openRollouts, piSlug, readOpencode,
+  type OpencodeMessage,
 } from "../gateway/transcript.ts";
 
 const none = { transcriptRoots: [], cursorTranscriptRoots: [], codexSessionRoots: [], opencodeDb: null, piSessionRoots: [] };
@@ -59,33 +61,117 @@ describe("findCodexReply", () => {
   });
 });
 
+describe("Codex questions", () => {
+  const asks = (...titles: string[]) => ({
+    type: "response_item", payload: { type: "function_call", name: "request_user_input_async", call_id: "c1", arguments: JSON.stringify({ questions: titles.map((title) => ({ title, options: ["cat", "dog", "bird"] })) }) },
+  });
+  const answered = (question: string, answer: string) => user(`<send_user_message_question_reply>\n${JSON.stringify([{ answer, question }])}\n</send_user_message_question_reply>`);
+  test("request_user_input_async's questions ride on the turn, with the answer once it came back", () => {
+    const open = [started(), user("ask me which animal"), asks("Which animal do you prefer?")];
+    expect(findCodexReply(open, 1000)).toMatchObject({ text: "", in_progress: { prompt: "ask me which animal" }, questions: [{ title: "Which animal do you prefer?", options: ["cat", "dog", "bird"] }] });
+    expect(findCodexReply(open, 1000)!.questions![0]!.answers).toBeUndefined();
+    const done = [...open, answered("Which animal do you prefer?", "dog"), answer("ANIMAL=dog"), complete("ANIMAL=dog")];
+    expect(findCodexReply(done, 1000)).toMatchObject({ text: "ANIMAL=dog", in_progress: null, questions: [{ title: "Which animal do you prefer?", answers: ["dog"] }] });
+    // The next turn has none.
+    expect(findCodexReply([...done, started(), user("now say hi"), answer("hi"), complete("hi")], 1000)!.questions).toBeUndefined();
+  });
+  test("bad arguments are ignored", () => {
+    const bad = { type: "response_item", payload: { type: "function_call", name: "request_user_input_async", arguments: "{not json" } };
+    expect(findCodexReply([started(), user("go"), bad, answer("ok"), complete("ok")], 1000)!.questions).toBeUndefined();
+  });
+});
+
 describe("Codex rollouts", () => {
-  const write = (root: string, day: string, name: string, entries: any[], mtime: number) => {
-    const dir = join(root, ...day.split("/"));
+  // A rollout named as Codex names it, in its local-time day folder, for a thread id.
+  const at = (d: number, h: number, m = 0) => new Date(2026, 9, d, h, m, 0);
+  const write = (root: string, when: Date, id: string, entries: any[]) => {
+    const two = (n: number) => String(n).padStart(2, "0");
+    const dir = join(root, "2026", two(when.getMonth() + 1), two(when.getDate()));
     mkdirSync(dir, { recursive: true });
-    const path = join(dir, `rollout-${name}.jsonl`);
+    const path = join(dir, `rollout-2026-${two(when.getMonth() + 1)}-${two(when.getDate())}T${two(when.getHours())}-${two(when.getMinutes())}-00-${id}.jsonl`);
     writeFileSync(path, lines(entries));
-    utimesSync(path, mtime, mtime);
     return path;
   };
+  const thread = (cwd: string, id: string, text: string, extra: Record<string, unknown> = {}) => [meta(cwd, { id, ...extra }), started(), user(`Reply with ${text}`), answer(text), complete(text)];
+  const now = at(15, 12).getTime();
+
+  test("candidates are the files named at or after the start, in that day's folder and the next, newest first, nothing opened", () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
+    const before = write(root, at(13, 9), "t0", thread("/app", "t0", "OLD"));
+    const a = write(root, at(14, 9), "t1", thread("/app", "t1", "A"));
+    const b = write(root, at(15, 8), "t2", thread("/app", "t2", "B"));
+    writeFileSync(join(root, "2026", "10", "15", "notes.txt"), "not a rollout");
+    const opened = codexStats.opened;
+    expect(codexCandidates([root], at(14, 8, 30).getTime(), now)).toEqual([b, a]);
+    expect(codexCandidates([root], null, now)).toEqual([b, a]);
+    expect(codexCandidates([root], at(13, 8).getTime(), now)).toEqual([b, a, before]);
+    expect(codexStats.opened).toBe(opened);
+  });
   test("the newest TUI rollout for the cwd; Desktop, exec and subagent threads are skipped", () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
-    const mine = write(root, "2026/10/14", "a", [meta("/app"), started(), user("hi"), answer("hello"), complete("hello")], 1000);
-    write(root, "2026/10/15", "b", [meta("/app", { source: { subagent: { other: "guardian" } }, thread_source: "guardian_review" })], 2000);
-    write(root, "2026/10/15", "c", [meta("/app", { originator: "Codex Desktop", source: "vscode" })], 3000);
-    write(root, "2026/10/15", "d", [meta("/app", { source: "exec" })], 4000);
-    write(root, "2026/10/15", "e", [meta("/elsewhere")], 5000);
-    expect(codexRollouts([root], "/app").map((r) => r.path)).toEqual([mine]);
+    const mine = write(root, at(15, 10), "mine", thread("/app", "mine", "hello"));
+    write(root, at(15, 9), "sub", [meta("/app", { source: { subagent: { other: "guardian" } }, thread_source: "guardian_review" })]);
+    write(root, at(15, 8), "desk", [meta("/app", { originator: "Codex Desktop", source: "vscode" })]);
+    write(root, at(15, 7), "exec", [meta("/app", { source: "exec" })]);
+    write(root, at(15, 6), "else", [meta("/elsewhere")]);
+    expect(codexRollouts([root], "/app", { since: at(15, 0).getTime(), now, max: 5 })).toEqual([{ path: mine, id: "mine" }]);
   });
-  test("agentReply joins by cwd, and by the prompt just sent when two sessions share it", async () => {
+  test("at most CODEX_OPEN_MAX files are opened, so a thread behind newer ones is not found by cwd", () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
-    const older = write(root, "2026/10/14", "a", [meta("/app", { id: "thread-a" }), started(), user("Reply with OK"), answer("OK"), complete("OK")], 1000);
-    write(root, "2026/10/15", "b", [meta("/app", { id: "thread-b" }), started(), user("other work"), answer("done"), complete("done")], 2000);
-    const cfg = { ...none, codexSessionRoots: [root] };
-    expect(await agentReply(cfg, { agent: "codex", cwd: "/app" })).toMatchObject({ text: "done", ref: { kind: "codex_rollout", session: "thread-b" } });
-    expect(await agentReply(cfg, { agent: "codex", cwd: "/app" }, { freshFor: "Reply with OK" })).toMatchObject({
-      text: "OK", matches_prompt: true, ref: { kind: "codex_rollout", path: older, session: "thread-a" },
+    for (let i = 0; i < 4; i++) write(root, at(15, 11, i), `other${i}`, thread("/elsewhere", `other${i}`, "x"));
+    const mine = write(root, at(15, 10), "mine", thread("/app", "mine", "hello"));
+    const opened = codexStats.opened;
+    expect(CODEX_OPEN_MAX).toBe(3);
+    expect(codexRollouts([root], "/app", { since: at(15, 0).getTime(), now })).toEqual([]);
+    expect(codexStats.opened - opened).toBe(3);
+    expect(codexRollouts([root], "/app", { since: at(15, 0).getTime(), now, max: 5 })).toEqual([{ path: mine, id: "mine" }]);
+  });
+  test("the rollout the pane's codex process holds open wins, whatever the cwd says", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
+    const state = mkdtempSync(join(tmpdir(), "herdr-codex-state-"));
+    write(root, at(15, 11), "newer", thread("/app", "newer", "NEWER"));
+    const held = write(root, at(15, 10), "held", thread("/app", "held", "HELD"));
+    // This test process stands in for the pane's codex: it keeps the file open.
+    const fd = openSync(held, "r");
+    try {
+      const herdr: HerdrCall = async (method, params: any) => {
+        expect(method).toBe("pane.process_info");
+        expect(params.pane_id).toBe("w1:p1");
+        return { process_info: { pane_id: "w1:p1", shell_pid: 1, foreground_processes: [{ pid: process.pid, name: "codex", argv0: "codex" }] } };
+      };
+      // lsof prints the real path (/private/var/… for /var/… on macOS).
+      expect(openRollouts(process.pid, [root]).map((p) => realpathSync(p))).toEqual([realpathSync(held)]);
+      const cfg = { ...none, codexSessionRoots: [root], stateDir: state };
+      const agent = { pane_id: "w1:p1", agent: "codex", cwd: "/app" };
+      const first = (await agentReply(cfg, agent, { herdr }))!;
+      expect(first).toMatchObject({ text: "HELD", ref: { kind: "codex_rollout", session: "held", match: "pid" } });
+      expect(realpathSync(first.ref.path!)).toBe(realpathSync(held));
+      // Cached: the next poll asks Herdr nothing and opens nothing.
+      const opened = codexStats.opened;
+      expect(await agentReply(cfg, agent, { herdr: async () => { throw new Error("not asked"); } })).toMatchObject({ text: "HELD", ref: { match: "pid" } });
+      expect(codexStats.opened).toBe(opened);
+      expect(JSON.parse(readFileSync(join(state, "codex-rollouts.json"), "utf8"))).toEqual({ "w1:p1": { path: first.ref.path, id: "held", match: "pid", cwd: "/app" } });
+    } finally {
+      closeSync(fd);
+    }
+  });
+  test("without a pid the newest rollout for the cwd stands in, marked cwd, and the prompt just sent picks the right thread", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
+    const state = mkdtempSync(join(tmpdir(), "herdr-codex-state-"));
+    const older = write(root, at(14, 9), "thread-a", thread("/app", "thread-a", "OK"));
+    const newer = write(root, at(15, 9), "thread-b", thread("/app", "thread-b", "done"));
+    const cfg = { ...none, codexSessionRoots: [root], stateDir: state };
+    const since = at(14, 8).toISOString();
+    const agent = { pane_id: "w1:p1", agent: "codex", cwd: "/app" };
+    const herdr: HerdrCall = async () => ({ process_info: { foreground_processes: [{ pid: 999_999, name: "codex" }] } });
+    expect(await agentReply(cfg, agent, { herdr, since })).toMatchObject({ text: "done", ref: { kind: "codex_rollout", path: newer, session: "thread-b", match: "cwd" } });
+    expect(await agentReply(cfg, agent, { since, freshFor: "Reply with OK" })).toMatchObject({
+      text: "OK", matches_prompt: true, ref: { path: older, session: "thread-a", match: "cwd" },
     });
+    // The thread the prompt landed in is the pane's from now on.
+    expect(await agentReply(cfg, agent, { since })).toMatchObject({ text: "OK", ref: { path: older } });
+    // A pane that moved to another directory drops its cached thread.
+    expect(await agentReply(cfg, { ...agent, cwd: "/nowhere" }, { since })).toBeNull();
     expect(await agentReply(cfg, { agent: "codex", cwd: "/nowhere" })).toBeNull();
   });
 });
@@ -170,6 +256,28 @@ describe("opencode database", () => {
     ]);
     expect(await agentReply(cfg, { agent: "opencode", cwd: "/app" })).toMatchObject({ in_reply_to: "run ls", ended: expect.stringContaining("rejected permission") });
     expect(await agentReply(cfg, { agent: "opencode", cwd: "/nowhere" })).toBeNull();
+    f.db.close();
+  });
+  test("the question tool's questions, with the answers once the owner picked", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "herdr-oc-"));
+    const f = opencodeDb(dir);
+    const s = f.session("/app", 2000);
+    const u = f.message(s, 10, { role: "user" }, [said("ask me which fruit")]);
+    const question = (state: Record<string, unknown>) => ({
+      type: "tool", tool: "question", callID: "q1",
+      state: { input: { questions: [{ header: "Fruit choice", question: "Which fruit?", options: [{ label: "Apple", description: "crisp" }, { label: "Pear", description: "sweet" }] }] }, ...state },
+    });
+    f.message(s, 11, { role: "assistant", parentID: u, finish: "tool-calls", time: { created: 11 } }, [question({ status: "pending" })]);
+    const cfg = { ...none, opencodeDb: f.path };
+    const pending = (await agentReply(cfg, { agent: "opencode", cwd: "/app" }))!;
+    expect(pending.in_progress).toMatchObject({ prompt: "ask me which fruit" });
+    expect(pending.questions).toEqual([{ title: "Which fruit?", header: "Fruit choice", options: ["Apple", "Pear"] }]);
+    f.db.query("DELETE FROM part").run();
+    f.message(s, 12, { role: "assistant", parentID: u, finish: "tool-calls", time: { created: 12, completed: 13 } }, [question({ status: "completed", metadata: { answers: [["Pear"]] } })]);
+    f.message(s, 14, { role: "assistant", parentID: u, finish: "stop", time: { created: 14, completed: 15 } }, [said("FRUIT=Pear")]);
+    expect(await agentReply(cfg, { agent: "opencode", cwd: "/app" })).toMatchObject({
+      text: "FRUIT=Pear", in_progress: null, questions: [{ title: "Which fruit?", header: "Fruit choice", options: ["Apple", "Pear"], answers: ["Pear"] }],
+    });
     f.db.close();
   });
 });

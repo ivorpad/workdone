@@ -87,9 +87,11 @@ describe("read_agent and get_agent carry input_line from a raw read", () => {
     const { gw, reads } = setup();
     const quiet: any = await gw.handle("get_agent", { target: "w1:p1" });
     expect("input_line" in quiet).toBe(false);
-    expect(reads.some((p) => p.format === "ansi")).toBe(false);
+    // The menu check reads the visible screen too (240 lines); the box read is the 20-line one.
+    const boxReads = () => reads.filter((p) => p.lines === 20);
+    expect(boxReads()).toHaveLength(0);
     const asked: any = await gw.handle("get_agent", { target: "w1:p1", input_line: true });
     expect(asked.input_line).toEqual({ text: "commit it", ghost: true });
-    expect(reads.filter((p) => p.format === "ansi")).toHaveLength(1);
+    expect(boxReads()).toEqual([expect.objectContaining({ source: "visible", format: "ansi" })]);
   });
 });

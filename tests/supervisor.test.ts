@@ -158,7 +158,8 @@ test("supervisor_status is scoped, read-only, lease-free and available through M
     expect(res.agents.map((a: any) => a.pane_id)).toEqual(["w1:p1", "w1:p2", "w1:p3", "w1:p6"]);
     expect(res.agents.map((a: any) => a.state)).toEqual(["progressing", "checkpoint_ready", "blocked", "unknown"]);
     expect(files()).toEqual(before);
-    expect(calls.every((m) => ["session.snapshot", "agent.list", "agent.read"].includes(m))).toBe(true);
+    // pane.process_info: the Codex rollout is found from the pane's process, a read.
+    expect(calls.every((m) => ["session.snapshot", "agent.list", "agent.read", "pane.process_info"].includes(m))).toBe(true);
     expect(TOOLS.supervisor_status!.annotations.readOnlyHint).toBe(true);
     expect(FANOUT.has("supervisor_status")).toBe(true);
   } finally {

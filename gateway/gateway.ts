@@ -316,7 +316,7 @@ export class Gateway {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
         const source = optEnum(params, "source", [...READ_SOURCES, "reply"] as const, "recent_unwrapped");
         // For the reply source the transcript is the answer; for the others it only feeds attention.
-        const reply = await agentReply(cfg, agent).catch((err) => {
+        const reply = await agentReply(cfg, agent, { herdr: this.herdr, since: this.state.watched()[agent.pane_id]?.since ?? null }).catch((err) => {
           if (source === "reply") throw err;
           return null;
         });
@@ -453,7 +453,7 @@ export class Gateway {
         const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(sentState ? { task_slice: true, dispatch: sentState } : {}) };
         if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
-          const reply = await agentReply(cfg, agent, { freshFor: sent });
+          const reply = await agentReply(cfg, agent, { freshFor: sent, herdr: this.herdr });
           if (reply) out.reply = reply;
           // The turn ended inside this call: its answer is the result, so nothing is owed.
           if (asked) {

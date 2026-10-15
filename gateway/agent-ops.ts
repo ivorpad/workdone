@@ -75,7 +75,7 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
   }
   let text: string | null = null;
   if (SETTLED.has(agent.agent_status)) {
-    const reply = known.reply !== undefined ? known.reply : await agentReply(g.cfg, agent).catch(() => null);
+    const reply = known.reply !== undefined ? known.reply : await agentReply(g.cfg, agent, { herdr: g.herdr, since: watched[agent.pane_id]?.since ?? null }).catch(() => null);
     if (reply) {
       // A prompt newer than the last answer makes that answer stale.
       text = reply.in_progress ? reply.in_progress.latest_text : reply.text;
@@ -92,7 +92,7 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
 
 // One line on what an agent is doing or last said, for wait_agent's summary.
 async function progressLine(g: Gateway, agent: any): Promise<string | null> {
-  const reply = await agentReply(g.cfg, agent).catch(() => null);
+  const reply = await agentReply(g.cfg, agent, { herdr: g.herdr }).catch(() => null);
   const text = reply?.in_progress ? reply.in_progress.latest_text : reply?.text;
   if (text) return clip(text.replace(/\s+/g, " ").trim(), 200);
   const screen = textOf(await g.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 20, format: "text", strip_ansi: true }).catch(() => null));
@@ -180,7 +180,7 @@ const NUDGE_POLICY = "At most one supervisor_nudge per agent session, only when 
 async function diagnose(g: Gateway, a: any, watched: Record<string, Watched>, sup: Record<string, Supervision>) {
   const w = watched[a.pane_id]!;
   const s = sup[a.pane_id];
-  const reply = a.agent ? await agentReply(g.cfg, a).catch(() => null) : null;
+  const reply = a.agent ? await agentReply(g.cfg, a, { herdr: g.herdr, since: w.since }).catch(() => null) : null;
   const life = a.agent ? await lifecycle(g, a, watched, { reply }) : { attention: null };
   const cp = await checkpoint(g.cfg, a.foreground_cwd ?? a.cwd ?? w.cwd);
   const observation: SupervisorObservation = {
@@ -367,7 +367,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           const cwd: string = a.foreground_cwd ?? a.cwd;
           if (!git.has(cwd)) git.set(cwd, gitSummary(g.cfg, cwd));
           const blocked = a.agent_status === "blocked";
-          const [gitInfo, reply] = await Promise.all([git.get(cwd)!, agentReply(g.cfg, a).catch(() => null)]);
+          const [gitInfo, reply] = await Promise.all([git.get(cwd)!, agentReply(g.cfg, a, { herdr: g.herdr, since: watched[a.pane_id]?.since ?? null }).catch(() => null)]);
           if (gitInfo) view.git = gitInfo;
           if (reply) {
             view.last_reply = {
@@ -434,7 +434,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           if (!SETTLED.has(a.agent_status)) return skip(`status ${a.agent_status}`);
           const w = watched[a.pane_id];
           if (w && (!w.managed || w.busy)) return skip("its last turn has not been reported to the owner yet");
-          const reply = await agentReply(g.cfg, a).catch(() => null);
+          const reply = await agentReply(g.cfg, a, { herdr: g.herdr }).catch(() => null);
           if (reply?.in_progress) return skip(reply.in_progress.interrupted ? "its last prompt was interrupted" : "a prompt is running");
           const { attention } = await lifecycle(g, a, watched, { reply });
           if (attention) return skip(attention === "question" ? "asked the owner a question" : "a menu is up");
