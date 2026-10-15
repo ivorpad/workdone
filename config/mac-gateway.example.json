@@ -29,6 +29,7 @@
   "transcriptRoots": ["~/.claude/projects"],
   "cursorTranscriptRoots": ["~/.cursor/projects"],
   "codexSessionRoots": ["~/.codex/sessions"],
+  "codexStateDb": "~/.codex",
   "opencodeDb": "~/.local/share/opencode/opencode.db",
   "piSessionRoots": ["~/.pi/agent/sessions"],
   "documentConverter": null,

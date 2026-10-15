@@ -1,7 +1,8 @@
 // Gateway config loading and the allowed-root scope check.
 
-import { accessSync, constants, readFileSync, realpathSync } from "node:fs";
+import { accessSync, constants, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { findCodexStateDb } from "./codex-index.ts";
 import { parseBrowser, type BrowserConfig } from "./jobs.ts";
 import { parseOpenclaw, type OpenclawConfig } from "./openclaw.ts";
 import { parseModels, type ModelList } from "./models.ts";
@@ -78,6 +79,10 @@ export interface GatewayConfig {
   cursorTranscriptRoots: string[];
   // Codex rollouts (<root>/YYYY/MM/DD/rollout-*.jsonl), opencode's sqlite database and pi's session folders.
   codexSessionRoots: string[];
+  // Codex's thread index (<codex home>/state_<N>.sqlite, table threads): one query by cwd
+  // names a pane's rollout without listing codexSessionRoots. Set to the Codex home and
+  // the newest state_<N>.sqlite in it is used, or to the file itself; null turns it off.
+  codexStateDb: string | null;
   opencodeDb: string | null;
   piSessionRoots: string[];
   documentConverter: string | null;
@@ -120,6 +125,16 @@ export function canonical(p: string): string {
       rest.push(basename(head));
       head = parent;
     }
+  }
+}
+
+// The index file itself, or the newest one under a Codex home; null when neither exists.
+function codexStateDb(p: string): string | null {
+  const path = expandHome(p);
+  try {
+    return statSync(path).isDirectory() ? findCodexStateDb(path) : path;
+  } catch {
+    return null;
   }
 }
 
@@ -227,6 +242,7 @@ export function loadConfig(raw: unknown): GatewayConfig {
     cursorTranscriptRoots:
       c.cursorTranscriptRoots === undefined ? [expandHome("~/.cursor/projects")] : pathList(c.cursorTranscriptRoots, "cursorTranscriptRoots"),
     codexSessionRoots: c.codexSessionRoots === undefined ? [expandHome("~/.codex/sessions")] : pathList(c.codexSessionRoots, "codexSessionRoots"),
+    codexStateDb: c.codexStateDb === null ? null : codexStateDb(c.codexStateDb === undefined ? "~/.codex" : absPath(c.codexStateDb, "codexStateDb")),
     opencodeDb: c.opencodeDb === undefined ? expandHome("~/.local/share/opencode/opencode.db") : c.opencodeDb === null ? null : absPath(c.opencodeDb, "opencodeDb"),
     piSessionRoots: c.piSessionRoots === undefined ? [expandHome("~/.pi/agent/sessions")] : pathList(c.piSessionRoots, "piSessionRoots"),
     documentConverter: c.documentConverter == null ? null : absPath(c.documentConverter, "documentConverter"),
