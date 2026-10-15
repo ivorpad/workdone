@@ -12,7 +12,7 @@ import {
 import { agentOps, lifecycle } from "./agent-ops.ts";
 import { coordOps, dispatchSlice, INTENT, paneTask, sendOutcome } from "./coord-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
-import { parseDialog } from "./dialog.ts";
+import { inputLine, parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
 import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
@@ -295,7 +295,14 @@ export class Gateway {
       case "get_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
         const task = paneTask(this, agent.pane_id, agent.name ?? null, agent.agent_session?.value ?? null);
-        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
+        const view: Record<string, unknown> = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
+        // input_line: true costs one more Herdr read (a second or more on a remote machine),
+        // so polling callers leave it off. It tells a suggestion the agent drew dim in its
+        // input box (ghost: true) from text the owner typed and did not send.
+        if (optBool(params, "input_line", false)) {
+          const raw = await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 20, format: "ansi", strip_ansi: false }).catch(() => null);
+          view.input_line = raw ? inputLine(textOf(raw)) : null;
+        }
         if (!optBool(params, "explain", false)) return view;
         // Herdr's own reasoning for the status, to tell its detection apart from ours. Servers
         // before agent.explain reject the method: get_agent still answers.
@@ -332,6 +339,9 @@ export class Gateway {
         });
         const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: ansi ? stripVTControlCharacters(textOf(res)) : textOf(res) })) };
         const out: Record<string, unknown> = { agent: view, text: res.text ?? res.read?.text ?? res };
+        // What the input box holds and whether the agent wrote it (dim), from the raw read.
+        // Herdr's detection buffer is plain text whatever the format, so there it is unknown.
+        if (ansi) out.input_line = used === "detection" ? null : inputLine(textOf(res));
         if (used !== source) Object.assign(out, { source: used, note: "the agent is working, so this is its visible screen; scrollback reads work once it is idle" });
         if (reply?.in_progress) out.in_progress = reply.in_progress;
         return out;
