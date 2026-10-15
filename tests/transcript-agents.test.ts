@@ -126,6 +126,33 @@ describe("Codex rollouts", () => {
     expect(codexStats.opened - opened).toBe(3);
     expect(codexRollouts([root], "/app", { since: at(15, 0).getTime(), now, max: 5 })).toEqual([{ path: mine, id: "mine" }]);
   });
+  test("Codex's own thread index names the rollout first: no process asked, no candidate opened", async () => {
+    const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
+    const state = mkdtempSync(join(tmpdir(), "herdr-codex-state-"));
+    write(root, at(15, 11), "newer", thread("/app", "newer", "NEWER"));
+    const indexed = write(root, at(15, 10), "indexed", thread("/app", "indexed", "INDEXED"));
+    const dbPath = join(mkdtempSync(join(tmpdir(), "herdr-codex-home-")), "state_5.sqlite");
+    const db = new Database(dbPath);
+    db.run(`CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, source TEXT NOT NULL,
+      model_provider TEXT NOT NULL, cwd TEXT NOT NULL, title TEXT NOT NULL, sandbox_policy TEXT NOT NULL, approval_mode TEXT NOT NULL, archived INTEGER NOT NULL DEFAULT 0,
+      thread_source TEXT, updated_at_ms INTEGER, originator TEXT)`);
+    const ins = db.query("INSERT INTO threads VALUES (?, ?, ?, ?, 'vscode', 'openai', '/app', '', '', '', 0, 'user', ?, 'codex-tui')");
+    ins.run("indexed", indexed, 1_792_000_000, 1_792_000_000, 1_792_000_000_000);
+    // A row whose file is gone, or outside the roots, is passed over.
+    ins.run("gone", join(root, "2026/10/15/rollout-2026-10-15T12-00-00-gone.jsonl"), 1_792_000_100, 1_792_000_100, 1_792_000_100_000);
+    ins.run("outside", "/elsewhere/rollout-2026-10-15T13-00-00-outside.jsonl", 1_792_000_200, 1_792_000_200, 1_792_000_200_000);
+    db.close();
+    const cfg = { ...none, codexSessionRoots: [root], codexStateDb: dbPath, stateDir: state };
+    const agent = { pane_id: "w1:p1", agent: "codex", cwd: "/app" };
+    const opened = codexStats.opened;
+    const herdr: HerdrCall = async () => { throw new Error("not asked"); };
+    expect(await agentReply(cfg, agent, { herdr })).toMatchObject({ text: "INDEXED", ref: { kind: "codex_rollout", path: indexed, session: "indexed", match: "index" } });
+    expect(codexStats.opened).toBe(opened);
+    expect(JSON.parse(readFileSync(join(state, "codex-rollouts.json"), "utf8"))["w1:p1"]).toMatchObject({ path: indexed, match: "index" });
+    // Without the index (null, or an index that knows no thread here) the other rules apply.
+    expect(await agentReply({ ...cfg, codexStateDb: null, stateDir: undefined }, agent, { since: at(15, 0).toISOString() })).toMatchObject({ text: "NEWER", ref: { match: "cwd" } });
+    expect(await agentReply({ ...cfg, stateDir: undefined }, { ...agent, cwd: "/other" }, { since: at(15, 0).toISOString() })).toBeNull();
+  });
   test("the rollout the pane's codex process holds open wins, whatever the cwd says", async () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-codex-"));
     const state = mkdtempSync(join(tmpdir(), "herdr-codex-state-"));

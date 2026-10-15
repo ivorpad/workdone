@@ -10,6 +10,7 @@
 import { Database } from "bun:sqlite";
 import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, relative, resolve } from "node:path";
+import { indexedCodexThreads } from "./codex-index.ts";
 import type { GatewayConfig, HerdrCall } from "./config.ts";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -43,9 +44,10 @@ export interface ReplyRef {
   kind: "claude_jsonl" | "cursor_jsonl" | "codex_rollout" | "opencode_sqlite" | "pi_jsonl";
   path: string | null;
   session: string | null;
-  // Codex only: how the rollout was tied to the pane. "pid" is certain; "cwd" is the newest
-  // rollout for the directory, which two Codex panes in one cwd share.
-  match?: "pid" | "cwd";
+  // Codex only: how the rollout was tied to the pane. "pid" is certain; "index" is Codex's
+  // own newest live thread for the directory and "cwd" the newest rollout file for it,
+  // both of which two Codex panes in one cwd share.
+  match?: "index" | "pid" | "cwd";
 }
 
 export type Reply = Turn & { ref: ReplyRef };
@@ -317,18 +319,22 @@ export function pickTurn(turns: TurnRecord[], maxChars: number): Turn | null {
 
 // Herdr reports no session for Codex (its hook is not wired, and Codex's shared app-server
 // daemon hides it anyway), and ~/.codex/sessions is history that is never scanned: it
-// holds hundreds of rollouts. The pane's rollout comes from the pane itself:
-//   pid  the rollout the pane's codex process holds open (pane.process_info, then lsof on
-//        macOS or /proc/<pid>/fd on Linux). Codex 0.159 and later write through a shared
-//        app-server daemon whose open files belong to every pane at once, so there this
-//        finds nothing and the next rule applies.
-//   cwd  the newest rollout named with a timestamp at or after the agent started (its
-//        day's folder and the next, plus today's), among at most CODEX_OPEN_MAX files
-//        opened to check session_meta's cwd. Two Codex panes in one cwd share this answer.
-// The result is cached per pane in <stateDir>/codex-rollouts.json: later polls do one
-// stat. Codex Desktop, `codex exec` and subagent threads (guardian reviews) write
-// rollouts under the same root, often for the same cwd: they are skipped.
-export interface CodexRollout { path: string; id: string | null; match: "pid" | "cwd" }
+// holds hundreds of rollouts. The pane's rollout comes from the pane itself, by the
+// first rule that answers:
+//   index  Codex's own thread index (codex-index.ts): the newest live TUI thread for the
+//          pane's cwd, one query, kept current by the daemon per turn.
+//   pid    the rollout the pane's codex process holds open (pane.process_info, then lsof
+//          on macOS or /proc/<pid>/fd on Linux). Codex 0.159 and later write through a
+//          shared app-server daemon that holds no rollout open, so there this finds
+//          nothing; it serves older Codex and a pane running codex exec.
+//   cwd    the newest rollout named with a timestamp at or after the agent started (its
+//          day's folder and the next, plus today's), among at most CODEX_OPEN_MAX files
+//          opened to check session_meta's cwd.
+// index and cwd give two Codex panes in one directory the same answer. The result is
+// cached per pane in <stateDir>/codex-rollouts.json: later polls do one stat. Codex
+// Desktop, `codex exec` and subagent threads (guardian reviews) write rollouts under
+// the same root, often for the same cwd: they are skipped.
+export interface CodexRollout { path: string; id: string | null; match: "index" | "pid" | "cwd" }
 interface RolloutMeta { id: string | null; cwd: string | null; tui: boolean }
 const rolloutMetas = new Map<string, RolloutMeta>();
 export const CODEX_OPEN_MAX = 3;
@@ -508,7 +514,13 @@ export async function resolveCodexRollout(cfg: Sources, agent: any, opts: CodexL
   const hit = paneId ? readRolloutCache(cfg.stateDir)[paneId] : undefined;
   if (hit && !opts.fresh && hit.cwd === cwd && existsSync(hit.path)) return { path: hit.path, id: hit.id, match: hit.match };
   let found: CodexRollout | null = null;
-  if (opts.herdr && paneId) {
+  // The newest few: a row whose file was deleted, or lies outside the roots, is passed over.
+  for (const t of indexedCodexThreads(cfg.codexStateDb ?? null, cwd, CODEX_OPEN_MAX) ?? []) {
+    if (!under(cfg.codexSessionRoots, t.path) || !existsSync(t.path)) continue;
+    found = { path: t.path, id: t.id, match: "index" };
+    break;
+  }
+  if (!found && opts.herdr && paneId) {
     for (const pid of await codexPids(opts.herdr, paneId)) {
       const path = openRollouts(pid, cfg.codexSessionRoots)[0];
       if (path) {
@@ -811,7 +823,7 @@ export function findPiReply(entries: any[], maxChars: number): Turn | null {
 
 // ---------- any agent ----------
 
-export type Sources = Pick<GatewayConfig, "transcriptRoots" | "cursorTranscriptRoots" | "codexSessionRoots" | "opencodeDb" | "piSessionRoots"> & { stateDir?: string };
+export type Sources = Pick<GatewayConfig, "transcriptRoots" | "cursorTranscriptRoots" | "codexSessionRoots" | "opencodeDb" | "piSessionRoots"> & { stateDir?: string; codexStateDb?: string | null };
 
 export interface ReplyOptions extends CodexLookup {
   freshFor?: string;
