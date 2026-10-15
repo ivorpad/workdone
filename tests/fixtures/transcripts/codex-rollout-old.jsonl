@@ -1,0 +1,5 @@
+{"timestamp":"2026-10-15T15:08:03.343Z","ordinal":0,"type":"session_meta","payload":{"id":"01a14000-0000-7000-8000-000000000000","timestamp":"2026-10-15T15:08:03.343Z","cwd":"/srv/allowed/app","originator":"codex-tui","cli_version":"0.162.1","source":"cli","thread_source":"user","model_provider":"openai","base_instructions":{"text":"You are Codex."}}}
+{"timestamp":"2026-10-14T09:00:00.000Z","ordinal":1,"type":"event_msg","payload":{"type":"task_started","turn_attribution":{"turn_id":"t0","turn_trigger":"user"}}}
+{"timestamp":"2026-10-14T09:00:00.100Z","ordinal":2,"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Say OLD."}]}}
+{"timestamp":"2026-10-14T09:00:02.000Z","ordinal":3,"type":"response_item","payload":{"type":"message","id":"msg_x","role":"assistant","content":[{"type":"output_text","text":"OLD"}],"phase":"final_answer"}}
+{"timestamp":"2026-10-14T09:00:02.500Z","ordinal":4,"type":"event_msg","payload":{"type":"task_complete","turn_id":"t0","last_agent_message":"OLD"}}
