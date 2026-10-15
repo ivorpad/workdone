@@ -48,7 +48,7 @@ export function parseOpenclaw(raw: unknown): OpenclawConfig | null {
   if (typeof o.target !== "string" || !TARGET.test(o.target)) throw new Error("openclaw.target is required, e.g. channel:<discord channel id>");
   if (o.sessionKey != null && (typeof o.sessionKey !== "string" || !SESSION.test(o.sessionKey))) throw new Error("openclaw.sessionKey must look like agent:<id>:<key>");
   const timeoutSec = o.timeoutSec ?? 600;
-  if (typeof timeoutSec !== "number" || !Number.isInteger(timeoutSec) || timeoutSec < 10 || timeoutSec > 3600) throw new Error("openclaw.timeoutSec must be 10-3600");
+  if (typeof timeoutSec !== "number" || !Number.isInteger(timeoutSec) || (timeoutSec !== 0 && (timeoutSec < 10 || timeoutSec > 3600))) throw new Error("openclaw.timeoutSec must be 0 (no timeout) or 10-3600");
   return {
     command: command.map((a, i) => (i === 0 ? expandHome(a as string) : (a as string))),
     agent: word(o.agent, "agent"),
@@ -213,7 +213,8 @@ export async function runAsk(specPath: string, id: string) {
     const argv = [...base, "agent", "--agent", oc.agent, ...(oc.sessionKey ? ["--session-key", oc.sessionKey] : []), "--json", "--timeout", String(oc.timeoutSec)];
     if (ask.visible) argv.push("--channel", oc.channel, "--reply-to", oc.target, "--deliver");
     argv.push("-m", text);
-    const res = await runProcess(argv, { cwd, env, timeoutMs: (oc.timeoutSec + 30) * 1000, maxBytes: 400_000 });
+    // timeoutSec 0: no limit. OpenClaw reads --timeout 0 as no timeout; the watchdog gets the largest timer setTimeout allows.
+    const res = await runProcess(argv, { cwd, env, timeoutMs: oc.timeoutSec === 0 ? 2_147_483_647 : (oc.timeoutSec + 30) * 1000, maxBytes: 400_000 });
     const parsed = parseReply(res.stdout);
     ask.run_id = parsed.run_id;
     if (res.timed_out) throw new GatewayError("timeout", `OpenClaw did not finish in ${oc.timeoutSec} s`);
