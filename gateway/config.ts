@@ -76,6 +76,10 @@ export interface GatewayConfig {
   extraPath: string[];
   transcriptRoots: string[];
   cursorTranscriptRoots: string[];
+  // Codex rollouts (<root>/YYYY/MM/DD/rollout-*.jsonl), opencode's sqlite database and pi's session folders.
+  codexSessionRoots: string[];
+  opencodeDb: string | null;
+  piSessionRoots: string[];
   documentConverter: string | null;
   notifyCommand: string[] | null;
   maxReadLines: number;
@@ -222,6 +226,9 @@ export function loadConfig(raw: unknown): GatewayConfig {
     transcriptRoots: c.transcriptRoots === undefined ? [expandHome("~/.claude/projects")] : pathList(c.transcriptRoots, "transcriptRoots"),
     cursorTranscriptRoots:
       c.cursorTranscriptRoots === undefined ? [expandHome("~/.cursor/projects")] : pathList(c.cursorTranscriptRoots, "cursorTranscriptRoots"),
+    codexSessionRoots: c.codexSessionRoots === undefined ? [expandHome("~/.codex/sessions")] : pathList(c.codexSessionRoots, "codexSessionRoots"),
+    opencodeDb: c.opencodeDb === undefined ? expandHome("~/.local/share/opencode/opencode.db") : c.opencodeDb === null ? null : absPath(c.opencodeDb, "opencodeDb"),
+    piSessionRoots: c.piSessionRoots === undefined ? [expandHome("~/.pi/agent/sessions")] : pathList(c.piSessionRoots, "piSessionRoots"),
     documentConverter: c.documentConverter == null ? null : absPath(c.documentConverter, "documentConverter"),
     notifyCommand,
     maxReadLines: clampInt(c.maxReadLines, 1, 2000, 400),

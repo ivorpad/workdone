@@ -19,8 +19,9 @@ import { StateStore } from "./state.ts";
 // on, the log is the record of what ran.
 const AUDIT_FIELDS = ["target", "pane_id", "repo", "task", "kind", "id", "name", "path", "from", "to", "cwd", "workspace_id", "tab_id", "branch", "origin_chat", "origin", "work_id", "outcome"];
 
-// Read-only ops only the console calls, every few seconds.
-export const CONSOLE_READS = new Set(["console_snapshot", "inbox_list", "lease_list", "claims", "audit_tail"]);
+// Read-only ops the console calls every few seconds (read_agent also serves ChatGPT, but
+// a read changes nothing worth a line).
+export const CONSOLE_READS = new Set(["console_snapshot", "inbox_list", "lease_list", "claims", "audit_tail", "read_agent"]);
 
 export function auditDetail(params: Record<string, any>) {
   const d: Record<string, unknown> = {};

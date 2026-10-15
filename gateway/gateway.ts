@@ -3,6 +3,7 @@
 // Layout, agent orchestration and host ops live in their own modules.
 
 import { hostname } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import {
   AGENT_NAME_RE, ALLOWED_KEYS, BRANCH_RE, GATEWAY_VERSION, GatewayError, READ_SOURCES, TARGET_RE,
   canonical, paneInScope, withinRoots, worktreePath,
@@ -317,7 +318,11 @@ export class Gateway {
           return { agent: { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply })) }, reply };
         }
         const lines = optInt(params, "lines", 1, cfg.maxReadLines) ?? 120;
-        const read = (src: string) => this.herdr("agent.read", { target: agent.pane_id, source: src, lines, format: "text", strip_ansi: true });
+        // strip_ansi false keeps the escapes, e.g. to tell Claude Code's dim (ESC[2m) suggested
+        // prompt from typed input. Herdr's own strip_ansi flag changes nothing: format "ansi"
+        // does, on visible and recent; detection is plain text either way.
+        const ansi = !optBool(params, "strip_ansi", true);
+        const read = (src: string) => this.herdr("agent.read", { target: agent.pane_id, source: src, lines, format: ansi ? "ansi" : "text", strip_ansi: !ansi });
         let used: string = source;
         // Herdr only scrolls back through an idle agent's screen: show a working one's visible screen.
         const res = await read(source).catch(async (err) => {
@@ -325,7 +330,7 @@ export class Gateway {
           used = "visible";
           return await read("visible");
         });
-        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: textOf(res) })) };
+        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: ansi ? stripVTControlCharacters(textOf(res)) : textOf(res) })) };
         const out: Record<string, unknown> = { agent: view, text: res.text ?? res.read?.text ?? res };
         if (used !== source) Object.assign(out, { source: used, note: "the agent is working, so this is its visible screen; scrollback reads work once it is idle" });
         if (reply?.in_progress) out.in_progress = reply.in_progress;

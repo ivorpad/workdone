@@ -40,7 +40,7 @@ export function gitAgent(extra: Record<string, unknown> = {}) {
     }
     return {};
   };
-  const gw = new Gateway(loadConfig({ allowedRoots: [root], stateDir: state, cursorTranscriptRoots: [state], agentKinds: ["cursor"], ...extra }), herdr);
+  const gw = new Gateway(loadConfig({ allowedRoots: [root], stateDir: state, cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], agentKinds: ["cursor"], ...extra }), herdr);
   const transcript = (answer: string) => {
     const dir = join(state, repo.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, ""), "agent-transcripts", SESSION);
     mkdirSync(dir, { recursive: true });

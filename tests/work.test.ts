@@ -76,7 +76,7 @@ function setup() {
   };
   const cfg = loadConfig({
     allowedRoots: ["/srv/allowed"], repos: { app: { path: APP } }, stateDir: state, leases: true,
-    transcriptRoots: [state], cursorTranscriptRoots: [state], agentKinds: ["claude", "codex", "cursor"],
+    transcriptRoots: [state], cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], agentKinds: ["claude", "codex", "cursor"],
   });
   const g = new Gateway(cfg, herdr);
   const claim = async (label: string, targets: string[] = []) => ((await g.request("claim_agents", { label, targets })) as any).lease as string;

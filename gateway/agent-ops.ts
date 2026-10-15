@@ -380,6 +380,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
                   interrupted: reply.in_progress.interrupted,
                 }
                 : null,
+              ref: reply.ref,
             };
           }
           // Without a transcript, or when a dialog is up, the screen is the only source.

@@ -133,7 +133,7 @@ function gateway(extra: Record<string, unknown> = {}) {
   const state = mkdtempSync(join(tmpdir(), "herdr-lay-"));
   const cfg = loadConfig({
     allowedRoots: ["/srv/allowed"], repos: { app: { path: "/srv/allowed/app" } }, stateDir: state, transcriptRoots: [state],
-    cursorTranscriptRoots: [state], agentKinds: ["claude", "codex", "cursor"], ...extra,
+    cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], agentKinds: ["claude", "codex", "cursor"], ...extra,
   });
   const watched = () => JSON.parse(readFileSync(join(state, "watch.json"), "utf8"));
   return { ...w, state, watched, gw: new Gateway(cfg, w.herdr) };
