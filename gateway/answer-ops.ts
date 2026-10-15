@@ -56,8 +56,10 @@ export const dialogId = (d: Dialog): string => {
 // One line: a newline would submit whatever came before it.
 const oneLine = (s: string) => s.replace(/\s*\n\s*/g, " ").trim();
 
+// With its escapes: parseDialog strips them itself, after reading the colour that marks
+// opencode's armed button. Herdr's strip_ansi flag alone returns none; format does.
 export async function menuScreen(herdr: HerdrCall, paneId: string): Promise<string> {
-  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 240, format: "text", strip_ansi: false }));
+  return textOf(await herdr("agent.read", { target: paneId, source: "visible", lines: 240, format: "ansi", strip_ansi: false }));
 }
 
 // Letters go as Herdr keys too: Cursor's approval menus ignore a letter typed as text.
