@@ -16,7 +16,7 @@
 // watches and source intake; an in-memory inbox remains available for isolated tests.
 //
 // Polling is what ChatGPT sees, so a watch is only as long as the conversation: it ends
-// IDLE_MS after its last activity (opening, a wake handed out, a message the thread sent
+// idleMs after its last activity (opening, a wake handed out, a message the thread sent
 // to an agent), well before its hours run out. The chat's next spawn or prompt opens a
 // new one. While quiet, polls get longer, and a second card polling
 // the same watch is turned away, so two devices don't double the calls.
@@ -97,12 +97,14 @@ export interface WatchKey {
 export type Opened = { ok: true; state: WatchState; key: WatchKey } | { ok: false; code: string; message: string };
 
 const MAX_WATCHES = 50;
-// A watch with no activity for this long ends.
-const IDLE_MS = 30 * 60_000;
 // A watch quiet for this long gets the longer poll.
 const QUIET_AFTER_MS = 5 * 60_000;
 export const POLL_MS = 20_000;
 export const QUIET_POLL_MS = 45_000;
+// A watch quiet for this long tells its card to rest between polls, so a long idle
+// window costs about one call every two minutes instead of one every 45 s.
+const REST_AFTER_MS = 30 * 60_000;
+export const REST_MS = 75_000;
 // A message an agent sent while its thread had no open link waits this long for one.
 const HOLD_MS = 3600_000;
 const MAX_HELD_COORD = 10_000;
@@ -166,6 +168,8 @@ export class Inbox {
     }
   }
   retryWindowS = 1800;
+  // A watch with no activity for this long ends (link.idleSeconds).
+  idleMs = 2 * 3600_000;
   constructor(private now: () => number = Date.now, private busyMs = 30_000, private log: (line: string) => void = () => {}) {}
 
   // Which link a log line is about, without the credentials: the end of the watch id and of the lease.
@@ -204,7 +208,7 @@ export class Inbox {
       maxRounds,
       rounds: carried,
       expires: t + (opts.hours ?? 72) * 3600_000,
-      idleUntil: t + IDLE_MS,
+      idleUntil: t + this.idleMs,
       lastActive: t,
       queue: [],
       waiters: [],
@@ -379,9 +383,15 @@ export class Inbox {
     return w && this.now() - w.lastActive >= QUIET_AFTER_MS ? QUIET_POLL_MS : POLL_MS;
   }
 
+  // How long the card should wait before its next poll: none until the watch has been quiet a while.
+  restMs(id: string): number {
+    const w = this.watches.get(id);
+    return w && !w.stopped && this.now() - w.lastActive >= REST_AFTER_MS ? REST_MS : 0;
+  }
+
   private touch(w: Watch) {
     w.lastActive = this.now();
-    w.idleUntil = w.lastActive + IDLE_MS;
+    w.idleUntil = w.lastActive + this.idleMs;
   }
 
   stop(id: string, cap: string): WatchState | null {
@@ -444,7 +454,7 @@ export class Inbox {
     const t = this.now();
     for (const [id, w] of this.watches) {
       if (!w.stopped && w.expires <= t) this.end(id, "expired");
-      else if (!w.stopped && w.idleUntil <= t) this.end(id, "idle for " + IDLE_MS / 60_000 + " minutes: link again when you send an agent work");
+      else if (!w.stopped && w.idleUntil <= t) this.end(id, "idle for " + Math.round(this.idleMs / 60_000) + " minutes: link again when you send an agent work");
       if (w.stopped && w.endedAt !== null && w.endedAt + 3600_000 <= t) this.watches.delete(id);
     }
   }

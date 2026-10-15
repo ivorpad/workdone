@@ -33,6 +33,8 @@ export interface OvhConfig {
 // and says to link again. The card reads it from the link's state, so it holds no limit of its own.
 export interface LinkConfig {
   retryWindowSeconds: number;
+  // How long a link stays open with no activity (opening, a wake, a message to an agent).
+  idleSeconds: number;
 }
 
 // The owner's console: a third loopback listener, put on the tailnet by `tailscale serve`.
@@ -151,6 +153,8 @@ export function parseConfig(raw: unknown): OvhConfig {
   const consoleCfg = parseConsole(c?.console, c?.listen?.port, auth?.listenPort);
   const retryWindow = c?.link?.retryWindowSeconds ?? 1800;
   if (!Number.isInteger(retryWindow) || retryWindow < 60 || retryWindow > 86_400) throw new Error("link.retryWindowSeconds must be a whole number of seconds from 60 to 86400");
+  const idle = c?.link?.idleSeconds ?? 7200;
+  if (!Number.isInteger(idle) || idle < 300 || idle > 86_400) throw new Error("link.idleSeconds must be a whole number of seconds from 300 to 86400");
   return {
     listen: { host, port: Number.isInteger(c?.listen?.port) ? c.listen.port : 8787 },
     machines,
@@ -160,7 +164,7 @@ export function parseConfig(raw: unknown): OvhConfig {
     auth,
     events,
     console: consoleCfg,
-    link: { retryWindowSeconds: retryWindow },
+    link: { retryWindowSeconds: retryWindow, idleSeconds: idle },
   };
 }
 

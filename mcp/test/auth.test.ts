@@ -135,6 +135,11 @@ describe("OAuth and Events configuration", () => {
     expect(() => parseConfig({ ssh, link: { retryWindowSeconds: 10 } })).toThrow(/retryWindowSeconds/);
     expect(() => parseConfig({ ssh, link: { retryWindowSeconds: 1.5 } })).toThrow(/retryWindowSeconds/);
   });
+  test("link.idleSeconds defaults to 2 hours and is range-checked", () => {
+    expect(parseConfig({ ssh }).link.idleSeconds).toBe(7200);
+    expect(parseConfig({ ssh, link: { idleSeconds: 1800 } }).link.idleSeconds).toBe(1800);
+    expect(() => parseConfig({ ssh, link: { idleSeconds: 60 } })).toThrow(/idleSeconds/);
+  });
   test("no-auth tools fallback stays the default", () => {
     const fallback = parseConfig({ ssh });
     expect(fallback.auth).toBeNull();

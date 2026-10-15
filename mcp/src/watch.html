@@ -239,6 +239,9 @@
       // A link that just ended still delivers what it took first.
       if (!state || !state.active) { if (pending.length) { ending = state; continue; } stopped = true; show(state); return; }
       if (!pending.length) show(watch);
+      // A link quiet for a while: the server asks the card to rest between polls, which
+      // keeps a long idle window light on ChatGPT. Coming back to the tab cuts it short.
+      if (!pending.length && typeof s.rest_ms === "number" && s.rest_ms > 0) await sleep(Math.min(s.rest_ms, 300000));
     }
   }
 

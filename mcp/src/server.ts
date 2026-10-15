@@ -236,6 +236,7 @@ if (import.meta.main) {
   const path = process.env.HERDR_MCP_CONFIG ?? "/etc/herdr-mcp/ovh.json";
   const cfg = parseConfig(await Bun.file(path).json());
   inbox.retryWindowS = cfg.link.retryWindowSeconds;
+  inbox.idleMs = cfg.link.idleSeconds * 1000;
   inbox.persistTo(cfg.events ? `${cfg.events.statePath}.inbox.sqlite` : resolve(process.env.XDG_STATE_HOME ?? resolve(homedir(), ".local/state"), "workdone", "mcp-inbox.sqlite"));
   const call = sshGateway(cfg);
   const auth = cfg.auth ? new AuthService(cfg.auth, Object.keys(cfg.machines)) : undefined;

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Report } from "../../gateway/watcher.ts";
-import { Inbox, POLL_MS, QUIET_POLL_MS, type Opened, type WakeType } from "../src/inbox.ts";
+import { Inbox, POLL_MS, QUIET_POLL_MS, REST_MS, type Opened, type WakeType } from "../src/inbox.ts";
 
 const report = (over: Partial<Report> = {}): Report => ({
   pane_id: "w1:p1", type: "question", agent: "robin", kind: "claude", cwd: "/src/relay", excerpt: "Which branch?", lease: "L-abc123", reply_to: null, message: "robin asks", ...over,
@@ -178,18 +178,18 @@ describe("inbox limits", () => {
 describe("polling load", () => {
   const MIN = 60_000;
 
-  test("a watch ends after 30 quiet minutes, and a wake or a message to an agent moves that out", async () => {
+  test("a watch ends after 2 quiet hours, and a wake or a message to an agent moves that out", async () => {
     let now = 0;
     const box = new Inbox(() => now);
     const w = opened(box, "mac", "L-abc123");
-    now += 29 * MIN;
+    now += 119 * MIN;
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).state?.active).toBe(true);
     box.noteMessage("mac", "L-abc123");
-    now += 29 * MIN;
+    now += 119 * MIN;
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).state?.active).toBe(true);
     box.add("mac", [report({ type: "message", excerpt: "hi" })]);
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).events).toHaveLength(1);
-    now += 29 * MIN;
+    now += 119 * MIN;
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).state?.active).toBe(true);
     now += 2 * MIN;
     const ended = (await box.next(w.key.watch_id, w.key.cap, 0)).state;
@@ -202,7 +202,7 @@ describe("polling load", () => {
     const box = new Inbox(() => now);
     const w = opened(box, "mac", "L-abc123");
     for (let i = 0; i < 20; i++) {
-      now += 2 * MIN;
+      now += 7 * MIN;
       await box.next(w.key.watch_id, w.key.cap, 0);
     }
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).state?.active).toBe(false);
@@ -212,8 +212,20 @@ describe("polling load", () => {
     let now = 0;
     const box = new Inbox(() => now);
     opened(box, "mac", "L-abc123");
-    now += 31 * MIN;
+    now += 121 * MIN;
     expect(box.open("mac", "L-abc123").ok).toBe(true);
+  });
+
+  test("after 30 quiet minutes the card is told to rest between polls, until something happens", () => {
+    let now = 0;
+    const box = new Inbox(() => now);
+    const w = opened(box, "mac", "L-abc123");
+    now += 29 * MIN;
+    expect(box.restMs(w.key.watch_id)).toBe(0);
+    now += 2 * MIN;
+    expect(box.restMs(w.key.watch_id)).toBe(REST_MS);
+    box.noteMessage("mac", "L-abc123");
+    expect(box.restMs(w.key.watch_id)).toBe(0);
   });
 
   test("polls get longer once the watch has been quiet", () => {
@@ -248,7 +260,7 @@ describe("watch logging", () => {
     const box = new Inbox(() => now, 30_000, (l) => lines.push(l));
     const w = opened(box, "mac", "L-abc123");
     await box.next(w.key.watch_id, w.key.cap, 0);
-    now += 31 * 60_000;
+    now += 121 * 60_000;
     await box.next(w.key.watch_id, w.key.cap, 0);
     const events = lines.map((l) => JSON.parse(l).event);
     expect(events).toEqual(["watch_open", "watch_poll", "watch_end"]);
