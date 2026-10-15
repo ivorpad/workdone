@@ -773,6 +773,16 @@ Verification: the `deploy-ovh.sh` output at the end includes a line with `"machi
 - If the Herdr server started with a minimal `PATH`, panes do not find `claude`, `codex` or `cursor-agent`. Fix without restarting Herdr: in `~/.config/herdr/config.toml`, `[terminal] default_shell = "/path/to/shell"` and `shell_mode = "login"`, then `herdr server reload-config`. New panes read the login profile.
 - On some NAS devices `scp` fails. To copy a file: `ssh ALIAS 'cat > path' < file`.
 
+### Machines that pause (instabox boxes)
+
+An instabox box pauses after 30 idle minutes and tailnet traffic does not wake it, so its calls return `machine_offline`. The `wake_machine` tool resumes it through another machine that holds an instabox API key:
+
+1. On that machine (any configured one with `exec` on), install the CLI with `curl -fsSL https://api.instabox.sh/install.sh | INSTABOX_INSTALL_DIR=$HOME/.local/bin sh` and copy `scripts/instabox-wake.sh` to `~/.local/bin/instabox-wake` (mode 755).
+2. From a signed-in workstation, pipe a key straight into a mode-600 file there without printing it: `instabox keys create --name workdone-wake --scope machines:read --scope machines:write --json | ssh HOLDER 'umask 077; mkdir -p ~/.config/workdone-wake; jq -r .key > ~/.config/workdone-wake/api-key'`. `machines:write` also allows ssh and exec into every box of that account, so the holder should be a machine you trust as much as the boxes.
+3. In `ovh.json`, give each box `"wake": {"via": "HOLDER", "box": "INSTABOX_NAME"}` and restart `herdr-mcp`. `box` is the instabox name or `m_...` id; the command run on the holder is fixed, never taken from ChatGPT.
+
+On such a machine, `machine_offline` tells ChatGPT to call `wake_machine`, which runs `instabox-wake BOX` on the holder through its gateway's `exec`, then polls `bridge_status` for up to 45 s. Listings (`overview`, `bridge_status` without a machine) never wake anything. `wake_machine` is a new tool, so ChatGPT needs **Refresh tools** once.
+
 ---
 
 ## 16. Phase 14 (optional): capabilities and agent models

@@ -10,6 +10,9 @@ export interface SshTarget {
   identityFile: string;
   knownHostsFile: string;
   connectTimeoutSeconds: number;
+  // A machine that can be paused (an instabox box): `via` is the configured machine that
+  // holds the instabox API key and runs scripts/instabox-wake.sh for `box`.
+  wake?: { via: string; box: string };
 }
 
 export interface OvhConfig {
@@ -95,7 +98,15 @@ function parseTarget(raw: unknown, name: string): SshTarget {
     identityFile: s.identityFile,
     knownHostsFile: s.knownHostsFile,
     connectTimeoutSeconds: Number.isInteger(s.connectTimeoutSeconds) ? s.connectTimeoutSeconds : 10,
+    ...(s.wake != null ? { wake: parseWake(s.wake, name) } : {}),
   };
+}
+
+function parseWake(raw: any, name: string): { via: string; box: string } {
+  // box ends up in a shell command on the via machine, so it is held to a plain name.
+  if (typeof raw?.via !== "string" || !MACHINE_RE.test(raw.via)) throw new Error(`${name}.wake.via must name a machine`);
+  if (typeof raw?.box !== "string" || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(raw.box)) throw new Error(`${name}.wake.box must be an instabox name or id`);
+  return { via: raw.via, box: raw.box };
 }
 
 export function parseConfig(raw: unknown): OvhConfig {
@@ -114,6 +125,9 @@ export function parseConfig(raw: unknown): OvhConfig {
   }
   const names = Object.keys(machines);
   if (names.length === 0) throw new Error("configure at least one machine");
+  for (const [name, t] of Object.entries(machines)) {
+    if (t.wake && (t.wake.via === name || !machines[t.wake.via])) throw new Error(`machines.${name}.wake.via must name another configured machine`);
+  }
   const defaultMachine = typeof c?.defaultMachine === "string" ? c.defaultMachine : names[0]!;
   if (!machines[defaultMachine]) throw new Error(`defaultMachine ${defaultMachine} is not configured`);
   let notify: OvhConfig["notify"] = null;
