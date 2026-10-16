@@ -236,7 +236,7 @@ async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Prom
     if (attempt >= 5) return { text: p.latest_text, ended: false };
     await Bun.sleep(500);
   }
-  return { text: screenReply(await read(herdr, agent.pane_id, "recent_unwrapped")) || null, ended: false };
+  return { text: screenReply(await read(herdr, agent.pane_id, "visible")) || null, ended: false };
 }
 
 // An excerpt is a bonus: when it cannot be read, the event is still reported.

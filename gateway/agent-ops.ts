@@ -65,10 +65,11 @@ function closeFor(g: Gateway, pane: any, all: any[]): { kind: "pane" | "tab" | "
 export async function lifecycle(g: Gateway, agent: any, watched: Record<string, Watched>, known: { reply?: Reply | null; screen?: string } = {}) {
   const originalWatch = watchView(watched[agent.pane_id]);
   const watch = originalWatch ? { ...originalWatch, approval_policy: approvalPolicy(g.state, agent.pane_id, agent) } : null;
-  const read = async (source: string) =>
-    source === "visible" ? await menuScreen(g.herdr, agent.pane_id).catch(() => "")
-      : known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source, lines: 60, format: "text", strip_ansi: true }).catch(() => null));
-  const visibleMenu = parseDialog(await read("visible"));
+  // The visible screen, with escapes for a menu or as text; never scrollback (see overview).
+  const read = async (as: "menu" | "text") =>
+    as === "menu" ? await menuScreen(g.herdr, agent.pane_id).catch(() => "")
+      : known.screen || textOf(await g.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 60, format: "text", strip_ansi: true }).catch(() => null));
+  const visibleMenu = parseDialog(await read("menu"));
   if (agent.agent_status === "blocked" || visibleMenu) {
     const menu = visibleMenu;
     return { attention: "dialog" as const, ...(menu ? { choices: dialogView(menu) } : {}), watch };
@@ -81,7 +82,7 @@ export async function lifecycle(g: Gateway, agent: any, watched: Record<string, 
       text = reply.in_progress ? reply.in_progress.latest_text : reply.text;
     } else {
       // No transcript: the screen, where a menu Herdr does not flag can be up.
-      const screen = await read("recent_unwrapped");
+      const screen = await read("text");
       const menu = parseDialog(screen);
       if (menu) return { attention: "dialog" as const, choices: dialogView(menu), watch };
       text = screenReply(screen);
@@ -382,11 +383,11 @@ export function agentOps(g: Gateway): Record<string, Op> {
                 : null,
             };
           }
-          // Without a transcript, or when a dialog is up, the screen is the only source.
-          // Herdr can only scroll back through a working agent's screen while it is idle.
+          // Without a transcript, or when a dialog is up, the screen is the only source: the visible
+          // one, since Herdr reads alternate-screen scrollback by scrolling the owner's pane.
           let screen = "";
           if (blocked || !reply) {
-            const src = blocked ? "detection" : a.agent_status === "working" ? "visible" : "recent_unwrapped";
+            const src = blocked ? "detection" : "visible";
             const read = await g.herdr("agent.read", { target: a.pane_id, source: src, lines: 60, format: "text", strip_ansi: true }).catch(() => null);
             if (read) {
               screen = textOf(read);
