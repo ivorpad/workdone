@@ -165,7 +165,7 @@ describe("cursor files", () => {
     const root = mkdtempSync(join(tmpdir(), "herdr-cur-"));
     write(root, "Users-me-app", [ask("Reply with OK"), act("OK"), ended()]);
     const agent = { agent: "cursor", cwd: "/Users/me/app", agent_session: { kind: "id", value: id } };
-    const reply = await agentReply({ transcriptRoots: [], cursorTranscriptRoots: [root] }, agent, { freshFor: "Reply with OK" });
+    const reply = await agentReply({ transcriptRoots: [], cursorTranscriptRoots: [root], codexSessionRoots: [], opencodeDb: null, piSessionRoots: [] }, agent, { freshFor: "Reply with OK" });
     expect(reply).toMatchObject({ text: "OK", in_reply_to: "Reply with OK", matches_prompt: true });
   });
   test("session id comes only from a cursor agent with a UUID", () => {

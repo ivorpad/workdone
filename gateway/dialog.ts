@@ -225,6 +225,68 @@ function plain(lines: string[]): Found {
   return { last, d: { text: region(lines, first, footer), options, multi: false, free_text: false, style: "plain", keys } };
 }
 
+// ---------- the input box ----------
+
+// What sits in the agent's input box, and whether the agent put it there. After a
+// turn Claude Code fills its own box with a suggested next prompt drawn dim
+// (ESC[2m … ESC[0m): "commit it", "close #842 with pnpm issues:finish 842". On a
+// plain-text read that is indistinguishable from something the owner typed and never
+// sent, and an enter would send the agent's words as the owner's. So this reads the
+// raw screen (agent.read with format ansi) and reports ghost: true when every visible
+// character after the marker is dim. A menu's cursor line (❯ 1. Yes) is not an input
+// box: null, parseDialog has it. Without the escapes (a text read, or herdr's
+// detection source) a suggestion reads as typed: callers pass only ansi reads.
+export interface InputLine {
+  text: string;
+  ghost: boolean;
+}
+
+const INPUT_MARK_RE = /^[❯›→]/;
+// A Cursor menu option ends with its key: "Run (once) (y)", "Trust (shift+tab)".
+const KEY_HINT_RE = /\s\((?:[a-z]|[a-z]+(?:\+[a-z]+)+)\)$/;
+// One SGR sequence, any other escape sequence (cursor moves, OSC titles), or one character.
+const CELL_RE = /\x1b\[([\d;:]*)m|\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-Z\\-_])|[\s\S]/g;
+
+// The line's visible characters, each with whether it was drawn dim.
+function cells(raw: string): Array<{ ch: string; dim: boolean }> {
+  const out: Array<{ ch: string; dim: boolean }> = [];
+  let dim = false;
+  for (const m of raw.matchAll(CELL_RE)) {
+    if (m[1] !== undefined) {
+      const codes = m[1] === "" ? [0] : m[1].split(/[;:]/).map(Number);
+      for (let i = 0; i < codes.length; i++) {
+        const code = codes[i]!;
+        if (code === 0 || code === 22) dim = false;
+        else if (code === 2) dim = true;
+        // Extended colors carry 2 or 4 more parameters that are not attributes.
+        else if (code === 38 || code === 48 || code === 58) i += codes[i + 1] === 5 ? 2 : codes[i + 1] === 2 ? 4 : 0;
+      }
+    } else if (m[0].length === 1 && m[0] !== "\x1b") out.push({ ch: m[0], dim });
+  }
+  return out;
+}
+
+export function inputLine(rawScreen: string): InputLine | null {
+  const lines = rawScreen.replace(/\s+$/, "").split("\n");
+  for (let i = lines.length - 1; i >= Math.max(0, lines.length - 12); i--) {
+    const visible = unbox(stripVTControlCharacters(lines[i]!.replace(/\x1b\[[\d;:]*m/g, "")));
+    if (!INPUT_MARK_RE.test(visible)) continue;
+    if (NUM_RE.test(visible) || LET_RE.test(visible) || KEY_HINT_RE.test(visible)) return null;
+    // Past the box edge, the marker and the space after it.
+    const all = cells(lines[i]!);
+    let at = 0;
+    while (at < all.length && /[\s│┃║]/.test(all[at]!.ch)) at++;
+    at++;
+    while (at < all.length && all[at]!.ch === " ") at++;
+    const rest = all.slice(at);
+    while (rest.length && /\s/.test(rest.at(-1)!.ch)) rest.pop();
+    const text = rest.map((c) => c.ch).join("").replace(/\s*[│┃║]\s*$/, "").trimEnd();
+    const shown = rest.filter((c) => /\S/.test(c.ch) && !/[│┃║]/.test(c.ch));
+    return { text, ghost: shown.length > 0 && shown.every((c) => c.dim) };
+  }
+  return null;
+}
+
 // An empty input box, or one with a CLI's placeholder in it.
 const INPUT_RE = /^[❯›→]\s*$|^[❯›→] (?:Try "|Ask Codex|Add a follow-up|Plan, search)/;
 

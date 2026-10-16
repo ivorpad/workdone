@@ -172,7 +172,7 @@ describe("watch_poll and notify ops", () => {
       if (method === "agent.get") return { agent: agents.find((a) => a.pane_id === params.target || a.name === params.target) };
       return {};
     };
-    const gw = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, cursorTranscriptRoots: [state], ...extra }), herdr);
+    const gw = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], ...extra }), herdr);
     const watch = (entries: Record<string, Partial<Watched>>) => writeFileSync(join(state, "watch.json"), JSON.stringify(entries));
     const saved = () => JSON.parse(readFileSync(join(state, "watch.json"), "utf8"));
     return {

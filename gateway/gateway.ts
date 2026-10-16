@@ -3,6 +3,7 @@
 // Layout, agent orchestration and host ops live in their own modules.
 
 import { hostname } from "node:os";
+import { stripVTControlCharacters } from "node:util";
 import {
   AGENT_NAME_RE, ALLOWED_KEYS, BRANCH_RE, GATEWAY_VERSION, GatewayError, READ_SOURCES, TARGET_RE,
   canonical, paneInScope, withinRoots, worktreePath,
@@ -11,7 +12,7 @@ import {
 import { agentOps, lifecycle } from "./agent-ops.ts";
 import { coordOps, dispatchSlice, INTENT, paneTask, sendOutcome } from "./coord-ops.ts";
 import { answerOps, approveMenus, menuScreen, type Approval } from "./answer-ops.ts";
-import { parseDialog } from "./dialog.ts";
+import { inputLine, parseDialog } from "./dialog.ts";
 import { gatedBy } from "./gated.ts";
 import { clearNote, showWatched } from "./sidebar.ts";
 import { hostOps } from "./host-ops.ts";
@@ -294,7 +295,14 @@ export class Gateway {
       case "get_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
         const task = paneTask(this, agent.pane_id, agent.name ?? null, agent.agent_session?.value ?? null);
-        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
+        const view: Record<string, unknown> = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched())), ...(task ? { task } : {}) };
+        // input_line: true costs one more Herdr read (a second or more on a remote machine),
+        // so polling callers leave it off. It tells a suggestion the agent drew dim in its
+        // input box (ghost: true) from text the owner typed and did not send.
+        if (optBool(params, "input_line", false)) {
+          const raw = await this.herdr("agent.read", { target: agent.pane_id, source: "visible", lines: 20, format: "ansi", strip_ansi: false }).catch(() => null);
+          view.input_line = raw ? inputLine(textOf(raw)) : null;
+        }
         if (!optBool(params, "explain", false)) return view;
         // Herdr's own reasoning for the status, to tell its detection apart from ours. Servers
         // before agent.explain reject the method: get_agent still answers.
@@ -308,7 +316,7 @@ export class Gateway {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
         const source = optEnum(params, "source", [...READ_SOURCES, "reply"] as const, "recent_unwrapped");
         // For the reply source the transcript is the answer; for the others it only feeds attention.
-        const reply = await agentReply(cfg, agent).catch((err) => {
+        const reply = await agentReply(cfg, agent, { herdr: this.herdr, since: this.state.watched()[agent.pane_id]?.since ?? null }).catch((err) => {
           if (source === "reply") throw err;
           return null;
         });
@@ -317,7 +325,11 @@ export class Gateway {
           return { agent: { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply })) }, reply };
         }
         const lines = optInt(params, "lines", 1, cfg.maxReadLines) ?? 120;
-        const read = (src: string) => this.herdr("agent.read", { target: agent.pane_id, source: src, lines, format: "text", strip_ansi: true });
+        // strip_ansi false keeps the escapes, e.g. to tell Claude Code's dim (ESC[2m) suggested
+        // prompt from typed input. Herdr's own strip_ansi flag changes nothing: format "ansi"
+        // does, on visible and recent; detection is plain text either way.
+        const ansi = !optBool(params, "strip_ansi", true);
+        const read = (src: string) => this.herdr("agent.read", { target: agent.pane_id, source: src, lines, format: ansi ? "ansi" : "text", strip_ansi: !ansi });
         let used: string = source;
         // Herdr only scrolls back through an idle agent's screen: show a working one's visible screen.
         const res = await read(source).catch(async (err) => {
@@ -325,8 +337,11 @@ export class Gateway {
           used = "visible";
           return await read("visible");
         });
-        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: textOf(res) })) };
+        const view = { ...agentView(agent), ...(await lifecycle(this, agent, this.state.watched(), { reply, screen: ansi ? stripVTControlCharacters(textOf(res)) : textOf(res) })) };
         const out: Record<string, unknown> = { agent: view, text: res.text ?? res.read?.text ?? res };
+        // What the input box holds and whether the agent wrote it (dim), from the raw read.
+        // Herdr's detection buffer is plain text whatever the format, so there it is unknown.
+        if (ansi) out.input_line = used === "detection" ? null : inputLine(textOf(res));
         if (used !== source) Object.assign(out, { source: used, note: "the agent is working, so this is its visible screen; scrollback reads work once it is idle" });
         if (reply?.in_progress) out.in_progress = reply.in_progress;
         return out;
@@ -438,7 +453,7 @@ export class Gateway {
         const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(sentState ? { task_slice: true, dispatch: sentState } : {}) };
         if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
-          const reply = await agentReply(cfg, agent, { freshFor: sent });
+          const reply = await agentReply(cfg, agent, { freshFor: sent, herdr: this.herdr });
           if (reply) out.reply = reply;
           // The turn ended inside this call: its answer is the result, so nothing is owed.
           if (asked) {

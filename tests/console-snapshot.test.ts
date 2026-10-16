@@ -73,7 +73,7 @@ describe("console_snapshot", () => {
     await expect(g.handle("console_snapshot", {})).rejects.toMatchObject({ code: "herdr_unavailable" });
   });
   test("it is read-only and, like the console's other reads, not written to the audit log", () => {
-    for (const op of ["console_snapshot", "inbox_list", "lease_list", "claims", "audit_tail"]) expect(CONSOLE_READS.has(op)).toBe(true);
+    for (const op of ["console_snapshot", "inbox_list", "lease_list", "claims", "audit_tail", "read_agent"]) expect(CONSOLE_READS.has(op)).toBe(true);
     // The inbox write is audited: it changes state.
     expect(CONSOLE_READS.has("inbox_resolve")).toBe(false);
   });

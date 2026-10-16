@@ -61,7 +61,7 @@ function setup() {
     },
     { subscribe: events.subscribe },
   );
-  const gw = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, cursorTranscriptRoots: [state] }), herdr);
+  const gw = new Gateway(loadConfig({ allowedRoots: ["/srv/allowed"], stateDir: state, cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state] }), herdr);
   const watch = (entries: Record<string, Partial<Watched>>) => writeFileSync(join(state, "watch.json"), JSON.stringify(entries));
   const entry = { name: "fixer", cwd: null, since: new Date(Date.now() - 60_000).toISOString(), last_status: "working", managed: true, busy: true, seq: 1 };
   return { gw, agents, events, watch, entry, lists: () => lists };

@@ -55,7 +55,7 @@ function setup() {
   };
   const g = new Gateway(loadConfig({
     allowedRoots: ["/srv/allowed"], repos: { app: { path: APP } }, stateDir: state, leases: true,
-    transcriptRoots: [state], cursorTranscriptRoots: [state], agentKinds: ["claude", "codex"],
+    transcriptRoots: [state], cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], agentKinds: ["claude", "codex"],
   }), herdr);
   const write = (file: string, value: unknown) => { mkdirSync(state, { recursive: true }); writeFileSync(join(state, file), JSON.stringify(value)); };
   const entry = (over: Record<string, unknown>) => ({

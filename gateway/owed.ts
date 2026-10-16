@@ -252,7 +252,7 @@ export function owedOps(g: Gateway): Record<string, Op> {
       const covered = new Set(owed.items.map((i) => i.pane_id));
       const done = [...(live?.agents.values() ?? [])].filter((a) => a.agent_status === "done" && !covered.has(a.pane_id)).slice(0, 20);
       const unwatched = await Promise.all(done.map(async (a) => {
-        const reply = await agentReply(g.cfg, a).catch(() => null);
+        const reply = await agentReply(g.cfg, a, { herdr: g.herdr }).catch(() => null);
         const said = Date.parse(reply?.at ?? "") || 0;
         if (snap.inbox.some((e) => e.pane_id === a.pane_id && Date.parse(e.at) >= said - 60_000)) return null;
         return { pane_id: a.pane_id as string, agent: (a.name ?? null) as string | null, kind: (a.agent ?? null) as string | null, cwd: (a.foreground_cwd ?? a.cwd ?? null) as string | null, last_reply_at: reply?.at ?? null };

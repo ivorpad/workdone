@@ -344,7 +344,8 @@ describe("answer_agent and steer_agent", () => {
     const original = t.gw.herdr;
     (t.gw as any).herdr = async (method: string, params: any) => {
       if (method === "agent.list") return { agents: [t.agent] };
-      if (method === "agent.read") return { text: params.strip_ansi ? raw.replace(/\x1b\[[\d;]*m/g, "") : raw };
+      // As a live Herdr answers: format decides, strip_ansi changes nothing.
+      if (method === "agent.read") return { text: params.format === "ansi" ? raw : raw.replace(/\x1b\[[\d;]*m/g, "") };
       return await original(method, params);
     };
     const overview: any = await t.gw.handle("overview", {});

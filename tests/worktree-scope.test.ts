@@ -54,7 +54,7 @@ function gateway(extra: Record<string, unknown> = {}, wrap: (h: HerdrCall) => He
   const state = mkdtempSync(join(tmpdir(), "herdr-wt-"));
   const cfg = loadConfig({
     allowedRoots: ["/srv/allowed"], repos: { app: { path: "/srv/allowed/app" } }, stateDir: state, transcriptRoots: [state],
-    cursorTranscriptRoots: [state], agentKinds: ["claude"], ...extra,
+    cursorTranscriptRoots: [state], codexSessionRoots: [state], opencodeDb: null, piSessionRoots: [state], agentKinds: ["claude"], ...extra,
   });
   return { ...w, state, gw: new Gateway(cfg, wrap(w.herdr)) };
 }

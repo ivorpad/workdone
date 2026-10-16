@@ -13,6 +13,10 @@ export function agentView(a: any) {
     label: a.label ?? null,
     workspace_id: a.workspace_id,
     tab_id: a.tab_id,
+    // Herdr's counters: completion_seq moves when a turn completes, state_change_seq on
+    // any status change. A change is the reliable sign that something happened; null when Herdr has none.
+    completion_seq: typeof a.completion_seq === "number" ? a.completion_seq : null,
+    state_change_seq: typeof a.state_change_seq === "number" ? a.state_change_seq : null,
     // The pane Herdr has focused: what the owner sees on that machine's screen.
     ...(a.focused ? { focused: true } : {}),
   };
