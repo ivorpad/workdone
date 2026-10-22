@@ -8,11 +8,13 @@ import type { CallGateway } from "./gateway-client.ts";
 import { inbox, type Inbox, type WakeType } from "./inbox.ts";
 
 // Versioned: ChatGPT caches a card by URI, so a changed card needs a new one.
-export const WATCH_URI = "ui://workdone/watch-12.html";
-const OLD_URIS = ["ui://workdone/watch-11.html", "ui://workdone/watch-10.html", "ui://workdone/watch-9.html", "ui://workdone/watch-8.html", "ui://workdone/watch-7.html", "ui://workdone/watch-6.html", "ui://workdone/watch-5.html", "ui://workdone/watch-4.html", "ui://workdone/watch-3.html", "ui://workdone/watch-2.html", "ui://workdone/watch-1.html"];
+export const WATCH_URI = "ui://workdone/watch-13.html";
+const OLD_URIS = ["ui://workdone/watch-12.html", "ui://workdone/watch-11.html", "ui://workdone/watch-10.html", "ui://workdone/watch-9.html", "ui://workdone/watch-8.html", "ui://workdone/watch-7.html", "ui://workdone/watch-6.html", "ui://workdone/watch-5.html", "ui://workdone/watch-4.html", "ui://workdone/watch-3.html", "ui://workdone/watch-2.html", "ui://workdone/watch-1.html"];
 const HTML = await Bun.file(new URL("./watch.html", import.meta.url)).text();
 // Where the card finds its watch in a tool result: never in content or structuredContent.
 export const KEY_META = "workdone/watch";
+// A card that found the link held by another card: with this it can take the link over later (watch_take).
+export const STANDBY_META = "workdone/standby";
 
 // Ceilings by what a link wakes on. Replies only answer what the thread sent, so they can
 // run long; questions and finished turns wake the thread unprompted, so they run short.
@@ -41,10 +43,11 @@ export async function linkChat(call: CallGateway, machine: string, lease: string
   const linked = box.link(machine, lease, { panes });
   if (!linked.ok) return null;
   onWatch?.(machine);
+  const meta: Record<string, unknown> | null = linked.key ? { [KEY_META]: linked.key } : linked.standby ? { [STANDBY_META]: linked.standby } : null;
   return {
     note: `This chat is linked with its agents on ${machine}: their replies, messages they send you and menus that stop them come back here by themselves while the chat is open, so don't wait or poll for them.`,
     structuredContent: { link: linked.state },
-    ...(linked.key ? { _meta: { [KEY_META]: linked.key } } : {}),
+    ...(meta ? { _meta: meta } : {}),
   };
 }
 
@@ -107,6 +110,22 @@ export function registerWatch(server: McpServer, machines: string[], defaultMach
       const { events, state, busy } = await box.next(watch_id, cap, box.pollMs(watch_id));
       const rest = events.length ? 0 : box.restMs(watch_id);
       return { content: [{ type: "text" as const, text: `${events.length} event(s)` }], structuredContent: { events, state, ...(busy ? { busy } : {}), ...(rest ? { rest_ms: rest } : {}) }, isError: false };
+    },
+  );
+
+  server.registerTool(
+    "watch_take",
+    {
+      title: "Take over the link",
+      description: "Called by a link card that found the link held by another card: gets the link's key once that card has stopped polling.",
+      inputSchema: z.object({ watch_id: z.string().max(64), ticket: z.string().max(64) }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      _meta: { ui: { visibility: ["app"] } },
+    },
+    async ({ watch_id, ticket }) => {
+      const took = box.take(watch_id, ticket);
+      if (!took.ok) return { content: [{ type: "text" as const, text: took.code }], structuredContent: { taken: false, code: took.code }, isError: false };
+      return { content: [{ type: "text" as const, text: "taken" }], structuredContent: { taken: true, state: took.state }, _meta: { [KEY_META]: took.key }, isError: false };
     },
   );
 

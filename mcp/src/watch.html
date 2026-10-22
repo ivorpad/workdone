@@ -45,6 +45,7 @@
   let watch = null;
   let key = null;
   const keyOf = (r) => r && r._meta && r._meta["workdone/watch"];
+  const standbyOf = (r) => r && r._meta && r._meta["workdone/standby"];
   let stopped = false;
 
   function request(method, params) {
@@ -65,7 +66,7 @@
       msg.error ? w.reject(new Error(msg.error.message || "request failed")) : w.resolve(msg.result);
       return;
     }
-    if (msg.method === "ui/notifications/tool-result") start(msg.params && msg.params.structuredContent, keyOf(msg.params));
+    if (msg.method === "ui/notifications/tool-result") start(msg.params && msg.params.structuredContent, keyOf(msg.params), standbyOf(msg.params));
     if (msg.method === "ui/notifications/host-context-changed") theme(msg.params);
   });
   function theme(ctx) {
@@ -252,8 +253,41 @@
     }
   }
 
+  // A card that found the link held by another one stands by: ChatGPT can drop that card
+  // from the page (a wake's turn replaces it), and then nothing would bring replies in.
+  // Every 30 s, and when the tab comes back, it asks to take the link over; the server
+  // hands over the key once the other card has not polled for 90 s.
+  async function standBy(link, sb) {
+    let asking = false;
+    const ask = async () => {
+      if (asking || stopped) return;
+      asking = true;
+      try {
+        const res = await request("tools/call", { name: "watch_take", arguments: { watch_id: sb.watch_id, ticket: sb.ticket } });
+        const s = (res && res.structuredContent) || {};
+        const k = keyOf(res);
+        if (s.taken && k) {
+          stopped = false;
+          watch = s.state || link;
+          key = k;
+          show(watch, "took over from the card above");
+          loop();
+          return true;
+        }
+        if (s.code === "ended" || s.code === "unknown") { $("detail").textContent = "the link has ended"; return true; }
+      } catch (e) { /* try again on the next tick */ }
+      finally { asking = false; }
+      return false;
+    };
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) ask(); });
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 30000));
+      if (await ask()) return;
+    }
+  }
+
   let started = false;
-  function start(s, k) {
+  function start(s, k, sb) {
     if (started) return;
     // spawn_agent, prompt_agent and steer_agent in a regular chat link it by themselves and
     // carry the link's state in link. Without a key, an earlier card of this chat holds the
@@ -265,6 +299,7 @@
       $("dot").className = "dot";
       $("title").textContent = "Linked with this chat's agents on " + linkState.machine;
       $("detail").textContent = "replies come in through this chat's link card above";
+      if (sb && sb.watch_id && sb.ticket) standBy(linkState, sb);
       return;
     }
     s = linkState || s;

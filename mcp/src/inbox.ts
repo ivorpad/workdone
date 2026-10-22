@@ -22,6 +22,7 @@
 // the same watch is turned away, so two devices don't double the calls.
 
 import { Database } from "bun:sqlite";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Report } from "../../gateway/watcher.ts";
@@ -75,6 +76,9 @@ interface Watch {
   sentSinceWake: number;
   // When a card last asked watch_next for this watch. Unset until one does.
   polledAt?: number | null;
+  // Tickets of cards that found this link held by another card: watch_take gives one of
+  // them the key once that card stops polling (ChatGPT can drop a card from the page).
+  standby?: string[];
 }
 
 // What the model may see: no lease, no watch id, no cap.
@@ -120,6 +124,8 @@ const REPLY_WINDOW_MS = 10 * 60_000;
 // never rendered, or the device it ran on closed. Longer than a card's longest pause
 // between polls (a 60 s retry while ChatGPT refuses a wake).
 const CARD_GONE_MS = 90_000;
+const MAX_STANDBY = 8;
+export interface Standby { watch_id: string; ticket: string }
 
 const hex = () => crypto.randomUUID().replaceAll("-", "");
 const token = (prefix: string, n: number) => (prefix + hex() + hex()).slice(0, prefix.length + n);
@@ -259,15 +265,35 @@ export class Inbox {
   // card that holds it keeps it, and this call gets no key while that card polls. If no
   // card has polled it for CARD_GONE_MS, this call's card gets the same key and brings the
   // replies in instead: nothing is replaced, and the rounds and ceilings carry on.
-  link(machine: string, lease: string, opts: { panes?: string[] } = {}): { ok: true; state: WatchState; key: WatchKey | null } | { ok: false; code: string; message: string } {
+  link(machine: string, lease: string, opts: { panes?: string[] } = {}): { ok: true; state: WatchState; key: WatchKey | null; standby?: Standby } | { ok: false; code: string; message: string } {
     this.sweep();
     const open = [...this.watches].find(([, w]) => !w.stopped && w.machine === machine && w.lease === lease);
     if (!open) return this.open(machine, lease, { panes: opts.panes });
     const [id, w] = open;
     this.touch(w);
     this.persist();
-    const polled = w.waiters.length > 0 || (w.polledAt != null && this.now() - w.polledAt < CARD_GONE_MS);
-    return { ok: true, state: this.state(id)!, key: polled ? null : { watch_id: id, cap: w.cap, lease } };
+    if (!this.polled(w)) return { ok: true, state: this.state(id)!, key: { watch_id: id, cap: w.cap, lease } };
+    // Held by a card that polls now: this card stands by with a token instead.
+    const ticket = randomBytes(16).toString("hex");
+    w.standby = [...(w.standby ?? []), ticket].slice(-MAX_STANDBY);
+    this.persist();
+    return { ok: true, state: this.state(id)!, key: null, standby: { watch_id: id, ticket } };
+  }
+
+  private polled(w: Watch): boolean {
+    return w.waiters.length > 0 || (w.polledAt != null && this.now() - w.polledAt < CARD_GONE_MS);
+  }
+
+  // A standby card asks for the link: it gets the key once no card has polled it for
+  // CARD_GONE_MS. Nothing is replaced: the same watch, rounds and ceilings.
+  take(id: string, ticket: string): { ok: true; state: WatchState; key: WatchKey } | { ok: false; code: "ended" | "unknown" | "held" } {
+    this.sweep();
+    const w = this.watches.get(id);
+    if (!w || w.stopped) return { ok: false, code: "ended" };
+    if (!w.standby?.some((t) => t.length === ticket.length && timingSafeEqual(Buffer.from(t), Buffer.from(ticket)))) return { ok: false, code: "unknown" };
+    if (this.polled(w)) return { ok: false, code: "held" };
+    this.log(JSON.stringify({ event: "watch_take", ...this.tag(id, w) }));
+    return { ok: true, state: this.state(id)!, key: { watch_id: id, cap: w.cap, lease: w.lease } };
   }
 
   // Reports from one machine's watch pass. Returns how many watches got an event.

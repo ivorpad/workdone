@@ -5,7 +5,7 @@ import type { CallGateway } from "../src/gateway-client.ts";
 import { inbox } from "../src/inbox.ts";
 import { createHandler } from "../src/server.ts";
 import { buildServer } from "../src/tools.ts";
-import { KEY_META, WATCH_URI, limitsFor } from "../src/watch.ts";
+import { KEY_META, STANDBY_META, WATCH_URI, limitsFor } from "../src/watch.ts";
 
 const target = { user: "ivor", host: "mac.example.ts.net", identityFile: "/k", knownHostsFile: "/kh" };
 const cfg = parseConfig({ listen: { host: "127.0.0.1", port: 8787 }, machines: { mac: target, ovh: { ...target, host: "127.0.0.1" } } });
@@ -156,6 +156,23 @@ describe("a regular chat links itself", () => {
     expect((await inbox.next(key.watch_id, key.cap, 0)).state).toMatchObject({ active: true });
     const again = (await c.callTool({ name: "watch_here", arguments: { lease: "L-live0103" } })) as any;
     expect(err(again)).toMatchObject({ code: "already_linked" });
+    await c.close();
+  });
+
+  test("a card that finds the link held stands by, and can't take it while the other card polls", async () => {
+    const c = await client();
+    const first = await spawn(c, "L-live0106");
+    const key = first._meta[KEY_META];
+    await inbox.next(key.watch_id, key.cap, 0);
+    const prompt = (await c.callTool({ name: "prompt_agent", arguments: { target: "robin", text: "more", lease: "L-live0106" } })) as any;
+    const sb = prompt._meta[STANDBY_META];
+    expect(sb.watch_id).toBe(key.watch_id);
+    expect(sb.ticket).toMatch(/^[a-f0-9]{32}$/);
+    const held = (await c.callTool({ name: "watch_take", arguments: { watch_id: sb.watch_id, ticket: sb.ticket } })) as any;
+    expect(held.structuredContent).toEqual({ taken: false, code: "held" });
+    expect(held._meta?.[KEY_META]).toBeUndefined();
+    const wrong = (await c.callTool({ name: "watch_take", arguments: { watch_id: sb.watch_id, ticket: "f".repeat(32) } })) as any;
+    expect(wrong.structuredContent).toEqual({ taken: false, code: "unknown" });
     await c.close();
   });
 

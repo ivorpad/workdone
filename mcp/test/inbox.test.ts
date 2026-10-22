@@ -43,6 +43,29 @@ describe("inbox routing", () => {
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "Reviewed: 3 issues"], ["reply", "Fix all three?"]]);
   });
 
+  test("a standby card takes the link over once the card holding it stops polling", async () => {
+    let now = 0;
+    const box = new Inbox(() => now);
+    const first = box.link("mac", "L-abc123");
+    if (!first.ok || !first.key) throw new Error("no key");
+    await box.next(first.key.watch_id, first.key.cap, 0);
+    const second = box.link("mac", "L-abc123");
+    if (!second.ok || !second.standby) throw new Error("no standby");
+    expect(second.key).toBeNull();
+    expect(box.take(second.standby.watch_id, second.standby.ticket)).toEqual({ ok: false, code: "held" });
+    now += 89_000;
+    expect(box.take(second.standby.watch_id, second.standby.ticket)).toEqual({ ok: false, code: "held" });
+    now += 2_000;
+    const took = box.take(second.standby.watch_id, second.standby.ticket);
+    expect(took).toMatchObject({ ok: true, key: first.key });
+    // The same watch: what was queued meanwhile is still there for the new card.
+    box.add("mac", [report({ type: "finished", reply_to: "L-abc123", excerpt: "late answer" })]);
+    if (!took.ok) throw new Error("not taken");
+    expect((await box.next(took.key.watch_id, took.key.cap, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "late answer"]]);
+    box.stop(took.key.watch_id, took.key.cap);
+    expect(box.take(second.standby.watch_id, second.standby.ticket)).toEqual({ ok: false, code: "ended" });
+  });
+
   test("a turn two threads prompted into wakes both; the one that lost the agent is told so", async () => {
     const box = new Inbox();
     const first = opened(box, "mac", "L-first01");
