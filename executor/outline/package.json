@@ -1,0 +1,8 @@
+{
+  "name": "outline",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "apps": "0.0.1-beta.95"
+  }
+}
