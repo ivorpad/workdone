@@ -68,6 +68,8 @@ export interface HookPane {
   finals: Final[];
   // The last prompt the hook saw, WorkDone's or not: a kept answer older than it is not this turn's.
   last_prompt_at?: string;
+  // A marker went unmatched: the hook is not working in this session, so the footer is back until the next hello.
+  failed_at?: string;
 }
 
 // A marker never matched is dropped after this (the prompt was mangled, or never submitted).
@@ -107,23 +109,65 @@ function syncFlag(stateDir: string, paneId: string, h: HookPane | undefined, now
   } catch { /* the hook then just calls through, or finds nothing */ }
 }
 
-// Whether this pane's agent has hooks running in its current session.
+// How long a send waits for the hook to match its marker, and how old an unmatched one
+// (a queued steer's) may get before the hook counts as broken. Tests shorten them.
+export const HOOK_TIMING = { confirmMs: 3000, staleMs: 15_000 };
+
+// Whether this pane's agent has hooks running in its current session, and working: a
+// marker left unmatched means the agent got WorkDone's text with no sender note.
 export function hooked(g: Gateway, agent: any): boolean {
   const h = g.state.hooks()[agent?.pane_id];
   const session = seenState(agent).session;
-  return !!h && !!session && h.session === session && h.kind === agent?.agent;
+  if (!h || !session || h.session !== session || h.kind !== agent?.agent || h.failed_at) return false;
+  const now = Date.now();
+  return !h.pending.some((p) => now - Date.parse(p.at) > HOOK_TIMING.staleMs);
+}
+
+// After the text went in: did the hook match it? If not, the footer comes back for this
+// pane until its next hello, and an agent still at work gets the footer line as a
+// follow-up message, so it learns who sent what it is working on.
+export async function confirmSend(g: Gateway, paneId: string, markerId: string, prov: Provenance): Promise<"hook" | "footer_followup" | "missing"> {
+  const deadline = Date.now() + HOOK_TIMING.confirmMs;
+  for (;;) {
+    const h = g.state.hooks()[paneId];
+    if (!h?.pending.some((p) => p.id === markerId)) return "hook";
+    if (Date.now() >= deadline) break;
+    await Bun.sleep(150);
+  }
+  const h = g.state.updateHooks((all) => {
+    const cur = all[paneId];
+    if (cur) {
+      cur.failed_at = new Date().toISOString();
+      cur.pending = cur.pending.filter((p) => p.id !== markerId);
+    }
+    return cur;
+  });
+  syncFlag(g.cfg.stateDir, paneId, h, Date.now());
+  const agent = await g.scopedAgent(paneId).catch(() => null);
+  let out: "footer_followup" | "missing" = "missing";
+  if (agent?.agent_status === "working") {
+    try {
+      await g.handle("steer_agent", { target: paneId, text: prov.sig });
+      out = "footer_followup";
+    } catch { /* the reply still reaches the chat; only the agent's view of the sender is missing */ }
+  }
+  g.state.audit({ op: "hook_fallback", ok: false, args: { pane_id: paneId, marker: markerId, outcome: out } });
+  return out;
 }
 
 // Right before the text goes in: where a hook will tell the agent who sent it, record the
 // marker for the exact text and say so; otherwise the footer stays. undo drops the marker
 // when the send fails.
-export function markSend(g: Gateway, agent: any, prov: Provenance | undefined): { hooked: boolean; mark: (sent: string) => () => void } {
-  const none = { hooked: false, mark: () => () => {} };
+export function markSend(g: Gateway, agent: any, prov: Provenance | undefined): { hooked: boolean; mark: (sent: string) => () => void; id: () => string | null } {
+  let marked: string | null = null;
+  const none = { hooked: false, mark: () => () => {}, id: () => null };
   if (!prov || !hooked(g, agent)) return none;
   return {
     hooked: true,
+    id: () => marked,
     mark: (sent: string) => {
       const id = `prm_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      marked = id;
       const now = Date.now();
       const m: Marker = { id, hash: hashOf(sent), lease: prov.lease, label: prov.label, op: prov.op, console: prov.console, chat: prov.chat, at: new Date(now).toISOString() };
       const h = g.state.updateHooks((all) => {
@@ -175,9 +219,13 @@ export function hookOps(g: Gateway) {
 
   // The entry for this session, made on the spot when SessionStart's hello was missed
   // (hooks installed while the agent ran).
-  const entry = (all: Record<string, HookPane>, paneId: string, sid: string, kind: string): HookPane => {
+  const entry = (all: Record<string, HookPane>, paneId: string, sid: string, kind: string, hello = false): HookPane => {
     const cur = all[paneId];
-    if (cur && cur.session === sid) return cur;
+    if (cur && cur.session === sid) {
+      // A hello is the hook working again (restarted, or the setup fixed): the footer can go.
+      if (hello) delete cur.failed_at;
+      return cur;
+    }
     return (all[paneId] = { session: sid, kind, hello_at: new Date().toISOString(), pending: [], recent: [], finals: [] });
   };
 
@@ -192,7 +240,7 @@ export function hookOps(g: Gateway) {
         // Panes quiet this long are closed or idle for good (Herdr never reuses a pane ID).
         const gone = Object.keys(all).filter((p) => p !== paneId && now - Math.max(Date.parse(all[p]!.hello_at), Date.parse(all[p]!.last_prompt_at ?? "") || 0) > STALE_MS);
         for (const p of gone) delete all[p];
-        return { h: entry(all, paneId, sid, kind), gone };
+        return { h: entry(all, paneId, sid, kind, true), gone };
       });
       for (const p of gone) syncFlag(g.cfg.stateDir, p, undefined, now);
       syncFlag(g.cfg.stateDir, paneId, h, now);

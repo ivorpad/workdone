@@ -17,11 +17,13 @@ dir=$(dirname "$launcher")
 [ -r "$dir/hook-cli.ts" ] || exit 0
 kind=${2:-claude}
 case "$kind" in claude|codex) ;; *) exit 0 ;; esac
+# Without the state dir the prompt hook could never run: then no hello either, so
+# WorkDone keeps the footer on this pane's messages.
+state=$(cat "$dir/state-dir" 2>/dev/null) || exit 0
+[ -n "$state" ] || exit 0
 case "${1:-}" in
   SessionStart) ;;
-  UserPromptSubmit|Stop)
-    state=$(cat "$dir/state-dir" 2>/dev/null) || exit 0
-    [ -e "$state/hook-panes/$pane" ] || exit 0 ;;
+  UserPromptSubmit|Stop) [ -e "$state/hook-panes/$pane" ] || exit 0 ;;
   *) exit 0 ;;
 esac
 bun=$(cat "$dir/bun-path" 2>/dev/null || command -v bun) || exit 0

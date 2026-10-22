@@ -34,6 +34,8 @@ export function gitAgent(extra: Record<string, unknown> = {}) {
     if (method === "agent.read" || method === "pane.read") return { read: { text: "" } };
     if (method === "agent.prompt") {
       if (agent.failPrompt) throw new GatewayError("herdr_error", "prompt refused");
+      // What the agent's own hooks do as the prompt is submitted (tests/hooks.test.ts).
+      await agent.onPrompt?.(params.text);
       agent.agent_status = params.wait ? "idle" : "working";
       agent.state_change_seq++;
       return { agent: { ...agent } };

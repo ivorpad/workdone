@@ -142,7 +142,7 @@ export function validateState(file: string, value: unknown) {
   else if (file === "hooks.json") valid = object(value) && Object.values(value).every(h => object(h) && nonempty(h.session) && typeof h.kind === "string" && timestamp(h.hello_at)
     && Array.isArray(h.pending) && h.pending.every((m: unknown) => object(m) && nonempty(m.id) && hash(m.hash) && nullableString(m.lease) && timestamp(m.at))
     && Array.isArray(h.recent) && h.recent.every((m: unknown) => object(m) && nonempty(m.prompt_id) && nullableString(m.lease) && timestamp(m.at) && integer(m.inherited))
-    && Array.isArray(h.finals) && h.finals.every((f: unknown) => object(f) && nonempty(f.prompt_id) && nonempty(f.text_id) && timestamp(f.at)) && optional(h, "last_prompt_at", timestamp));
+    && Array.isArray(h.finals) && h.finals.every((f: unknown) => object(f) && nonempty(f.prompt_id) && nonempty(f.text_id) && timestamp(f.at)) && optional(h, "last_prompt_at", timestamp) && optional(h, "failed_at", timestamp));
   if (!files.has(file) || !valid) throw new Error(`Invalid gateway state: ${file}`);
 }
 export function readState(dir: string, file: string): unknown {

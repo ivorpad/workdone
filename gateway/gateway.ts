@@ -27,7 +27,7 @@ import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { raiseTerminal } from "./raise.ts";
 import { consoleOps } from "./console-ops.ts";
-import { hookOps, markSend, PROVENANCE, unstamp, type Provenance } from "./hooks.ts";
+import { confirmSend, hookOps, markSend, PROVENANCE, unstamp, type Provenance } from "./hooks.ts";
 import { messageOps } from "./messages.ts";
 import { owedDigest, owedOps } from "./owed.ts";
 import { trackWork, workOps } from "./work.ts";
@@ -444,6 +444,10 @@ export class Gateway {
           return out;
         }
         const sentState = dispatch?.settle("delivered");
+        // The footer was left off: make sure the agent's hook said who sent it.
+        const markerId = marking.id();
+        const senderNote = markerId ? await confirmSend(this, agent.pane_id, markerId, prov!) : null;
+        if (senderNote && senderNote !== "hook") res = (await this.herdr("agent.get", { target: agent.pane_id }).catch(() => null)) ?? res;
         let status = res?.agent?.agent_status ?? res?.agent_status ?? res?.status;
         // Stopped at a menu mid-turn: a go-ahead is given and the wait goes on.
         if (wait && status === "blocked") {
@@ -457,7 +461,7 @@ export class Gateway {
         const settled = wait && SETTLED.has(status);
         this.state.prompted(agent.pane_id, watchInfo(agent), res?.agent ?? { agent_status: status }, settled);
         clearNote(this.herdr, agent.pane_id);
-        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(sentState ? { task_slice: true, dispatch: sentState } : {}) };
+        const out: Record<string, unknown> = { submitted: true, waited: wait, status: status ?? null, result: res, ...(sentState ? { task_slice: true, dispatch: sentState } : {}), ...(senderNote && senderNote !== "hook" ? { sender_note: senderNote } : {}) };
         if (approved.length) out.auto_approved = approved;
         if (settled && status !== "blocked") {
           const reply = await agentReply(cfg, agent, { freshFor: sent, herdr: this.herdr });

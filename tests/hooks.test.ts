@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { hookOutput, hookRequest } from "../gateway/hook-cli.ts";
-import { INHERIT_MAX, normalizePrompt } from "../gateway/hooks.ts";
+import { HOOK_TIMING, INHERIT_MAX, normalizePrompt } from "../gateway/hooks.ts";
 import { SESSION, gitAgent } from "./git-agent.ts";
 
 const dirs: string[] = [];
@@ -15,7 +15,10 @@ const setup = () => {
   const hello = () => t.gw.handle("hook_hello", { pane_id: "w1:p1", session_id: SESSION, kind: "cursor" });
   const prompt = async (prompt_id: string, prompt: string) => ((await t.gw.handle("hook_prompt", { pane_id: "w1:p1", session_id: SESSION, prompt_id, prompt, kind: "cursor" })) as any).context as string | null;
   const stop = (prompt_id: string, text: string) => t.gw.handle("hook_stop", { pane_id: "w1:p1", session_id: SESSION, prompt_id, text });
-  return { ...t, typed, claim, hello, prompt, stop };
+  // The agent's UserPromptSubmit hook firing as the prompt is submitted, as Claude Code does.
+  const contexts: Array<string | null> = [];
+  const autoHook = (prompt_id: string, wrap = (x: string) => x) => { t.agent.onPrompt = async (text: string) => { contexts.push(await prompt(prompt_id, wrap(text))); }; };
+  return { ...t, typed, claim, hello, prompt, stop, contexts, autoHook };
 };
 // How Claude Code 2.1.308 handed the probe's prompts to UserPromptSubmit (2026-10-22).
 const pasted = (text: string) => `\n\n<pasted_content id="f63c">\n${text}\n</pasted_content id="f63c">\n`;
@@ -32,12 +35,13 @@ describe("Claude Code hooks", () => {
     const t = setup();
     const lease = await t.claim("relay review");
     await t.hello();
-    await t.gw.request("prompt_agent", { target: "w1:p1", text: "Line one of the probe.\n\nRun the checks", lease });
-    expect(t.typed()).toEqual(["Line one of the probe.\n\nRun the checks"]);
-    expect(existsSync(join(t.state, "hook-panes", "w1:p1"))).toBe(true);
-
     expect(await t.prompt("own-1", "what's the time?")).toBeNull();
-    const context = await t.prompt("p-1", pasted("Line one of the probe.\n\nRun the checks"));
+    t.autoHook("p-1", pasted);
+    const res: any = await t.gw.request("prompt_agent", { target: "w1:p1", text: "Line one of the probe.\n\nRun the checks", lease });
+    expect(t.typed()).toEqual(["Line one of the probe.\n\nRun the checks"]);
+    expect(res.sender_note).toBeUndefined();
+    expect(existsSync(join(t.state, "hook-panes", "w1:p1"))).toBe(true);
+    const context = t.contexts[0]!;
     expect(context).toContain(`"relay review" (lease …${lease.slice(-4)})`);
     expect(context).toContain("Your final answer goes back to that chat by itself");
     expect(context).not.toContain(lease);
@@ -51,6 +55,47 @@ describe("Claude Code hooks", () => {
     await t.gw.handle("hook_hello", { pane_id: "w1:p1", session_id: SESSION, kind: "codex" });
     await t.gw.request("prompt_agent", { target: "w1:p1", text: "do it", lease });
     expect(t.typed()[0]).toContain("[Sent by the owner from their ChatGPT chat");
+  });
+
+  test("a hook that doesn't match brings the footer back: as a follow-up now, on the text from then on", async () => {
+    const t = setup();
+    HOOK_TIMING.confirmMs = 50;
+    try {
+      const lease = await t.claim("relay review");
+      await t.hello();
+      const res: any = await t.gw.request("prompt_agent", { target: "w1:p1", text: "count the files", lease });
+      expect(res.sender_note).toBe("footer_followup");
+      expect(t.typed()[0]).toBe("count the files");
+      expect(t.typed()[1]).toContain("[Sent by the owner from their ChatGPT chat (lease …");
+      t.agent.agent_status = "idle";
+      await t.gw.request("prompt_agent", { target: "w1:p1", text: "and again", lease });
+      expect(t.typed().at(-1)).toContain("and again\n\n[Sent by the owner");
+      // A hello means the hook works again.
+      await t.hello();
+      t.autoHook("p-9");
+      t.agent.agent_status = "idle";
+      await t.gw.request("prompt_agent", { target: "w1:p1", text: "third", lease });
+      expect(t.typed().at(-1)).toBe("third");
+    } finally {
+      HOOK_TIMING.confirmMs = 3000;
+    }
+  });
+
+  test("a marker left unmatched past the stale limit brings the footer back for the next message", async () => {
+    const t = setup();
+    HOOK_TIMING.staleMs = 0;
+    try {
+      const lease = await t.claim("relay review");
+      await t.hello();
+      t.agent.agent_status = "working";
+      await t.gw.request("steer_agent", { target: "w1:p1", text: "queued steer", lease });
+      expect(t.typed()).toEqual(["queued steer"]);
+      await Bun.sleep(5);
+      await t.gw.request("steer_agent", { target: "w1:p1", text: "second steer", lease });
+      expect(t.typed().at(-1)).toContain("second steer [Sent by the owner");
+    } finally {
+      HOOK_TIMING.staleMs = 15_000;
+    }
   });
 
   test("a steer mid-turn, collapsed to one line, still matches", async () => {
@@ -67,8 +112,8 @@ describe("Claude Code hooks", () => {
     const t = setup();
     const lease = await t.claim("relay review");
     await t.hello();
+    t.autoHook("p-1");
     await t.gw.request("prompt_agent", { target: "w1:p1", text: "count the files", lease });
-    await t.prompt("p-1", "count the files");
     await t.stop("p-1", "There are 12 files.");
     t.finish("stale transcript text");
     const [r] = await t.poll();
@@ -80,8 +125,8 @@ describe("Claude Code hooks", () => {
     const t = setup();
     const lease = await t.claim("relay review");
     await t.hello();
+    t.autoHook("p-1");
     await t.gw.request("prompt_agent", { target: "w1:p1", text: "count the files", lease });
-    await t.prompt("p-1", "count the files");
     await t.stop("p-1", "There are 12 files.");
     await Bun.sleep(5);
     expect(await t.prompt("own-1", "now something of mine")).toBeNull();
@@ -94,8 +139,9 @@ describe("Claude Code hooks", () => {
     const t = setup();
     const lease = await t.claim("relay review");
     await t.hello();
+    t.autoHook("p-1");
     await t.gw.request("prompt_agent", { target: "w1:p1", text: "run the long job", lease });
-    await t.prompt("p-1", "run the long job");
+    t.agent.onPrompt = undefined;
     t.finish("Started it in the background.");
     await t.poll();
     expect(t.watched()["w1:p1"]?.reply_to).toBeUndefined();
