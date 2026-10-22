@@ -45,6 +45,14 @@ describe("Claude Code hooks", () => {
     expect(await t.prompt("own-2", pasted("Line one of the probe.\n\nRun the checks"))).toBeNull();
   });
 
+  test("a hello from another kind of agent than the pane's leaves the footer on", async () => {
+    const t = setup();
+    const lease = await t.claim("relay review");
+    await t.gw.handle("hook_hello", { pane_id: "w1:p1", session_id: SESSION, kind: "codex" });
+    await t.gw.request("prompt_agent", { target: "w1:p1", text: "do it", lease });
+    expect(t.typed()[0]).toContain("[Sent by the owner from their ChatGPT chat");
+  });
+
   test("a steer mid-turn, collapsed to one line, still matches", async () => {
     const t = setup();
     const lease = await t.claim("relay review");
@@ -122,6 +130,14 @@ describe("hook script plumbing", () => {
     expect(hookOutput("UserPromptSubmit", '{"id":"hook","ok":true,"result":{"context":null}}')).toBe("");
     expect(hookOutput("UserPromptSubmit", "not json")).toBe("");
     expect(hookOutput("Stop", '{"result":{"context":"x"}}')).toBe("");
+  });
+
+  test("Codex input: turn_id stands in for prompt_id, and only known agent kinds pass", () => {
+    // As Codex 0.163 sent it to Stop in the probe (2026-10-22).
+    const stop = { session_id: "01a1630b-d987-76d2-a36a-ff54ce3080e8", turn_id: "01a1630c-1131-7540-bc9a-582cfff7a59f", last_assistant_message: "PROBE ONE STEERED", stop_hook_active: false };
+    expect(hookRequest("Stop", stop, "w1:p1", "codex")).toEqual({ op: "hook_stop", params: { pane_id: "w1:p1", session_id: stop.session_id, kind: "codex", prompt_id: stop.turn_id, text: "PROBE ONE STEERED" } });
+    expect(hookRequest("SessionStart", { session_id: "s", source: "startup" }, "w1:p1", "codex")?.params.kind).toBe("codex");
+    expect(hookRequest("SessionStart", { session_id: "s" }, "w1:p1", "cursor")).toBeNull();
   });
 
   test("normalizing strips the pasted wrapper and whitespace", () => {

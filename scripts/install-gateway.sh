@@ -60,3 +60,27 @@ else
     echo "added workdone-hook to $settings (SessionStart, UserPromptSubmit, Stop)"
   fi
 fi
+
+# The same for Codex, in ~/.codex/hooks.json. Codex runs a hook only once someone trusts it
+# (/hooks in Codex), by its position in the file: so the entries go at the end of each
+# event, where they move no hook already trusted. Until trusted, Codex panes keep the footer.
+codex_hooks="$HOME/.codex/hooks.json"
+if [ -n "${WORKDONE_NO_CODEX_HOOKS:-}" ] || [ ! -d "$HOME/.codex" ]; then
+  :
+elif ! command -v jq >/dev/null 2>&1; then
+  echo "no jq here: add workdone-hook to $codex_hooks by hand (SessionStart, UserPromptSubmit, Stop, with codex)" >&2
+else
+  [ -e "$codex_hooks" ] || printf '{"hooks":{}}\n' > "$codex_hooks"
+  next=$(jq --arg hook "$hook" '
+    def mine: (.hooks // []) | any(.command? // "" | contains("workdone-hook"));
+    def entry($event): { hooks: [{ type: "command", command: "\($hook) \($event) codex", timeout: 10 }] };
+    .hooks //= {}
+    | reduce ("SessionStart", "UserPromptSubmit", "Stop") as $e (.;
+        .hooks[$e] = ([(.hooks[$e] // [])[] | select(mine | not)] + [entry($e)]))
+  ' "$codex_hooks") || { echo "could not read $codex_hooks as JSON: Codex hooks not added" >&2; next=""; }
+  if [ -n "$next" ] && [ "$next" != "$(jq . "$codex_hooks")" ]; then
+    cp -p "$codex_hooks" "$codex_hooks.bak-workdone-$(date +%Y%m%d%H%M%S)"
+    printf '%s\n' "$next" > "$codex_hooks.tmp" && mv "$codex_hooks.tmp" "$codex_hooks"
+    echo "added workdone-hook to $codex_hooks: open Codex once and trust the three WorkDone hooks in /hooks"
+  fi
+fi
