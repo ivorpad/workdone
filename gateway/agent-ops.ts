@@ -3,6 +3,7 @@
 // and what each agent needs from its owner.
 
 import { randomUUID } from "node:crypto";
+import { PROVENANCE } from "./hooks.ts";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { approveMenus, dialogView, menuScreen, type Approval } from "./answer-ops.ts";
@@ -568,7 +569,7 @@ export function agentOps(g: Gateway): Record<string, Op> {
           // its name (pi, behind its update notices): retry that for a few seconds.
           for (let attempt = 0; ; attempt++) {
             try {
-              out.prompt = await g.handle("prompt_agent", { target: paneId, text: framed ?? prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease, task: params.task });
+              out.prompt = await g.handle("prompt_agent", { target: paneId, text: framed ?? prompt, wait, timeout_ms: Math.max(1000, left()), reply: params.reply, lease: params.lease, task: params.task, [PROVENANCE]: (params as any)[PROVENANCE] });
               break;
             } catch (err) {
               if (!(err instanceof GatewayError && err.code === "agent_not_ready") || attempt >= 30 || left() < 5000) throw err;

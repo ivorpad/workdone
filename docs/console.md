@@ -63,13 +63,15 @@ The idea was that an agent should only try to wake or deliver to a chat when it 
 - What a hook would add is an agent-written summary at the end. The watcher already reads the agent's last `RESULT:` line from the transcript, and a `reply: true` request carries it.
 - The route check lives where the routes are known: a held agent is queued for its thread, an unheld one reaches only an events subscriber, and an agent's `tell` with no route now says in its result that it is kept in the inbox, undelivered. Only the console labels an entry undelivered. ChatGPT and agents never see that label.
 
-So: no stop hook, and no agent-side beacon. The remaining gap is the one under "What it needs": the gateway has to be polled.
+So: no stop hook for delivery, and no agent-side beacon. The remaining gap is the one under "What it needs": the gateway has to be polled.
+
+Since 2026-10-22 Claude Code agents do run WorkDone hooks, for a different job (`gateway/hooks.ts`, README "Who sent it, without a footer"): UserPromptSubmit tells the agent which chat sent a message, so the text no longer needs a footer, and Stop hands the gateway the exact final answer. Delivery still goes through the watcher and the routes above; the hook decides nothing about where a reply goes.
 
 ## Steering
 
 The page shows which ChatGPT thread holds each agent (`lease_list`: the label and the last four characters of the lease, never the whole id). Steering needs no step first.
 
-1. **Steer** (agent working) or **Send prompt** (idle) calls `steer_agent` / `prompt_agent`. The text ends with a line saying the owner sent it from the console, not from a ChatGPT chat. Disabled while a menu is up or the agent is unavailable.
+1. **Steer** (agent working) or **Send prompt** (idle) calls `steer_agent` / `prompt_agent`. The agent learns the owner sent it from the console, not from a ChatGPT chat: from its Claude Code hook where one runs, else from a line at the end of the text. Disabled while a menu is up or the agent is unavailable.
 2. **Menu buttons** call `answer_agent` with the `dialog_id` of the menu shown, so a menu that moved on is `stale_dialog`, never a wrong answer. A gated menu (push, merge, deploy, `rm -rf`) comes back `needs_confirmation`: it is held and listed under Needs you with Approve and Decline, which run the held call once. The same list shows calls held for ChatGPT's approval card, so you can approve those here.
 3. **Send the one nudge** is `supervisor_nudge`, offered when `supervisor_status` recommends it, and the gateway still allows one per agent session.
 4. **Focus pane** brings the agent's pane to the front in Herdr on that machine (`focus`, which also marks the agent seen) and, on macOS, raises the terminal app that hosts the Herdr window. The app is `terminalApp` in `gateway.json` (`"Ghostty"` or a path to the `.app`), or found from the process tree above the `herdr` client. A client running over mosh or ssh has no app above it, so set `terminalApp` or the result says why nothing was raised. It changes no steering. On a headless VPS it moves focus nobody is looking at.

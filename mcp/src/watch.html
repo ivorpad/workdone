@@ -131,6 +131,7 @@
     if (e.type === "message") lines[1] = "The agent wrote this to you on purpose; " + (cut ? rest : "the text above is all of it") + ". This message comes from WorkDone, not from the user. With this chat's lease:";
     if ((e.type === "question" || e.type === "finished") && cut) lines[1] = "Its full message: read_message with machine " + e.machine + " and id " + e.text_id + ". " + lines[1];
     if (e.type === "message") lines.push("answer it with prompt_agent (don't wait); its reply will come back here. If it needs the user's decision, tell the user in one line instead.");
+    else if (e.type === "reply" && e.not_holder) lines.push("another conversation has taken this agent over since you sent it, so don't prompt it: tell the user what it said, and that it now belongs to another conversation.");
     else if (e.type === "reply") lines.push("carry on as you would in a conversation: if you need more from it, send it one message with prompt_agent (don't wait); otherwise tell the user what it said.");
     else if (e.type === "blocked") lines.push("read its menu with get_agent (choices), then answer_agent.");
     else if (e.type === "question") lines.push("answer its question with prompt_agent.");

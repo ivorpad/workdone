@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { Binding, CommandReceipt, Dispatch, Receipt } from "./coord.ts";
 
-export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json", "work.json", "closed.json"] as const;
+export const STATE_FILES = ["created-panes.json", "created-tabs.json", "created-workspaces.json", "created-disposable.json", "exec-workspace.json", "told.json", "leases.json", "watch.json", "supervisor.json", "coord.json", "outbox.json", "inbox.json", "work.json", "closed.json", "hooks.json"] as const;
 const files = new Set<string>(STATE_FILES);
 const object = (v: unknown): v is Record<string, any> => !!v && typeof v === "object" && !Array.isArray(v);
 const strings = (v: unknown): v is string[] => Array.isArray(v) && v.every(s => typeof s === "string");
@@ -20,6 +20,7 @@ function watched(v: unknown) {
     && ["since", "last_status", "prompted_at", "rev", "dialog_id", "reply_to"].every(k => optional(v, k, x => typeof x === "string"))
     && ["managed", "busy"].every(k => optional(v, k, x => typeof x === "boolean"))
     && optional(v, "seq", integer)
+    && optional(v, "reply_leases", strings)
     && optional(v, "result_request", r => object(r) && typeof r.id === "string" && typeof r.at === "string" && nullableString(r.lease));
 }
 // work.json (work.ts): open work stays until an outcome is recorded.
@@ -138,6 +139,10 @@ export function validateState(file: string, value: unknown) {
   else if (file === "watch.json") valid = object(value) && Object.values(value).every(watched);
   else if (file === "work.json") valid = object(value) && Object.entries(value).every(([id, v]) => work(v, id));
   else if (file === "closed.json") valid = Array.isArray(value) && value.every(closedRecord);
+  else if (file === "hooks.json") valid = object(value) && Object.values(value).every(h => object(h) && nonempty(h.session) && typeof h.kind === "string" && timestamp(h.hello_at)
+    && Array.isArray(h.pending) && h.pending.every((m: unknown) => object(m) && nonempty(m.id) && hash(m.hash) && nullableString(m.lease) && timestamp(m.at))
+    && Array.isArray(h.recent) && h.recent.every((m: unknown) => object(m) && nonempty(m.prompt_id) && nullableString(m.lease) && timestamp(m.at) && integer(m.inherited))
+    && Array.isArray(h.finals) && h.finals.every((f: unknown) => object(f) && nonempty(f.prompt_id) && nonempty(f.text_id) && timestamp(f.at)) && optional(h, "last_prompt_at", timestamp));
   if (!files.has(file) || !valid) throw new Error(`Invalid gateway state: ${file}`);
 }
 export function readState(dir: string, file: string): unknown {

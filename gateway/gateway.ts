@@ -27,6 +27,7 @@ import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { raiseTerminal } from "./raise.ts";
 import { consoleOps } from "./console-ops.ts";
+import { hookOps, markSend, PROVENANCE, unstamp, type Provenance } from "./hooks.ts";
 import { messageOps } from "./messages.ts";
 import { owedDigest, owedOps } from "./owed.ts";
 import { trackWork, workOps } from "./work.ts";
@@ -74,7 +75,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...messageOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...openclawOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...messageOps(this), ...hookOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...openclawOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {
@@ -350,7 +351,10 @@ export class Gateway {
 
       case "prompt_agent": {
         const agent = await this.scopedAgent(str(params, "target", TARGET_RE));
-        const text = str(params, "text");
+        // Where the agent's hooks will say who sent it, the footer comes off (hooks.ts).
+        const prov = (params as any)[PROVENANCE] as Provenance | undefined;
+        const marking = markSend(this, agent, prov);
+        const text = marking.hooked ? unstamp(str(params, "text"), prov!.sig) : str(params, "text");
         if (text.length > cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${cfg.maxPromptChars} characters`);
         const wait = params.wait === true;
         const timeout = this.waitMs(params, 60_000);
@@ -396,6 +400,7 @@ export class Gateway {
         }
         const dispatch = prepared;
         const sent = dispatch ? `${text}\n\n${dispatch.slice}` : text;
+        const unmark = marking.mark(sent);
         let res: any;
         try {
           res = await this.herdr(
@@ -408,6 +413,7 @@ export class Gateway {
           // on it when it finishes, and tell the caller it is working rather than failing the call.
           if (!(wait && err instanceof GatewayError && (err.code === "timeout" || (err.code === "herdr_timeout" && sendOutcome(err) === "unknown")))) {
             if (asked && !asked.already_pending) this.state.dropResult(agent.pane_id, asked.result_id);
+            unmark();
             // Refused: the pending binding is dropped. Unknown: kept for reconciliation,
             // never resent from here.
             dispatch?.settle(sendOutcome(err));
@@ -706,5 +712,6 @@ export function stamped(op: string, params: Params, lease: string | null, label:
   const sig = params.origin === "console"
     ? `[Sent by the owner from the WorkDone console through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. No ChatGPT chat is waiting on this; reply here as usual.]`
     : `[Sent by the owner from their ChatGPT chat${chat} (${who}) through WorkDone ${op}, ${now.toISOString().slice(0, 16)}Z. workdone-tell answers that chat.]`;
-  return { ...params, [key]: `${params[key]}\n\n${sig}` };
+  const prov: Provenance = { sig, op, lease, label: label ?? null, console: params.origin === "console", chat: chat ? chat.trim() : null };
+  return { ...params, [key]: `${params[key]}\n\n${sig}`, [PROVENANCE]: prov };
 }

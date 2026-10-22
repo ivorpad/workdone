@@ -47,6 +47,8 @@ export interface WakeEvent {
   // The full text excerpt previews: read_message on machine with text_id.
   text_id?: string;
   text_chars?: number;
+  // A reply owed to this thread for an agent another thread holds now (taken over mid-turn).
+  not_holder?: boolean;
   message: string;
   // The structured final result of a reply: true request (see gateway TurnResult).
   result?: Report["result"];
@@ -302,17 +304,22 @@ export class Inbox {
       }
       if (key) this.seen.add(key);
       const full = r.text_id && typeof r.text_chars === "number" ? { text_id: r.text_id, text_chars: r.text_chars } : {};
+      // Every thread that prompted or steered into this turn is owed its end, the holder or
+      // not: after a take-over the first thread still gets the answer to what it sent.
+      const ends = r.type === "finished" || r.type === "question" || (r.type === "gone" && !!r.result);
+      const owedTo = ends ? (r.reply_leases ?? (r.reply_to ? [r.reply_to] : [])) : [];
       // An agent that exited with a result owed still answers the thread that asked.
-      if (!r.lease || !(isWakeType(r.type) || (r.type === "gone" && r.result))) continue;
+      if ((!r.lease && !owedTo.length) || !(isWakeType(r.type) || (r.type === "gone" && r.result))) continue;
       let taken = false;
       for (const w of this.watches.values()) {
-        if (w.stopped || w.machine !== machine || w.lease !== r.lease) continue;
+        if (w.stopped || w.machine !== machine) continue;
         // A turn this thread asked for is its reply, whatever the turn's end looked like.
-        const owed = r.reply_to === w.lease && (r.type === "finished" || r.type === "question" || (r.type === "gone" && !!r.result));
+        const owed = owedTo.includes(w.lease);
+        if (w.lease !== r.lease && !owed) continue;
         if (!owed && !isWakeType(r.type)) continue;
         const type = (owed ? "reply" : r.type) as WakeType;
         if (!w.wake.has(type)) continue;
-        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, ...full, message: r.message, ...(r.result ? { result: r.result } : {}), ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
+        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, ...full, message: r.message, ...(owed && w.lease !== r.lease ? { not_holder: true } : {}), ...(r.result ? { result: r.result } : {}), ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
         n++;
         taken = true;
       }

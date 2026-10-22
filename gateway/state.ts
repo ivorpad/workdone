@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import type { Report, TurnResult } from "./watcher.ts";
 import { normalizeStore, type CoordStore } from "./coord.ts";
 import type { Work } from "./work.ts";
+import type { HookPane } from "./hooks.ts";
 import { resolve } from "node:path";
 
 // disposable: panes spawned with disposable: true, which close without the owner's go-ahead.
@@ -100,7 +101,10 @@ export interface Watched {
   dialog_id?: string;
   // A ChatGPT thread (its lease) prompted or steered this agent and did not wait: the
   // turn's end is that thread's reply, reported once with reply_to so it can be woken.
+  // reply_to is the latest; reply_leases every thread owed this turn, oldest first: a
+  // steer from a second thread, or a take-over mid-turn, must not take the first one's answer.
   reply_to?: string;
+  reply_leases?: string[];
   // What WorkDone launched here (spawn_agent, start_agent): model and effective effort.
   launch?: Launch;
   // A reviewer's stalls go back to its coordinator; it is never nudged.
@@ -189,6 +193,12 @@ export function seenState(a: any): Pick<Watched, "last_status" | "seq" | "sessio
   if (typeof a?.state_change_seq === "number") out.seq = a.state_change_seq;
   if (typeof a?.agent_session?.value === "string") out.session = a.agent_session.value;
   return out;
+}
+
+// One more thread owed this turn's answer: the latest becomes reply_to, and none drops out.
+function owedTo(cur: Pick<Watched, "reply_to" | "reply_leases">, lease: string): Pick<Watched, "reply_to" | "reply_leases"> {
+  const before = cur.reply_leases ?? (cur.reply_to ? [cur.reply_to] : []);
+  return { reply_to: lease, reply_leases: [...before.filter((l) => l !== lease), lease] };
 }
 
 const newRev = () => Math.random().toString(36).slice(2, 10);
@@ -353,6 +363,23 @@ export class StateStore {
     return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, Lease>) : {};
   }
 
+  // Claude Code hooks per pane (hooks.ts): the session they said hello for, the markers
+  // waiting for a prompt, the WorkDone prompts matched and the final answers kept.
+  hooks(): Record<string, HookPane> {
+    const v = this.read("hooks.json");
+    return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, HookPane>) : {};
+  }
+
+  updateHooks<T>(fn: (h: Record<string, HookPane>) => T): T {
+    return this.locked(() => {
+      const h = this.hooks();
+      const before = JSON.stringify(h);
+      const out = fn(h);
+      if (JSON.stringify(h) !== before) this.write("hooks.json", h);
+      return out;
+    });
+  }
+
   // Read, change and write leases.json under the same lock as watch.json.
   updateLeases<T>(fn: (l: Record<string, Lease>) => T): T {
     return this.locked(() => {
@@ -420,7 +447,7 @@ export class StateStore {
     this.updateWatched((w) => {
       const cur = w[paneId];
       // A result asked for before the prompt went in belongs to this turn.
-      const asked = cur?.result_request ? { result_request: cur.result_request, ...(cur.reply_to ? { reply_to: cur.reply_to } : {}) } : {};
+      const asked = cur?.result_request ? { result_request: cur.result_request, ...(cur.reply_to ? { reply_to: cur.reply_to } : {}), ...(cur.reply_leases ? { reply_leases: cur.reply_leases } : {}) } : {};
       if (cur?.managed) {
         const status = agent?.agent_status;
         w[paneId] = settled
@@ -454,12 +481,13 @@ export class StateStore {
         last_event: cur?.last_event,
         dialog_id: cur?.dialog_id,
         reply_to: cur?.reply_to,
+        reply_leases: cur?.reply_leases,
         launch: info.launch ?? cur?.launch,
         role: info.role ?? cur?.role,
         result_request: cur?.result_request,
         last_result: cur?.last_result,
       };
-      for (const k of ["launch", "role", "result_request", "last_result", "reply_to", "last_event", "dialog_id", "prompted_at"] as const) if (entry[k] === undefined) delete entry[k];
+      for (const k of ["launch", "role", "result_request", "last_result", "reply_to", "reply_leases", "last_event", "dialog_id", "prompted_at"] as const) if (entry[k] === undefined) delete entry[k];
       w[paneId] = entry;
       return entry;
     });
@@ -470,7 +498,7 @@ export class StateStore {
   owe(paneId: string, lease: string, info: WatchInfo, agent: any) {
     this.updateWatched((w) => {
       const cur = w[paneId] ?? { ...info, since: new Date().toISOString(), ...seenState(agent) };
-      w[paneId] = { ...cur, reply_to: lease, rev: newRev() };
+      w[paneId] = { ...cur, ...owedTo(cur, lease), rev: newRev() };
     });
   }
 
@@ -482,7 +510,7 @@ export class StateStore {
       const cur = w[paneId] ?? { ...info, since: new Date().toISOString(), ...seenState(agent) };
       if (cur.result_request) return { result_id: cur.result_request.id, already_pending: true };
       const id = `res_${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      w[paneId] = { ...cur, result_request: { id, at: new Date().toISOString(), lease }, ...(lease ? { reply_to: lease } : {}), rev: newRev() };
+      w[paneId] = { ...cur, result_request: { id, at: new Date().toISOString(), lease }, ...(lease ? owedTo(cur, lease) : {}), rev: newRev() };
       return { result_id: id, already_pending: false };
     });
   }
@@ -494,7 +522,12 @@ export class StateStore {
       if (cur?.result_request?.id !== id) return;
       const { result_request: req, ...rest } = cur;
       // The thread was owed this result only: its next turn is nobody's reply.
-      if (req.lease && rest.reply_to === req.lease) delete rest.reply_to;
+      if (req.lease && rest.reply_to === req.lease) {
+        const left = (rest.reply_leases ?? []).filter((l) => l !== req.lease);
+        delete rest.reply_to;
+        delete rest.reply_leases;
+        if (left.length) Object.assign(rest, { reply_to: left.at(-1), reply_leases: left });
+      }
       w[paneId] = { ...rest, rev: newRev() };
     });
   }

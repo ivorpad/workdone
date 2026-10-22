@@ -22,6 +22,7 @@ import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCa
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import { herdrSocket } from "./herdr-socket.ts";
 import { MESSAGE_CHARS, tryKeep } from "./messages.ts";
+import { hookFinal } from "./hooks.ts";
 import { showWatched } from "./sidebar.ts";
 import { childEnv, childProcesses, runProcess } from "./process.ts";
 import { StateStore, seenState, type Watched } from "./state.ts";
@@ -146,6 +147,8 @@ export interface Report {
   lease: string | null;
   // The thread this turn answers (see Watched.reply_to), when a thread asked for it.
   reply_to: string | null;
+  // Every thread this turn answers, oldest first; reply_to is the last. Absent from older gateways.
+  reply_leases?: string[];
   message: string;
   // "owner": a note the owner typed in the console. Set by the gateway only; an agent's tell never carries it.
   origin?: "owner";
@@ -233,7 +236,9 @@ const read = (herdr: HerdrCall, paneId: string, source: string) =>
 // The answer that ended the turn. A transcript can close the turn a couple of seconds
 // after Herdr shows the agent idle, so give it that long. Without a transcript, the
 // bottom of the screen. ended: a Cursor turn that ended other than success.
-async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<{ text: string | null; ended: boolean; cut?: boolean }> {
+async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any, hookText?: string | null): Promise<{ text: string | null; ended: boolean; cut?: boolean }> {
+  // The agent's Stop hook handed over the exact answer: no transcript lag, no wrong turn.
+  if (hookText) return { text: hookText, ended: false };
   for (let attempt = 0; ; attempt++) {
     const reply = await agentReply(cfg, agent, { herdr, maxChars: MESSAGE_CHARS });
     if (!reply) break;
@@ -247,11 +252,11 @@ async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Prom
 }
 
 // An excerpt is a bonus: when it cannot be read, the event is still reported.
-export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: WatchEvent, agent: any): Promise<Note> {
+export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: WatchEvent, agent: any, hookText?: string | null): Promise<Note> {
   try {
     if (event === "gone" || event === "background") return { type: "gone", excerpt: null };
     if (event === "blocked") return { type: "blocked", excerpt: dialogExcerpt(await read(herdr, agent.pane_id, "detection")) || null };
-    const { text, ended, cut } = await finalText(cfg, herdr, agent);
+    const { text, ended, cut } = await finalText(cfg, herdr, agent, hookText);
     const failed = ended || apiError(text) ? { failed: true } : {};
     if (!text?.trim()) return { type: "finished", excerpt: null, ...failed };
     const asks = asksOwner(text);
@@ -265,7 +270,7 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
 // still watched, and records drops, state changes and the last event of each agent.
 export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: number, reliable = false): Promise<Found> {
   const store = new StateStore(cfg.stateDir);
-  const initial = store.transaction(() => ({ watched: store.watched(), queued: reliable ? store.outbox() : [], told: store.told() }));
+  const initial = store.transaction(() => ({ watched: store.watched(), queued: reliable ? store.outbox() : [], told: store.told(), hooks: store.hooks() }));
   const watched = initial.watched;
   if (initial.queued.length) return { messages: [], remaining: Object.keys(watched).length, reports: initial.queued };
   // A tell is collected even with nothing watched: a chat subscribed to agent.message
@@ -314,8 +319,11 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
   // Read transcripts/checkpoints before the commit; no network wait holds the
   // state lock. A concurrent prompt or poll fences these decisions by revision.
   const prepared = await Promise.all(decided.map(async entry => {
-    const { w, agent, d, bg, menu, left } = entry;
-    const note: Note | null = !d.event ? null : left && d.event === "gone" ? { type: "gone", excerpt: null, left: true } : bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent);
+    const { paneId, w, agent, d, bg, menu, left } = entry;
+    // A turn owed to a WorkDone caller whose answer the agent's Stop hook kept (hooks.ts).
+    const owed = !!(w.reply_to || w.result_request);
+    const hookText = owed && d.event === "finished" ? hookFinal(cfg.stateDir, initial.hooks[paneId], seenState(agent).session, Date.parse(w.prompted_at ?? w.since)) : null;
+    const note: Note | null = !d.event ? null : left && d.event === "gone" ? { type: "gone", excerpt: null, left: true } : bg ? { type: bg.stopped ? "stopped" : "background", excerpt: null, pid: bg.pid } : menu ? { type: "blocked", excerpt: dialogExcerpt(menu.text) || null } : await describe(cfg, herdr, d.event, agent, hookText);
     const ended = note?.type === "finished" || note?.type === "question";
     const resolves = !!w.result_request && (note?.type === "finished" || note?.type === "gone");
     const cp = (ended && w.managed) || resolves ? await checkpoint(cfg, agent?.foreground_cwd ?? agent?.cwd ?? w.cwd).catch(() => null) : null;
@@ -380,13 +388,16 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
         const full = note.text && (note.type === "finished" || note.type === "question")
           ? tryKeep(cfg.stateDir, { id: eventId, at: new Date(now).toISOString(), kind: "reply", pane_id: paneId, agent: agent?.name ?? w.name ?? null, text: note.text, cut_at_source: !!note.cut }) ?? {}
           : {};
-        reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, ...full, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
+        reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, ...full, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, ...(w.reply_leases?.length ? { reply_leases: w.reply_leases } : {}), message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
         messages.push(text);
         if (fresh[paneId]) {
           if (result && fresh[paneId]!.result_request?.id === result.result_id) delete fresh[paneId]!.result_request;
           if (result) fresh[paneId]!.last_result = result;
           fresh[paneId]!.last_event = { type: note.type, at: new Date(now).toISOString(), excerpt: note.excerpt };
-          if (note.type !== "blocked") delete fresh[paneId]!.reply_to;
+          if (note.type !== "blocked") {
+            delete fresh[paneId]!.reply_to;
+            delete fresh[paneId]!.reply_leases;
+          }
         }
       }
       return Object.keys(fresh).length;

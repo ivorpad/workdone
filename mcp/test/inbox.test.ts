@@ -43,6 +43,20 @@ describe("inbox routing", () => {
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "Reviewed: 3 issues"], ["reply", "Fix all three?"]]);
   });
 
+  test("a turn two threads prompted into wakes both; the one that lost the agent is told so", async () => {
+    const box = new Inbox();
+    const first = opened(box, "mac", "L-first01");
+    const second = opened(box, "mac", "L-secnd02");
+    const other = opened(box, "mac", "L-other03");
+    box.add("mac", [report({ type: "finished", lease: "L-secnd02", reply_to: "L-secnd02", reply_leases: ["L-first01", "L-secnd02"], excerpt: "Done with both." })]);
+    expect((await box.next(first.key.watch_id, first.key.cap, 0)).events.map((e) => [e.type, e.excerpt, e.not_holder])).toEqual([["reply", "Done with both.", true]]);
+    expect((await box.next(second.key.watch_id, second.key.cap, 0)).events.map((e) => [e.type, e.not_holder])).toEqual([["reply", undefined]]);
+    expect((await box.next(other.key.watch_id, other.key.cap, 0)).events).toEqual([]);
+    // An old gateway's report (reply_to only) routes as before.
+    box.add("mac", [report({ event_id: "old", type: "finished", lease: "L-first01", reply_to: "L-first01", excerpt: "old shape" })]);
+    expect((await box.next(first.key.watch_id, first.key.cap, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "old shape"]]);
+  });
+
   test("a reply and a held message keep the reference to their full text", async () => {
     const box = new Inbox();
     box.add("mac", [report({ type: "message", excerpt: "early", text_id: "t-held", text_chars: 9000 })]);

@@ -20,6 +20,7 @@ import { str, type Op } from "./params.ts";
 import { StateStore } from "./state.ts";
 import { lastLines, resultView, textOf } from "./views.ts";
 import { dispatchSlice, INTENT, sendOutcome } from "./coord-ops.ts";
+import { markSend, PROVENANCE, unstamp, type Provenance } from "./hooks.ts";
 
 // Pauses between keys, around typed text, and before reading the result. Tests set them to 0.
 export const timing = { key: 250, text: 450, settle: 1500 };
@@ -242,11 +243,14 @@ export function answerOps(g: Gateway): Record<string, Op> {
     // A message for an agent that is working. An idle agent just gets it as a prompt.
     async steer_agent(params) {
       const agent = await g.scopedAgent(str(params, "target", TARGET_RE));
-      const text = oneLine(str(params, "text"));
+      const prov = (params as any)[PROVENANCE] as Provenance | undefined;
+      // An idle agent gets a prompt, which decides about the footer itself.
+      const marking = agent.agent_status === "working" ? markSend(g, agent, prov) : { hooked: false, mark: () => () => {} };
+      const text = oneLine(marking.hooked ? unstamp(str(params, "text"), prov!.sig) : str(params, "text"));
       if (text.length > g.cfg.maxPromptChars) throw new GatewayError("invalid_params", `text exceeds ${g.cfg.maxPromptChars} characters`);
       if (agent.agent_status !== "working") {
         if (agent.agent_status === "blocked") throw new GatewayError("agent_blocked", "the agent is showing a menu: answer it with answer_agent first (choices.go_ahead is the option that lets it carry on)");
-        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease, task: params.task, command_id: params.command_id, [INTENT]: (params as any)[INTENT] ?? { op: "steer_agent", text } }) };
+        return { steered: false, prompted: true, result: await g.handle("prompt_agent", { target: agent.pane_id, text, reply: params.reply, lease: params.lease, task: params.task, command_id: params.command_id, [INTENT]: (params as any)[INTENT] ?? { op: "steer_agent", text }, [PROVENANCE]: prov }) };
       }
       // A menu can come up between Herdr's status and the keys: enter would answer it.
       const d = parseDialog(await menuScreen(g.herdr, agent.pane_id));
@@ -267,10 +271,13 @@ export function answerOps(g: Gateway): Record<string, Op> {
         return { steered: false, duplicate: true, dispatch: prepared.replay, note: "this command_id was already delivered; nothing was sent again" };
       }
       const dispatch = prepared;
+      const typed = dispatch ? oneLine(`${text} ${dispatch.slice}`) : text;
+      const unmark = marking.mark(typed);
       try {
-        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text: dispatch ? oneLine(`${text} ${dispatch.slice}`) : text });
+        await g.herdr("pane.send_input", { pane_id: agent.pane_id, text: typed });
       } catch (err) {
         drop();
+        unmark();
         dispatch?.settle(sendOutcome(err));
         throw err;
       }

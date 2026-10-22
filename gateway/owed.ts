@@ -156,7 +156,7 @@ export function deriveOwed(s: OwedState, opts: { roots: string[]; live: LiveAgen
       : status === "gone" ? "gone"
       : status === "working" || status === "background" ? "working"
       : "open";
-    const found = holderOf(s.leases, paneId, now, [w?.result_request?.lease, w?.reply_to, ...[...entries].reverse().map((e) => e.lease), wk?.lease]);
+    const found = holderOf(s.leases, paneId, now, [w?.result_request?.lease, w?.reply_to, ...(w?.reply_leases ?? []).slice().reverse(), ...[...entries].reverse().map((e) => e.lease), wk?.lease]);
     const holder = found && {
       lease: tail(found[0]), label: found[1]?.label ?? null, origin: found[1]?.origin ?? null, created_at: found[1]?.created ?? null,
       live: !!found[1] && found[1].panes.includes(paneId) && leaseLive(found[1], now),
