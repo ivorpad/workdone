@@ -827,6 +827,8 @@ export type Sources = Pick<GatewayConfig, "transcriptRoots" | "cursorTranscriptR
 
 export interface ReplyOptions extends CodexLookup {
   freshFor?: string;
+  // How much of the answer to keep (its end). Default REPLY_CHARS; the watcher keeps more for read_message.
+  maxChars?: number;
 }
 
 // The agent's transcript read once: its turns and where they came from. Codex has no
@@ -835,28 +837,29 @@ export interface ReplyOptions extends CodexLookup {
 // for the cwd are checked for it.
 async function readReply(cfg: Sources, agent: any, opts: ReplyOptions): Promise<Reply | null> {
   const { freshFor } = opts;
+  const max = opts.maxChars ?? REPLY_CHARS;
   const claude = claudeSessionId(agent);
   const cursor = cursorSessionId(agent);
   const cwd: string | undefined = agent?.foreground_cwd ?? agent?.cwd;
   if (claude) {
     const file = findTranscript(cfg.transcriptRoots, claude, agent.cwd);
-    const turn = file && lastReply(file, REPLY_CHARS);
+    const turn = file && lastReply(file, max);
     return turn ? { ...turn, ref: { kind: "claude_jsonl", path: file, session: claude } } : null;
   }
   if (cursor) {
     const file = findCursorTranscript(cfg.cursorTranscriptRoots, cursor, agent.cwd);
-    const turn = file && lastCursorReply(file, REPLY_CHARS);
+    const turn = file && lastCursorReply(file, max);
     return turn ? { ...turn, ref: { kind: "cursor_jsonl", path: file, session: cursor } } : null;
   }
   if (agent?.agent === "codex" && typeof cwd === "string") {
     const holds = (turn: Turn | null) => !!freshFor && (samePrompt(freshFor, turn?.in_reply_to ?? null) || samePrompt(freshFor, turn?.in_progress?.prompt ?? null));
     let pick = await resolveCodexRollout(cfg, agent, opts);
-    let turn = pick ? lastReply(pick.path, REPLY_CHARS, findCodexReply) : null;
+    let turn = pick ? lastReply(pick.path, max, findCodexReply) : null;
     if (freshFor && !holds(turn)) {
       const since = opts.since ? Date.parse(opts.since) : NaN;
       for (const r of codexRollouts(cfg.codexSessionRoots, cwd, { since: Number.isNaN(since) ? null : since })) {
         if (r.path === pick?.path) continue;
-        const t = lastReply(r.path, REPLY_CHARS, findCodexReply);
+        const t = lastReply(r.path, max, findCodexReply);
         if (!holds(t)) continue;
         pick = { ...r, match: "cwd" };
         turn = t;
@@ -868,12 +871,12 @@ async function readReply(cfg: Sources, agent: any, opts: ReplyOptions): Promise<
   }
   if (agent?.agent === "opencode" && cfg.opencodeDb) {
     const read = readOpencode(cfg.opencodeDb, agent);
-    const turn = read && findOpencodeReply(read.messages, REPLY_CHARS);
+    const turn = read && findOpencodeReply(read.messages, max);
     return turn ? { ...turn, ref: { kind: "opencode_sqlite", path: cfg.opencodeDb, session: read!.session } } : null;
   }
   if (agent?.agent === "pi") {
     const file = findPiSession(cfg.piSessionRoots, agent);
-    const turn = file && lastReply(file, REPLY_CHARS, findPiReply);
+    const turn = file && lastReply(file, max, findPiReply);
     return turn ? { ...turn, ref: { kind: "pi_jsonl", path: file, session: piSessionId(file) } } : null;
   }
   return null;

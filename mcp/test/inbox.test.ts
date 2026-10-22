@@ -43,6 +43,14 @@ describe("inbox routing", () => {
     expect((await box.next(w.key.watch_id, w.key.cap, 0)).events.map((e) => [e.type, e.excerpt])).toEqual([["reply", "Reviewed: 3 issues"], ["reply", "Fix all three?"]]);
   });
 
+  test("a reply and a held message keep the reference to their full text", async () => {
+    const box = new Inbox();
+    box.add("mac", [report({ type: "message", excerpt: "early", text_id: "t-held", text_chars: 9000 })]);
+    const w = opened(box, "mac", "L-abc123");
+    box.add("mac", [report({ type: "finished", reply_to: "L-abc123", excerpt: "Start of it", text_id: "t-reply", text_chars: 30_000 })]);
+    expect((await box.next(w.key.watch_id, w.key.cap, 0)).events.map((e) => [e.type, e.text_id, e.text_chars])).toEqual([["message", "t-held", 9000], ["reply", "t-reply", 30_000]]);
+  });
+
   test("a message an agent sends on purpose wakes its thread, even one sent before the link opened", async () => {
     let now = 0;
     const box = new Inbox(() => now);

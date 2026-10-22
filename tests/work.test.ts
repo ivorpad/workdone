@@ -345,7 +345,7 @@ describe("turns change the work's state, never whether it is open", () => {
       // Delivered: the MCP server acknowledges it. Dropped: nobody ever does.
       if (deliver) await t.g.handle("watch_poll", { delivery: "ack", ack: found.reports.map((r: any) => r.event_id) });
       const out = await t.owed();
-      return JSON.parse(JSON.stringify(out, (k, v) => (["id", "at", "started_at", "inbox_id", "pane_id", "lease", "created_at", "work_id"].includes(k) ? "_" : v)));
+      return JSON.parse(JSON.stringify(out, (k, v) => (["id", "at", "started_at", "inbox_id", "text_id", "pane_id", "lease", "created_at", "work_id"].includes(k) ? "_" : v)));
     };
     const delivered = await run(true);
     expect(delivered.items).toEqual([expect.objectContaining({ state: "unread_result", work: expect.objectContaining({ title: "Count the files" }) })]);

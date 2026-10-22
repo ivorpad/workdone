@@ -27,6 +27,7 @@ import { StateStore, seenState, type Launch } from "./state.ts";
 import { checkpoint } from "./checkpoint.ts";
 import { raiseTerminal } from "./raise.ts";
 import { consoleOps } from "./console-ops.ts";
+import { messageOps } from "./messages.ts";
 import { owedDigest, owedOps } from "./owed.ts";
 import { trackWork, workOps } from "./work.ts";
 import { agentReply } from "./transcript.ts";
@@ -73,7 +74,7 @@ export class Gateway {
   constructor(readonly cfg: GatewayConfig, readonly herdr: HerdrCall) {
     this.state = new StateStore(cfg.stateDir);
     this.leases = leaseOps(this);
-    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...openclawOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
+    this.extra = { claim_agents: this.leases.claim_agents, release_agents: this.leases.release_agents, lease_check: this.leases.lease_check, lease_list: this.leases.lease_list, ...hostOps(cfg, (key) => this.repo(key).path), ...layoutOps(this), ...agentOps(this), ...consoleOps(this), ...owedOps(this), ...messageOps(this), ...workOps(this), ...coordOps(this), ...answerOps(this), ...jobOps(cfg), ...openclawOps(cfg), ...(cfg.execInPane ? paneExecOps(this) : {}) };
   }
 
   async scopedAgent(target: string) {

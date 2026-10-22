@@ -21,6 +21,7 @@ import { notifyTransitions } from "./coord-ops.ts";
 import { GatewayError, loadConfig, paneInScope, type GatewayConfig, type HerdrCall } from "./config.ts";
 import { subscriberOf, type Subscription } from "./herdr-events.ts";
 import { herdrSocket } from "./herdr-socket.ts";
+import { MESSAGE_CHARS, tryKeep } from "./messages.ts";
 import { showWatched } from "./sidebar.ts";
 import { childEnv, childProcesses, runProcess } from "./process.ts";
 import { StateStore, seenState, type Watched } from "./state.ts";
@@ -87,8 +88,10 @@ export interface Note {
   type: "finished" | "question" | "blocked" | "gone" | "background" | "stopped";
   excerpt: string | null;
   pid?: number;
-  // The whole final answer, for the RESULT: line and the supervisor's turn record.
+  // The whole final answer, for the RESULT: line, the supervisor's turn record and read_message.
   text?: string | null;
+  // The transcript answer was longer than MESSAGE_CHARS: text is its end.
+  cut?: boolean;
   // gone because Herdr still runs the agent, but outside the allowed roots.
   left?: boolean;
   // A finished turn that ended on an API or transport error, not an answer. Recorded on
@@ -97,7 +100,7 @@ export interface Note {
 }
 
 // The final result a caller asked for with reply: true. Metadata and a one-line
-// summary; the full answer stays with read_agent.
+// summary; the full answer is kept for read_message (the report's text_id).
 export interface TurnResult {
   result_id: string;
   requested_at: string;
@@ -146,6 +149,10 @@ export interface Report {
   message: string;
   // "owner": a note the owner typed in the console. Set by the gateway only; an agent's tell never carries it.
   origin?: "owner";
+  // The full text excerpt previews, kept on this gateway: read_message with text_id. Absent
+  // when nothing longer than the excerpt was said, or it could not be kept.
+  text_id?: string;
+  text_chars?: number;
   // Menu data for agent.asks. The receiver must re-read before answering it.
   choices?: ReturnType<typeof dialogView>;
   // Present once, on the turn end that resolves a reply: true request.
@@ -226,12 +233,12 @@ const read = (herdr: HerdrCall, paneId: string, source: string) =>
 // The answer that ended the turn. A transcript can close the turn a couple of seconds
 // after Herdr shows the agent idle, so give it that long. Without a transcript, the
 // bottom of the screen. ended: a Cursor turn that ended other than success.
-async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<{ text: string | null; ended: boolean }> {
+async function finalText(cfg: GatewayConfig, herdr: HerdrCall, agent: any): Promise<{ text: string | null; ended: boolean; cut?: boolean }> {
   for (let attempt = 0; ; attempt++) {
-    const reply = await agentReply(cfg, agent, { herdr });
+    const reply = await agentReply(cfg, agent, { herdr, maxChars: MESSAGE_CHARS });
     if (!reply) break;
     const p = reply.in_progress;
-    if (!p) return { text: reply.ended ? `[${reply.ended}] ${reply.text}` : reply.text, ended: !!reply.ended };
+    if (!p) return { text: reply.ended ? `[${reply.ended}] ${reply.text}` : reply.text, ended: !!reply.ended, ...(reply.truncated ? { cut: true } : {}) };
     if (p.interrupted) return { text: `[interrupted] ${p.latest_text ?? ""}`, ended: false };
     if (attempt >= 5) return { text: p.latest_text, ended: false };
     await Bun.sleep(500);
@@ -244,11 +251,11 @@ export async function describe(cfg: GatewayConfig, herdr: HerdrCall, event: Watc
   try {
     if (event === "gone" || event === "background") return { type: "gone", excerpt: null };
     if (event === "blocked") return { type: "blocked", excerpt: dialogExcerpt(await read(herdr, agent.pane_id, "detection")) || null };
-    const { text, ended } = await finalText(cfg, herdr, agent);
+    const { text, ended, cut } = await finalText(cfg, herdr, agent);
     const failed = ended || apiError(text) ? { failed: true } : {};
     if (!text?.trim()) return { type: "finished", excerpt: null, ...failed };
     const asks = asksOwner(text);
-    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null, text, ...failed };
+    return { type: asks ? "question" : "finished", excerpt: replyExcerpt(text, asks) || null, text, ...(cut ? { cut } : {}), ...failed };
   } catch {
     return { type: event, excerpt: null };
   }
@@ -369,7 +376,11 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
             ...(kept ? { inbox_id: eventId } : {}), ...(result ? { result_id: result.result_id } : {}),
           });
         }
-        reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
+        // The answer itself, whole: the excerpt and the inbox only preview it.
+        const full = note.text && (note.type === "finished" || note.type === "question")
+          ? tryKeep(cfg.stateDir, { id: eventId, at: new Date(now).toISOString(), kind: "reply", pane_id: paneId, agent: agent?.name ?? w.name ?? null, text: note.text, cut_at_source: !!note.cut }) ?? {}
+          : {};
+        reports.push({ event_id: eventId, occurred_at: new Date(now).toISOString(), pane_id: paneId, type: note.type, agent: agent?.name ?? w.name ?? null, kind: agent?.agent ?? w.kind ?? null, cwd: w.cwd ?? null, excerpt: note.excerpt, ...full, lease: leaseOf(leases, paneId, now), reply_to: w.reply_to ?? null, message: text, ...(menu ? { choices: dialogView(menu) } : {}), ...(result ? { result } : {}) });
         messages.push(text);
         if (fresh[paneId]) {
           if (result && fresh[paneId]!.result_request?.id === result.result_id) delete fresh[paneId]!.result_request;
@@ -386,7 +397,10 @@ export async function pollWatched(cfg: GatewayConfig, herdr: HerdrCall, now: num
       const w = t.pane_id ? watched[t.pane_id] : undefined;
       const agent = t.pane_id ? byPane.get(t.pane_id) : undefined;
       const name = t.from ?? agent?.name ?? w?.name ?? null;
-      reports.push({ event_id: t.event_id ?? randomUUID(), occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: t.from ? `${t.from} says: ${clip(t.text, 400)}` : t.origin === "owner" ? `Owner note from the console about ${name ?? t.pane_id}: ${clip(t.text, 400)}` : `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.origin === "owner" ? { origin: "owner" as const } : {}), ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
+      const eventId = t.event_id ?? randomUUID();
+      // A coordination transition is a fixed line, not something an agent said.
+      const full = t.transition ? {} : tryKeep(cfg.stateDir, { id: eventId, at: t.at, kind: t.from ? "openclaw" : t.origin === "owner" ? "note" : "tell", pane_id: t.pane_id, agent: name, text: t.text }) ?? {};
+      reports.push({ event_id: eventId, occurred_at: t.at, pane_id: t.pane_id, type: "message", agent: name, kind: agent?.agent ?? w?.kind ?? null, cwd: w?.cwd ?? agent?.cwd ?? null, excerpt: t.text, ...full, lease: t.recipient_lease ?? (t.pane_id ? leaseOf(leases, t.pane_id, now) : null), reply_to: null, message: t.from ? `${t.from} says: ${clip(t.text, 400)}` : t.origin === "owner" ? `Owner note from the console about ${name ?? t.pane_id}: ${clip(t.text, 400)}` : `${name ?? t.pane_id ?? t.objective ?? "coordination"} says: ${clip(t.text, 400)}`, ...(t.origin === "owner" ? { origin: "owner" as const } : {}), ...(t.objective ? { objective: t.objective } : {}), ...(t.recipient_lease ? { recipient_lease: t.recipient_lease } : {}), ...(t.transition ? { transition: t.transition } : {}) });
     }
     if (reliable) {
       store.enqueueReports(reports);

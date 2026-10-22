@@ -361,6 +361,20 @@ describe("delivery", () => {
   });
 });
 
+describe("full text references", () => {
+  test("a preview carries text_id and text_chars; a malformed id is left off, not the wake", async () => {
+    const f = fixture();
+    await f.service.subscribe(principal, subscribe());
+    await f.service.addReports("mac", [report({ excerpt: "Start of a long answer", text_id: "0b6f0c1e-4f0e-4c55-9d43-5a1e0f3b8a11", text_chars: 30_000 })]);
+    await f.service.addReports("mac", [report({ event_id: "bad-ref", text_id: "../watch", text_chars: 10 })]);
+    await f.service.flush();
+    const [first, second] = f.sent.slice(1).map((s) => JSON.parse(s.body).data);
+    expect(first).toMatchObject({ excerpt: "Start of a long answer", text_id: "0b6f0c1e-4f0e-4c55-9d43-5a1e0f3b8a11", text_chars: 30_000 });
+    expect(second.excerpt).toBe("done");
+    expect(second.text_id).toBeUndefined();
+  });
+});
+
 describe("reply: true results on agent.finished", () => {
   const result = (changes: Record<string, unknown> = {}) => ({
     result_id: "res_0123456789abcdef", requested_at: new Date(time - 60_000).toISOString(), status: "finished",

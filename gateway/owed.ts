@@ -5,6 +5,7 @@
 // anything else until the agent gets a follow-up or the owner dismisses it.
 // owedDigest is the same derivation from state alone, small enough to ride on other results.
 
+import { hasMessage } from "./messages.ts";
 import { paneInScope } from "./config.ts";
 import { currentTaskBinding, humanBlocked, type CoordStore } from "./coord.ts";
 import { resumeView, type Live } from "./coord-views.ts";
@@ -246,7 +247,9 @@ export function owedOps(g: Gateway): Record<string, Op> {
         // The state still says what is owed; statuses are then the watcher's last look.
         herdrError = String((err as { code?: unknown })?.code ?? "herdr_error");
       }
-      const owed = deriveOwed(snap, { roots: g.cfg.allowedRoots, live, lease, now });
+      const derived = deriveOwed(snap, { roots: g.cfg.allowedRoots, live, lease, now });
+      // An entry's text is a preview: the whole message, when kept, is read_message with text_id.
+      const owed = { ...derived, items: derived.items.map((i) => ({ ...i, unanswered: i.unanswered.map((e) => (hasMessage(g.cfg.stateDir, e.id) ? { ...e, text_id: e.id } : e)) })) };
       // Herdr's "done" (finished, nobody looked yet) on agents no item covers, as the console's
       // derived inbox entries: an entry stored at or after the reply stands in for it.
       const covered = new Set(owed.items.map((i) => i.pane_id));

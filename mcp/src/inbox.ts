@@ -44,6 +44,9 @@ export interface WakeEvent {
   agent: string | null;
   type: WakeType;
   excerpt: string | null;
+  // The full text excerpt previews: read_message on machine with text_id.
+  text_id?: string;
+  text_chars?: number;
   message: string;
   // The structured final result of a reply: true request (see gateway TurnResult).
   result?: Report["result"];
@@ -298,6 +301,7 @@ export class Inbox {
         if (held + queued >= MAX_HELD_COORD) throw new Error("Coordination inbox is full; source intake must wait");
       }
       if (key) this.seen.add(key);
+      const full = r.text_id && typeof r.text_chars === "number" ? { text_id: r.text_id, text_chars: r.text_chars } : {};
       // An agent that exited with a result owed still answers the thread that asked.
       if (!r.lease || !(isWakeType(r.type) || (r.type === "gone" && r.result))) continue;
       let taken = false;
@@ -308,7 +312,7 @@ export class Inbox {
         if (!owed && !isWakeType(r.type)) continue;
         const type = (owed ? "reply" : r.type) as WakeType;
         if (!w.wake.has(type)) continue;
-        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, message: r.message, ...(r.result ? { result: r.result } : {}), ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
+        w.queue.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type, excerpt: r.excerpt, ...full, message: r.message, ...(r.result ? { result: r.result } : {}), ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
         n++;
         taken = true;
       }
@@ -316,7 +320,7 @@ export class Inbox {
       if (!taken && r.type === "message") {
         const key = `${machine}|${r.lease}`;
         const list = this.held.get(key) ?? [];
-        list.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type: "message", excerpt: r.excerpt, message: r.message, ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
+        list.push({ seq: ++this.seq, at: new Date(this.now()).toISOString(), machine, pane_id: r.pane_id, agent: r.agent, type: "message", excerpt: r.excerpt, ...full, message: r.message, ...(r.objective ? { objective: r.objective, transition: r.transition } : {}) });
         this.retainHeld(key, list);
       }
     }
