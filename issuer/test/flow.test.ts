@@ -114,6 +114,24 @@ describe("issuer", () => {
     expect((await token({ grant_type: "refresh_token", client_id: "chatgpt-test", refresh_token: body.refresh_token })).status).toBe(400);
   });
 
+  test("only the consent page may end in the client's redirect", async () => {
+    // Chromium checks form-action against the redirect that follows a form post, so without the
+    // client's origin there, Approve leaves the browser on the consent page (Executor Cloud, 2026-10-18).
+    const jar = new Jar();
+    const { challenge } = pkce();
+    const q = new URLSearchParams({ client_id: "chatgpt-test", response_type: "code", redirect_uri: REDIRECT, scope: "workdone", code_challenge: challenge, code_challenge_method: "S256", resource: RESOURCE, state: "s1" });
+    let res = await hop(jar, `${base}/auth?${q}`);
+    const interaction = new URL(res.headers.get("location")!, base).pathname;
+    const login = await hop(jar, base + interaction);
+    expect(login.headers.get("content-security-policy")).toEndWith("form-action 'self'");
+    await login.text();
+    res = await hop(jar, `${base}${interaction}/login`, { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ password: PASSWORD }) });
+    res = await hop(jar, new URL(res.headers.get("location")!, base).toString());
+    const consent = await hop(jar, base + new URL(res.headers.get("location")!, base).pathname);
+    expect(consent.headers.get("content-security-policy")).toEndWith(`form-action 'self' ${new URL(REDIRECT).origin}`);
+    await consent.text();
+  });
+
   test("the code is bound to the PKCE verifier and is single use", async () => {
     const r = await signIn();
     const bad = await token({ grant_type: "authorization_code", client_id: "chatgpt-test", code: r.code!, redirect_uri: REDIRECT, code_verifier: randomBytes(32).toString("base64url") });

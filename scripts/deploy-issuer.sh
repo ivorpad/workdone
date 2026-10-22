@@ -17,6 +17,11 @@ name=${2:?usage: $0 MCP_RESOURCE ISSUER_HOST_NAME}
 host=${OVH_HOST:-ovh}
 here=$(cd "$(dirname "$0")/.." && pwd)
 case $resource in https://*/mcp) ;; *) echo "MCP_RESOURCE should look like https://HOST/mcp" >&2; exit 2 ;; esac
+# Hosts besides ChatGPT's whose client ID metadata documents the issuer may fetch, comma separated,
+# e.g. EXTRA_CLIENT_HOSTS=executor.sh for Executor Cloud (docs/executor.md). The env file below is
+# rewritten on every run, so a line added there by hand would be lost without this.
+extra=${EXTRA_CLIENT_HOSTS:-}
+case $extra in *[!a-z0-9.,-]*) echo "EXTRA_CLIENT_HOSTS should be lowercase hostnames separated by commas" >&2; exit 2 ;; esac
 
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
@@ -26,7 +31,7 @@ cp "$here/deploy/Caddyfile.issuer" "$stage/"
 
 ssh "$host" "rm -rf /tmp/wd-issuer && mkdir /tmp/wd-issuer" 
 tar -cf - -C "$stage" . | ssh "$host" "tar -xf - -C /tmp/wd-issuer"
-ssh "$host" "RESOURCE='$resource' NAME='$name' sh -s" <<'REMOTE'
+ssh "$host" "RESOURCE='$resource' NAME='$name' EXTRA='$extra' sh -s" <<'REMOTE'
 set -eu
 src=/tmp/wd-issuer
 sudo rm -rf /opt/workdone-issuer.new
@@ -52,6 +57,7 @@ MCP_RESOURCE=$RESOURCE
 OWNER_SUBJECT=owner
 ISSUER_HOST=172.24.0.1
 ISSUER_PORT=8790
+ISSUER_CLIENT_HOSTS=chatgpt.com,openai.com${EXTRA:+,$EXTRA}
 EOF2
 sudo chgrp workdone-issuer /etc/workdone-issuer/env
 sudo install -m 644 "$src/workdone-issuer.service" /etc/systemd/system/workdone-issuer.service

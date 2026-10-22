@@ -22,9 +22,23 @@ async function readForm(req: IncomingMessage): Promise<URLSearchParams> {
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
 }
 
-function send(res: ServerResponse, status: number, html: string) {
-  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'", "x-frame-options": "DENY" });
+function send(res: ServerResponse, status: number, html: string, formTargets: string[] = []) {
+  const formAction = ["'self'", ...formTargets].join(" ");
+  res.writeHead(status, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; form-action ${formAction}`, "x-frame-options": "DENY" });
   res.end(html);
+}
+
+// Approve and Deny end in a redirect to the client's redirect URI. Chromium checks `form-action`
+// against the redirects that follow a form post, so without that origin in it the browser stays on
+// the consent page after Approve (found with Executor Cloud, 2026-10-18). The URI is the one
+// oidc-provider already matched against the client's registered URIs.
+function redirectOrigins(uri: unknown): string[] {
+  try {
+    const u = new URL(String(uri));
+    return u.protocol === "https:" && /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(u.origin) ? [u.origin] : [];
+  } catch {
+    return [];
+  }
 }
 
 export function interactionHandler(provider: Provider, cfg: IssuerConfig, throttle = new Throttle(), clientIp = (req: IncomingMessage) => String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "").split(",")[0]!.trim()) {
@@ -49,7 +63,7 @@ export function interactionHandler(provider: Provider, cfg: IssuerConfig, thrott
       } else {
         const client = details.params.client_id as string;
         const scope = String(params.scope ?? "").split(" ").filter((s) => s && s !== "openid" && s !== "offline_access").join(", ");
-        send(res, 200, page("Approve", `<h1>Approve access</h1><p><code>${esc(client)}</code> wants to use <strong>${esc(scope || cfg.scope)}</strong> on <code>${esc(cfg.resource)}</code>, and to stay connected until you revoke it.</p><form method="post" action="/interaction/${esc(uid!)}/confirm"><button>Approve</button></form><form method="post" action="/interaction/${esc(uid!)}/abort"><button>Deny</button></form>`));
+        send(res, 200, page("Approve", `<h1>Approve access</h1><p><code>${esc(client)}</code> wants to use <strong>${esc(scope || cfg.scope)}</strong> on <code>${esc(cfg.resource)}</code>, and to stay connected until you revoke it.</p><form method="post" action="/interaction/${esc(uid!)}/confirm"><button>Approve</button></form><form method="post" action="/interaction/${esc(uid!)}/abort"><button>Deny</button></form>`), redirectOrigins(params.redirect_uri));
       }
       return true;
     }
