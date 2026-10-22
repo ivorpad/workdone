@@ -1,0 +1,11 @@
+[Unit]
+Description=Docker-bridge address for the inbound hooks listener (Caddy reaches it here)
+After=docker.service network-online.target
+Requires=docker.service
+
+[Socket]
+# Same rustdesk-net gateway as workdone-mcp-bridge.socket (8792), the issuer (8790) and the relay (8791).
+ListenStream=172.24.0.1:8794
+
+[Install]
+WantedBy=sockets.target

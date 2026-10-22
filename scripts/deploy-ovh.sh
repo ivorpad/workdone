@@ -5,16 +5,22 @@
 # Safe to rerun: each step checks before it changes anything and backs up what it
 # edits. It never touches the capability flags in OVH's gateway.json.
 #
-# usage: scripts/deploy-ovh.sh [ssh-host]      (default: ovh)
+# --mcp-only skips the OVH gateway, its key and authorized_keys, and only replaces the
+# MCP server: for a change under mcp/ alone. Adding or removing a hook needs no deploy at
+# all (scripts/event-hook.sh).
+#
+# usage: scripts/deploy-ovh.sh [--mcp-only] [ssh-host]      (default: ovh)
 set -eu
 repo=$(cd "$(dirname "$0")/.." && pwd)
+mcp_only=0
+if [ "${1:-}" = --mcp-only ]; then mcp_only=1; shift; fi
 host=${1:-ovh}
 
 echo "== copying $repo to $host:~/herdr-chatgpt-bridge-staging"
 COPYFILE_DISABLE=1 tar -C "$repo" --no-xattrs --exclude=node_modules --exclude=.git --exclude=dist -czf - . |
   ssh "$host" 'rm -rf ~/herdr-chatgpt-bridge-staging && mkdir -m 700 ~/herdr-chatgpt-bridge-staging && tar -C ~/herdr-chatgpt-bridge-staging -xzf -'
 
-ssh "$host" 'bash -s' <<'REMOTE'
+ssh "$host" "MCP_ONLY=$mcp_only bash -s" <<'REMOTE'
 set -euo pipefail
 stage=$HOME/herdr-chatgpt-bridge-staging
 launcher=$HOME/.local/libexec/herdr-chatgpt/herdr-gateway-launcher.sh
@@ -23,6 +29,7 @@ kh=/etc/herdr-mcp/ssh/known_hosts
 cfg=/etc/herdr-mcp/ovh.json
 ts=$(date +%Y%m%d%H%M%S)
 
+if [ "$MCP_ONLY" != 1 ]; then
 echo "== gateway for $USER"
 install -d -m 700 ~/.config/herdr-chatgpt
 [ -e ~/.config/herdr-chatgpt/gateway.json ] || install -m 600 "$stage/config/ovh-gateway.example.json" ~/.config/herdr-chatgpt/gateway.json
@@ -65,6 +72,7 @@ printf '%s\n' '{"id":"1","op":"bridge_status","params":{}}' |
     -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$kh" -o GlobalKnownHostsFile=/dev/null \
     -o ClearAllForwardings=yes -o RequestTTY=no -l "$USER" 127.0.0.1 |
   jq -ec 'select(.ok) | {herdr: .result.herdr_version, roots: .result.allowed_roots}'
+fi
 
 echo "== MCP server"
 sudo rm -rf /opt/herdr-chatgpt-bridge.new
@@ -103,6 +111,10 @@ echo "== restart"
 sudo systemctl restart herdr-mcp
 sleep 2
 systemctl is-active herdr-mcp
+# A restart takes the units that Require= herdr-mcp along; report any that did not come back.
+for u in openai-herdr-tunnel openai-herdr-events-tunnel workdone-mcp-bridge.socket workdone-hooks-bridge.socket; do
+  if systemctl is-enabled --quiet "$u" 2>/dev/null && ! systemctl is-active --quiet "$u"; then echo "WARNING: $u is enabled but not active: sudo systemctl start $u"; fi
+done
 curl -s 127.0.0.1:8787/healthz
 echo
 curl -s -X POST 127.0.0.1:8787/mcp -H 'content-type: application/json' -H 'accept: application/json, text/event-stream' \

@@ -10,6 +10,8 @@ Group=herdr-mcp
 WorkingDirectory=/opt/herdr-chatgpt-bridge/mcp
 Environment=HERDR_MCP_CONFIG=/etc/herdr-mcp/ovh.json
 ExecStart=/usr/local/bin/bun --no-env-file src/server.ts
+# Rereads events.sourcesPath only (hooks and disabled events); scripts/event-hook.sh uses it.
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=3
 

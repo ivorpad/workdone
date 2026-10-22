@@ -7,6 +7,7 @@ import { parseConfig, type OvhConfig } from "./config.ts";
 import { AuthenticationError, AuthService } from "./auth.ts";
 import { leaseActivity } from "./activity.ts";
 import { EventsService, type EventPrincipal, type EventsOptions } from "./events.ts";
+import { createHookHandler, loadSources, NO_SOURCES, type LoadedSources } from "./hooks.ts";
 import { sshGateway, type CallGateway } from "./gateway-client.ts";
 import { inbox } from "./inbox.ts";
 import { pendingCalls } from "./confirm.ts";
@@ -60,7 +61,7 @@ export function createReportSink(events?: Pick<EventsService, "addReports">, fal
   };
 }
 
-export function createEventService(cfg: OvhConfig, call: CallGateway, auth: AuthService, options: Pick<EventsOptions, "sender" | "now" | "random" | "log" | "onSubscribed"> = {}): EventsService | undefined {
+export function createEventService(cfg: OvhConfig, call: CallGateway, auth: AuthService, options: Pick<EventsOptions, "sender" | "now" | "random" | "log" | "onSubscribed" | "sources"> = {}): EventsService | undefined {
   if (!cfg.events) return undefined;
   const unavailable = new Set(["machine_offline", "gateway_unreachable", "herdr_unavailable", "herdr_timeout", "herdr_closed"]);
   const gone = new Set(["agent_not_found", "pane_not_found"]);
@@ -222,13 +223,15 @@ export function createHandler(cfg: OvhConfig, call: CallGateway, onWatch?: (mach
   };
 }
 
-export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (machine: string) => void, services: HandlerServices = {}, ownerConsole?: (req: Request) => Promise<Response>) {
+export function createEndpoints(cfg: OvhConfig, call: CallGateway, onWatch?: (machine: string) => void, services: HandlerServices = {}, ownerConsole?: (req: Request) => Promise<Response>, hooks?: (req: Request) => Promise<Response>) {
   const endpoints: Array<{ host: string; port: number; authenticated: boolean; handler: (req: Request) => Promise<Response> }> = cfg.auth?.listenPort !== undefined ? [
     { host: cfg.listen.host, port: cfg.listen.port, authenticated: false, handler: createHandler({ ...cfg, auth: null, events: null }, call, onWatch) },
     { host: cfg.listen.host, port: cfg.auth.listenPort, authenticated: true, handler: createHandler(cfg, call, onWatch, services) },
   ] : [{ host: cfg.listen.host, port: cfg.listen.port, authenticated: !!cfg.auth, handler: createHandler(cfg, call, onWatch, services) }];
   // The owner's console is its own loopback listener: it is not an MCP endpoint and is reached only through tailscale serve.
   if (cfg.console && ownerConsole) endpoints.push({ host: cfg.listen.host, port: cfg.console.port, authenticated: true, handler: ownerConsole });
+  // Outside services post hook.* events here; each request is checked against its hook's signing secret.
+  if (cfg.events?.hooksPort !== undefined && hooks) endpoints.push({ host: cfg.listen.host, port: cfg.events.hooksPort, authenticated: true, handler: hooks });
   return endpoints;
 }
 
@@ -244,7 +247,21 @@ if (import.meta.main) {
   const onSubscribed = (name: string, args: { machine?: string }) => {
     if (name === "agent.message" || name === "coord.changed") for (const m of args.machine ? [args.machine] : Object.keys(cfg.machines)) notifier?.markPending(m);
   };
-  const events = auth ? createEventService(cfg, call, auth, { onSubscribed }) : undefined;
+  // hook.* events and disabled built-ins. A file that fails to load leaves the built-ins on
+  // and the server up; on SIGHUP it leaves the previous list.
+  const sourcesPath = cfg.events?.sourcesPath;
+  let sources: LoadedSources = NO_SOURCES;
+  if (sourcesPath) {
+    try { sources = loadSources(sourcesPath); }
+    catch (e) { console.log(JSON.stringify({ event: "events_sources_rejected", path: sourcesPath, reason: (e as Error).message })); }
+  }
+  const events = auth ? createEventService(cfg, call, auth, { onSubscribed, sources: sources.sources }) : undefined;
+  const hooks = events && cfg.events?.hooksPort !== undefined ? createHookHandler(events, () => sources) : undefined;
+  process.on("SIGHUP", () => {
+    if (!sourcesPath || !events) return;
+    try { sources = loadSources(sourcesPath); events.setSources(sources.sources); }
+    catch (e) { console.log(JSON.stringify({ event: "events_sources_rejected", path: sourcesPath, reason: (e as Error).message })); }
+  });
   // The console hears every report the notifier takes and keeps the notifier polling while a page is open.
   const bus = new ConsoleBus();
   const ownerConsole = cfg.console ? createConsole({ cfg: { ...cfg, console: cfg.console }, call, pending: pendingCalls, bus, wantsMessages: (m) => events?.wantsMessages(m) ?? false }) : undefined;
@@ -253,7 +270,7 @@ if (import.meta.main) {
   bus.onConnect = () => { for (const m of Object.keys(cfg.machines)) notifier?.markPending(m); ownerConsole?.soon(); };
   events?.start();
   ownerConsole?.start();
-  const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events }, ownerConsole?.handler);
+  const endpoints = createEndpoints(cfg, call, notifier?.markPending, { auth, events }, ownerConsole?.handler, hooks);
   const servers = endpoints.map(({ host, port, handler }) => Bun.serve({ hostname: host, port, fetch: handler, idleTimeout: 255 }));
   const machines = Object.fromEntries(Object.entries(cfg.machines).map(([name, t]) => [name, `${t.user}@${t.host}`]));
   console.log(JSON.stringify({ event: "listening", endpoints: endpoints.map(({ host, port, authenticated }) => ({ url: `http://${host}:${port}/mcp`, authenticated })), machines, notify: cfg.notify, events: !!events }));

@@ -1,0 +1,17 @@
+[Unit]
+Description=Forward the Docker-bridge socket to the inbound hooks listener on loopback
+Requires=workdone-hooks-bridge.socket herdr-mcp.service
+After=workdone-hooks-bridge.socket herdr-mcp.service
+
+[Service]
+# events.hooksPort in /etc/herdr-mcp/ovh.json.
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:8793
+DynamicUser=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost 172.24.0.0/16

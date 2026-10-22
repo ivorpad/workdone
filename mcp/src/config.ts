@@ -24,7 +24,10 @@ export interface OvhConfig {
   // often to poll machines that have prompted agents pending. Absent: no phone deliveries.
   notify: { machine: string; intervalMs: number } | null;
   auth: AuthConfig | null;
-  events: { statePath: string; callbackHosts: string[] } | null;
+  // sourcesPath: hook.* events and disabled built-ins, reread on SIGHUP (hooks.ts).
+  // hooksPort: loopback listener for POST /hooks/<name>. Everything else needs a restart,
+  // callbackHosts too: its egress allowance is a systemd drop-in.
+  events: { statePath: string; callbackHosts: string[]; sourcesPath?: string; hooksPort?: number } | null;
   console: ConsoleConfig | null;
   link: LinkConfig;
 }
@@ -149,8 +152,16 @@ export function parseConfig(raw: unknown): OvhConfig {
     try { validatedHosts = validateCallbackHosts(callbackHosts); }
     catch { throw new Error("events.callbackHosts must contain exact lowercase public DNS hostnames"); }
     events = { statePath: absolutePath(c.events.statePath, "events.statePath"), callbackHosts: validatedHosts };
+    if (c.events.sourcesPath !== undefined) events.sourcesPath = absolutePath(c.events.sourcesPath, "events.sourcesPath");
+    if (c.events.hooksPort !== undefined) {
+      if (!Number.isInteger(c.events.hooksPort) || c.events.hooksPort < 1 || c.events.hooksPort > 65535) throw new Error("events.hooksPort must be a port from 1 to 65535");
+      if (!events.sourcesPath) throw new Error("events.hooksPort needs events.sourcesPath");
+      events.hooksPort = c.events.hooksPort;
+    }
   }
   const consoleCfg = parseConsole(c?.console, c?.listen?.port, auth?.listenPort);
+  const hooksPort = events?.hooksPort;
+  if (hooksPort !== undefined && [Number.isInteger(c?.listen?.port) ? c.listen.port : 8787, auth?.listenPort, consoleCfg?.port].includes(hooksPort)) throw new Error("events.hooksPort must differ from the other listeners");
   const retryWindow = c?.link?.retryWindowSeconds ?? 1800;
   if (!Number.isInteger(retryWindow) || retryWindow < 60 || retryWindow > 86_400) throw new Error("link.retryWindowSeconds must be a whole number of seconds from 60 to 86400");
   const idle = c?.link?.idleSeconds ?? 7200;

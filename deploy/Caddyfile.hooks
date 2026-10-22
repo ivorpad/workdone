@@ -1,0 +1,11 @@
+# Inbound hooks for the rustdesk Caddy, added by hand inside the issuer's site block
+# (deploy-issuer.sh does not apply this file). Unlike /mcp there is no OpenAI address
+# filter: any sender may reach it, and each hook's signing secret is the only gate
+# (mcp/src/hooks.ts). Needs workdone-hooks-bridge.socket and events.hooksPort 8793.
+#
+#	handle /hooks/* {
+#		request_body {
+#			max_size 256KB
+#		}
+#		reverse_proxy 172.24.0.1:8794
+#	}

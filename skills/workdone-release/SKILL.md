@@ -25,7 +25,7 @@ Run `bun run check` (typecheck and every test; the pre-commit hook runs it too).
 ## 2. Deploy the code
 
 - Mac gateway: `scripts/install-gateway.sh` (does not touch `gateway.json`).
-- OVH gateway and MCP: `scripts/deploy-ovh.sh ovh`. Take the backups the script does not (the previous `/opt/herdr-chatgpt-bridge` dir) if the change is risky.
+- OVH gateway and MCP: `scripts/deploy-ovh.sh ovh`. A change under `mcp/` alone can use `scripts/deploy-ovh.sh --mcp-only ovh`, which skips the OVH gateway. Adding or removing a hook event needs no deploy: `scripts/event-hook.sh` (docs/mcp-events.md, "Hooks"). Take the backups the script does not (the previous `/opt/herdr-chatgpt-bridge` dir) if the change is risky.
 - Other machines (syno): `scripts/add-machine.sh` with the same arguments as before, only when the user wants them on the new gateway.
 - After `herdr-mcp` restarts, check `systemctl is-active herdr-mcp openai-herdr-tunnel workdone-mcp-bridge.service`. `herdr-mcp` has `Requires=` dependents: a stop takes them down and a later start does not bring them back, so start them explicitly.
 - If the permission classifier blocks a deploy command, do not route around it. Give the user the exact command.
